@@ -1,0 +1,109 @@
+# Default values for redis-operator.
+# This is a YAML-formatted file.
+
+# -- Number of operator replicas to deploy. Usually 1 with leader election.
+replicaCount: 1
+
+image:
+  # -- Container image repository.
+  repository: redis-operator
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+  # -- Overrides the image tag. Defaults to the chart appVersion.
+  tag: ""
+
+# -- Image pull secrets for private registries.
+imagePullSecrets: []
+
+# -- Override the name of the chart (used in resource naming).
+nameOverride: ""
+
+# -- Override the full name of the chart (used in resource naming).
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Specifies whether a service account should be created.
+  create: true
+  # -- Annotations to add to the service account.
+  annotations: {}
+  # -- The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template.
+  name: ""
+
+rbac:
+  # -- Specifies whether RBAC resources (ClusterRole, ClusterRoleBinding) should be created.
+  create: true
+
+# -- Annotations to add to the operator pod.
+podAnnotations: {}
+
+# -- Security context for the operator pod.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Security context for the operator container.
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# -- Node selector for operator pod scheduling.
+nodeSelector: {}
+
+# -- Tolerations for operator pod scheduling.
+tolerations: []
+
+# -- Affinity rules for operator pod scheduling.
+affinity: {}
+
+# -- Additional environment variables to set on the operator container.
+env: []
+
+leaderElection:
+  # -- Enable leader election for high availability (recommended for production).
+  enabled: true
+
+metrics:
+  # -- Enable Prometheus metrics endpoint.
+  enabled: true
+  # -- Port on which metrics are served.
+  port: 9090
+  # -- Create a ServiceMonitor for Prometheus Operator (requires prometheus-operator CRD).
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+webhook:
+  # -- Enable admission webhooks (mutating + validating).
+  # Requires the operator to have a valid TLS certificate mounted at
+  # /tmp/k8s-webhook-server/serving-certs/. The operator manages its own PKI.
+  enabled: true
+  # -- Port on which the webhook server listens.
+  port: 9443
+  # -- Name of the Secret containing tls.crt and tls.key for the webhook server.
+  # The operator auto-generates and rotates this secret if it does not exist.
+  certSecretName: ""
+
+# -- Termination grace period for the operator pod (seconds).
+terminationGracePeriodSeconds: 10
+
+# -- Additional volumes to add to the operator pod.
+extraVolumes: []
+
+# -- Additional volume mounts to add to the operator container.
+extraVolumeMounts: []

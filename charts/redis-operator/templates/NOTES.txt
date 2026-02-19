@@ -1,0 +1,107 @@
+Redis Operator has been installed successfully!
+
+Release name : {{ .Release.Name }}
+Namespace    : {{ .Release.Namespace }}
+Version      : {{ .Chart.AppVersion }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+IMPORTANT: Install CRDs before creating any RedisCluster resources.
+CRDs are NOT bundled in this chart (Helm best practice for operators).
+
+  kubectl apply -f https://raw.githubusercontent.com/howl/redis-operator/main/config/crd/bases/redis.io_redisclusters.yaml
+  kubectl apply -f https://raw.githubusercontent.com/howl/redis-operator/main/config/crd/bases/redis.io_redisbackups.yaml
+  kubectl apply -f https://raw.githubusercontent.com/howl/redis-operator/main/config/crd/bases/redis.io_redisscheduledbackups.yaml
+
+Or from a local checkout:
+
+  make install
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CREATING A REDIS CLUSTER
+
+Create a simple 1-instance standalone cluster:
+
+  kubectl apply -f - <<EOF
+  apiVersion: redis.io/v1
+  kind: RedisCluster
+  metadata:
+    name: my-redis
+    namespace: default
+  spec:
+    instances: 1
+    mode: standalone
+    storage:
+      size: 1Gi
+  EOF
+
+Create a 3-instance cluster with replication:
+
+  kubectl apply -f - <<EOF
+  apiVersion: redis.io/v1
+  kind: RedisCluster
+  metadata:
+    name: my-redis-ha
+    namespace: default
+  spec:
+    instances: 3
+    mode: standalone
+    storage:
+      size: 10Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+  EOF
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CONNECTING TO REDIS
+
+After creating a cluster named "my-redis" in namespace "default":
+
+  # Connect to the current primary (read/write):
+  kubectl port-forward svc/my-redis-leader 6379:6379 -n default
+
+  # Connect to any instance (read):
+  kubectl port-forward svc/my-redis-any 6379:6379 -n default
+
+  # Retrieve the auto-generated password:
+  kubectl get secret my-redis-auth -n default -o jsonpath='{.data.password}' | base64 -d
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CHECKING OPERATOR LOGS
+
+  kubectl logs -n {{ .Release.Namespace }} \
+    -l app.kubernetes.io/name={{ include "redis-operator.name" . }},app.kubernetes.io/instance={{ .Release.Name }} \
+    --follow
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{{- if .Values.metrics.enabled }}
+METRICS
+
+The operator exposes Prometheus metrics on port {{ .Values.metrics.port }} at /metrics.
+
+  kubectl port-forward -n {{ .Release.Namespace }} \
+    svc/{{ include "redis-operator.fullname" . }} {{ .Values.metrics.port }}:{{ .Values.metrics.port }}
+
+Then open: http://localhost:{{ .Values.metrics.port }}/metrics
+{{- end }}
+
+{{- if .Values.webhook.enabled }}
+
+WEBHOOKS
+
+Admission webhooks are enabled. The operator manages its own PKI — no cert-manager
+dependency is required. On startup the operator generates a self-signed CA and
+injects the caBundle into the webhook configurations automatically.
+{{- end }}
+
+For documentation and examples visit:
+  https://github.com/howl/redis-operator

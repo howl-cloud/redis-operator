@@ -1,0 +1,31 @@
+{{- if .Values.webhook.enabled -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "redis-operator.fullname" . }}-mutating-webhook
+  labels:
+    {{- include "redis-operator.labels" . | nindent 4 }}
+webhooks:
+  - name: mrediscluster.redis.io
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      # caBundle is intentionally empty — the operator's self-managed PKI controller
+      # (internal/cmd/manager/controller/pki.go) rotates the CA and injects the
+      # caBundle into this field via a PATCH on startup and on cert rotation.
+      caBundle: ""
+      service:
+        name: {{ include "redis-operator.fullname" . }}-webhook-service
+        namespace: {{ .Release.Namespace }}
+        path: /mutate-redis-io-v1-rediscluster
+        port: 443
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    rules:
+      - apiGroups: [redis.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [redisclusters]
+        scope: Namespaced
+    sideEffects: None
+    timeoutSeconds: 10
+{{- end }}

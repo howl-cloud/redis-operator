@@ -1,0 +1,52 @@
+# Binaries
+bin/
+manager
+redis-operator
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Test output
+cover.out
+cover.html
+
+# Go workspace
+go.work
+go.work.sum
+
+# Vendor
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# envtest / kubebuilder binaries
+testbin/
+localbin/
+
+# Helm temporary dirs
+charts/*/charts/
+charts/*/tmpcharts/
+
+# Secrets — never commit
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+kubeconfig
+.kubeconfig
+.env
+.env.*

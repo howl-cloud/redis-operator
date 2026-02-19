@@ -1,0 +1,21 @@
+apiVersion: v2
+name: redis-operator
+description: A Kubernetes operator for managing Redis 7.2 clusters with automatic failover, rolling updates, and backup support.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - redis
+  - operator
+  - kubernetes
+  - database
+home: https://github.com/howl-cloud/redis-operator
+sources:
+  - https://github.com/howl-cloud/redis-operator
+maintainers:
+  - name: Howl
+    url: https://github.com/howl-cloud
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/operator: "true"
+  artifacthub.io/operatorCapabilities: Deep Insights

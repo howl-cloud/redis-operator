@@ -1,0 +1,39 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: redis-operator-validating-webhook
+webhooks:
+  - name: vrediscluster.redis.io
+    admissionReviewVersions: [v1]
+    clientConfig:
+      service:
+        name: redis-operator-webhook-service
+        namespace: redis-operator-system
+        path: /validate-redis-io-v1-rediscluster
+    failurePolicy: Fail
+    rules:
+      - apiGroups: [redis.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [redisclusters]
+    sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: redis-operator-mutating-webhook
+webhooks:
+  - name: mrediscluster.redis.io
+    admissionReviewVersions: [v1]
+    clientConfig:
+      service:
+        name: redis-operator-webhook-service
+        namespace: redis-operator-system
+        path: /mutate-redis-io-v1-rediscluster
+    failurePolicy: Fail
+    rules:
+      - apiGroups: [redis.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [redisclusters]
+    sideEffects: None
