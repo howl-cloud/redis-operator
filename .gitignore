@@ -1,7 +1,7 @@
 # Binaries
 bin/
-manager
-redis-operator
+/manager
+/redis-operator
 
 # Go build artifacts
 *.exe
