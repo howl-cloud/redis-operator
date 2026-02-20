@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -28,6 +29,7 @@ func main() {
 
 	rootCmd.AddCommand(controllerCmd())
 	rootCmd.AddCommand(instanceCmd())
+	rootCmd.AddCommand(copyBinaryCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -91,4 +93,46 @@ func instanceCmd() *cobra.Command {
 	cmd.Flags().StringVar(&podNamespace, "pod-namespace", "", "Namespace of this pod")
 
 	return cmd
+}
+
+func copyBinaryCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "copy-binary <destination>",
+		Short: "Copy the manager binary to the given path",
+		Long:  "Copies the running binary to <destination>. Used by the copy-manager init container to install the instance manager into a shared emptyDir volume without requiring coreutils.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			src, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("resolving executable path: %w", err)
+			}
+			return copyBinary(src, args[0])
+		},
+	}
+}
+
+// copyBinary copies the file at src to dst with executable permissions (0o755).
+// It checks the error on close so that a full-disk condition is not silently swallowed.
+func copyBinary(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("opening source %s: %w", src, err)
+	}
+	defer in.Close() //nolint:errcheck // read-only; close error carries no information
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return fmt.Errorf("opening destination %s: %w", dst, err)
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return fmt.Errorf("copying binary: %w", err)
+	}
+
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("flushing destination %s: %w", dst, err)
+	}
+
+	return nil
 }

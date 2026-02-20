@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # --- Build stage ---
-FROM golang:1.25.1 AS builder
+# Use the build-platform image so the Go toolchain always runs natively,
+# even when cross-compiling for a different target (e.g. amd64 on Apple Silicon).
+FROM --platform=$BUILDPLATFORM golang:1.25.1 AS builder
 
 WORKDIR /workspace
 
@@ -10,8 +12,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source and build the single binary that serves both subcommands.
+# TARGETARCH is set automatically by Docker Buildx to the target platform
+# architecture (e.g. amd64, arm64). Plain `docker build` inherits the host arch.
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/manager ./cmd/manager
 
 # --- Runtime stage ---

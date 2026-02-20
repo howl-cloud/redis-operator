@@ -133,7 +133,7 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 				{
 					Name:    "copy-manager",
 					Image:   "redis-operator:latest", // Will be overridden via env/config.
-					Command: []string{"cp", "/manager", instanceManagerBinaryPath},
+					Command: []string{"/manager", "copy-binary", instanceManagerBinaryPath},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: controllerVolumeName, MountPath: controllerMountPath},
 					},

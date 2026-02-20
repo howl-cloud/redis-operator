@@ -71,14 +71,13 @@ jobs:
         with:
           context: .
           push: false
+          load: true
           tags: ${{ env.IMAGE_NAME }}:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Smoke-test image
-        run: |
-          docker build -t redis-operator:ci .
-          docker run --rm redis-operator:ci --help
+        run: docker run --rm ${{ env.IMAGE_NAME }}:ci --help
 
   # ── publish (main branch & tags only) ────────────────────────────────────
   publish:
