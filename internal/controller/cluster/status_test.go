@@ -202,7 +202,7 @@ func TestCheckReachability_AllReachable(t *testing.T) {
 		"test-1": {Connected: true},
 	}
 
-	requeue := r.checkReachability(nil, cluster, statuses)
+	requeue := r.checkReachability(context.TODO(), cluster, statuses)
 	assert.False(t, requeue)
 }
 
@@ -216,7 +216,7 @@ func TestCheckReachability_SomeUnreachable(t *testing.T) {
 		"test-1": {Connected: false},
 	}
 
-	requeue := r.checkReachability(nil, cluster, statuses)
+	requeue := r.checkReachability(context.TODO(), cluster, statuses)
 	assert.True(t, requeue)
 }
 
@@ -229,7 +229,7 @@ func TestCheckReachability_FewerStatusesThanExpected(t *testing.T) {
 		"test-0": {Connected: true},
 	}
 
-	requeue := r.checkReachability(nil, cluster, statuses)
+	requeue := r.checkReachability(context.TODO(), cluster, statuses)
 	assert.True(t, requeue)
 }
 
@@ -245,7 +245,7 @@ func TestPollPodStatus_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v1/status", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 

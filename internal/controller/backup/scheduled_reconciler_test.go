@@ -59,7 +59,7 @@ func TestNextScheduleTime_NotYetDue(t *testing.T) {
 	next, err := nextScheduleTime("0 * * * *", &lastSchedule, now)
 	require.NoError(t, err)
 	// Last was 30min ago, interval is 1h, so next is 30min from now.
-	expected := lastSchedule.Time.Add(1 * time.Hour)
+	expected := lastSchedule.Add(1 * time.Hour)
 	assert.Equal(t, expected, next)
 	assert.True(t, next.After(now))
 }

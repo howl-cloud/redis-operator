@@ -86,9 +86,6 @@ func TestReconcile_Creating_EmitsEvent(t *testing.T) {
 	events := drainEvents(recorder)
 	found := false
 	for _, e := range events {
-		if assert.ObjectsAreEqual("", "") {
-			// just check
-		}
 		if containsStr(e, "Creating") {
 			found = true
 			assert.Contains(t, e, "Normal")

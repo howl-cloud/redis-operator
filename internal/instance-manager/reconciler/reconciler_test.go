@@ -60,7 +60,7 @@ func newFakeRedisServer(t *testing.T) (*fakeRedisServer, *redis.Client) {
 	go srv.serve()
 
 	t.Cleanup(func() {
-		ln.Close()
+		_ = ln.Close()
 	})
 
 	client := redis.NewClient(&redis.Options{
@@ -68,7 +68,7 @@ func newFakeRedisServer(t *testing.T) (*fakeRedisServer, *redis.Client) {
 		Protocol:        2, // Use RESP2 to avoid HELLO handshake issues.
 		DisableIdentity: true,
 	})
-	t.Cleanup(func() { client.Close() })
+	t.Cleanup(func() { _ = client.Close() })
 
 	return srv, client
 }
@@ -84,7 +84,7 @@ func (s *fakeRedisServer) serve() {
 }
 
 func (s *fakeRedisServer) handleConn(conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	reader := bufio.NewReader(conn)
 
 	for {
@@ -108,11 +108,11 @@ func (s *fakeRedisServer) handleConn(conn net.Conn) {
 				"$4\r\nmode\r\n$10\r\nstandalone\r\n" +
 				"$4\r\nrole\r\n$6\r\nmaster\r\n" +
 				"$7\r\nmodules\r\n*0\r\n"
-			conn.Write([]byte(resp))
+			_, _ = conn.Write([]byte(resp))
 		case "PING":
-			conn.Write([]byte("+PONG\r\n"))
+			_, _ = conn.Write([]byte("+PONG\r\n"))
 		case "CLIENT":
-			conn.Write([]byte("+OK\r\n"))
+			_, _ = conn.Write([]byte("+OK\r\n"))
 		case "INFO":
 			s.mu.Lock()
 			role := s.role
@@ -124,26 +124,26 @@ func (s *fakeRedisServer) handleConn(conn net.Conn) {
 			} else {
 				info = fmt.Sprintf("# Replication\r\nrole:slave\r\nmaster_link_status:up\r\nslave_repl_offset:%d\r\n", offset)
 			}
-			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(info), info)))
+			_, _ = fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(info), info)
 		case "CONFIG":
 			if len(args) < 2 {
-				conn.Write([]byte("-ERR wrong number of arguments\r\n"))
+				_, _ = conn.Write([]byte("-ERR wrong number of arguments\r\n"))
 				continue
 			}
 			subcmd := strings.ToUpper(args[1])
 			switch subcmd {
 			case "SET":
 				if len(args) < 4 {
-					conn.Write([]byte("-ERR wrong number of arguments\r\n"))
+					_, _ = conn.Write([]byte("-ERR wrong number of arguments\r\n"))
 					continue
 				}
 				s.mu.Lock()
 				s.configValues[args[2]] = args[3]
 				s.mu.Unlock()
-				conn.Write([]byte("+OK\r\n"))
+				_, _ = conn.Write([]byte("+OK\r\n"))
 			case "GET":
 				if len(args) < 3 {
-					conn.Write([]byte("-ERR wrong number of arguments\r\n"))
+					_, _ = conn.Write([]byte("-ERR wrong number of arguments\r\n"))
 					continue
 				}
 				key := args[2]
@@ -151,16 +151,16 @@ func (s *fakeRedisServer) handleConn(conn net.Conn) {
 				val, ok := s.configValues[key]
 				s.mu.Unlock()
 				if ok {
-					conn.Write([]byte(fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(val), val)))
+					_, _ = fmt.Fprintf(conn, "*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(val), val)
 				} else {
-					conn.Write([]byte("*0\r\n"))
+					_, _ = conn.Write([]byte("*0\r\n"))
 				}
 			default:
-				conn.Write([]byte("-ERR unknown CONFIG subcommand\r\n"))
+				_, _ = conn.Write([]byte("-ERR unknown CONFIG subcommand\r\n"))
 			}
 		case "SLAVEOF", "REPLICAOF":
 			if len(args) < 3 {
-				conn.Write([]byte("-ERR wrong number of arguments\r\n"))
+				_, _ = conn.Write([]byte("-ERR wrong number of arguments\r\n"))
 				continue
 			}
 			s.mu.Lock()
@@ -173,18 +173,18 @@ func (s *fakeRedisServer) handleConn(conn net.Conn) {
 				s.role = "slave"
 			}
 			s.mu.Unlock()
-			conn.Write([]byte("+OK\r\n"))
+			_, _ = conn.Write([]byte("+OK\r\n"))
 		case "ACL":
 			if len(args) >= 2 && strings.ToUpper(args[1]) == "LOAD" {
 				s.mu.Lock()
 				s.aclLoaded = true
 				s.mu.Unlock()
-				conn.Write([]byte("+OK\r\n"))
+				_, _ = conn.Write([]byte("+OK\r\n"))
 			} else {
-				conn.Write([]byte("+OK\r\n"))
+				_, _ = conn.Write([]byte("+OK\r\n"))
 			}
 		default:
-			conn.Write([]byte("+OK\r\n"))
+			_, _ = conn.Write([]byte("+OK\r\n"))
 		}
 	}
 }

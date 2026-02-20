@@ -183,7 +183,7 @@ func (r *ClusterReconciler) promoteInstance(ctx context.Context, podIP string) e
 	if err != nil {
 		return fmt.Errorf("POST %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("POST %s returned %d", url, resp.StatusCode)

@@ -143,7 +143,7 @@ func nextScheduleTime(schedule string, lastSchedule *metav1.Time, now time.Time)
 		return now, nil // Run immediately if never run before.
 	}
 
-	next := lastSchedule.Time.Add(interval)
+	next := lastSchedule.Add(interval)
 	if next.Before(now) {
 		return now, nil // Overdue, run now.
 	}
