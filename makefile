@@ -113,4 +113,4 @@ controller-gen: ## Download controller-gen if necessary
 GOLANGCI_LINT = $(GOBIN)/golangci-lint
 .PHONY: golangci-lint
 golangci-lint: ## Download golangci-lint if necessary
-	@test -s $(GOLANGCI_LINT) || go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	@test -s $(GOLANGCI_LINT) || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
