@@ -281,7 +281,7 @@ func TestWritePrometheusMetrics_PartialData(t *testing.T) {
 func TestHandleReadyz_PingSuccess(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { client.Close() })
+	t.Cleanup(func() { _ = client.Close() })
 
 	srv := &Server{
 		redisClient: client,
@@ -299,7 +299,7 @@ func TestHandleReadyz_PingSuccess(t *testing.T) {
 func TestHandleReadyz_PingFails(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { client.Close() })
+	t.Cleanup(func() { _ = client.Close() })
 
 	// Close miniredis to make PING fail.
 	mr.Close()
@@ -337,14 +337,14 @@ func newFakeRedisForStatus(t *testing.T, role string, offset int64) (*fakeRedisF
 		offset:   offset,
 	}
 	go srv.serve()
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 
 	client := goredis.NewClient(&goredis.Options{
 		Addr:            ln.Addr().String(),
 		Protocol:        2,
 		DisableIdentity: true,
 	})
-	t.Cleanup(func() { client.Close() })
+	t.Cleanup(func() { _ = client.Close() })
 	return srv, client
 }
 
@@ -359,7 +359,7 @@ func (s *fakeRedisForStatus) serve() {
 }
 
 func (s *fakeRedisForStatus) handleConn(conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	reader := bufio.NewReader(conn)
 	for {
 		args, err := readCommand(reader)
@@ -380,11 +380,11 @@ func (s *fakeRedisForStatus) handleConn(conn net.Conn) {
 				"$4\r\nmode\r\n$10\r\nstandalone\r\n" +
 				"$4\r\nrole\r\n$6\r\nmaster\r\n" +
 				"$7\r\nmodules\r\n*0\r\n"
-			conn.Write([]byte(resp))
+			_, _ = conn.Write([]byte(resp))
 		case "PING":
-			conn.Write([]byte("+PONG\r\n"))
+			_, _ = conn.Write([]byte("+PONG\r\n"))
 		case "CLIENT":
-			conn.Write([]byte("+OK\r\n"))
+			_, _ = conn.Write([]byte("+OK\r\n"))
 		case "INFO":
 			var info string
 			if len(args) > 1 && strings.ToLower(args[1]) == "replication" {
@@ -401,9 +401,9 @@ func (s *fakeRedisForStatus) handleConn(conn net.Conn) {
 					"# Replication\r\nrole:master\r\nconnected_slaves:2\r\nmaster_repl_offset:9999\r\n" +
 					"# Stats\r\nkeyspace_hits:50\r\nkeyspace_misses:10\r\ntotal_commands_processed:100\r\n"
 			}
-			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(info), info)))
+			_, _ = fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(info), info)
 		default:
-			conn.Write([]byte("+OK\r\n"))
+			_, _ = conn.Write([]byte("+OK\r\n"))
 		}
 	}
 }
@@ -530,7 +530,7 @@ func TestHandleMetrics_WithRedisInfo(t *testing.T) {
 func TestHandleMetrics_RedisDown(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { client.Close() })
+	t.Cleanup(func() { _ = client.Close() })
 	mr.Close()
 
 	srv := &Server{

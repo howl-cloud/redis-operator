@@ -73,7 +73,7 @@ func pollPodStatus(ctx context.Context, httpClient *http.Client, url string) (*p
 	if err != nil {
 		return nil, fmt.Errorf("HTTP GET %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP GET %s returned %d", url, resp.StatusCode)

@@ -7,7 +7,7 @@ BINARY ?= manager
 
 # Tool versions
 CONTROLLER_GEN_VERSION ?= v0.20.1
-GOLANGCI_LINT_VERSION ?= v1.60.1
+GOLANGCI_LINT_VERSION ?= v2.10.1
 
 # Get the currently used golang install path
 GOBIN ?= $(shell go env GOPATH)/bin
@@ -113,4 +113,4 @@ controller-gen: ## Download controller-gen if necessary
 GOLANGCI_LINT = $(GOBIN)/golangci-lint
 .PHONY: golangci-lint
 golangci-lint: ## Download golangci-lint if necessary
-	@test -s $(GOLANGCI_LINT) || go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	@test -s $(GOLANGCI_LINT) || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)

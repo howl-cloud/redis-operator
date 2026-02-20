@@ -360,7 +360,7 @@ func TestPromoteInstance_Success(t *testing.T) {
 	// Direct test: just verify httptest handler is correct.
 	resp, err := http.Post(fmt.Sprintf("%s/v1/promote", srv.URL), "", nil)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -372,7 +372,7 @@ func TestPromoteInstance_ServerError(t *testing.T) {
 
 	resp, err := http.Post(fmt.Sprintf("%s/v1/promote", srv.URL), "", nil)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 }
 

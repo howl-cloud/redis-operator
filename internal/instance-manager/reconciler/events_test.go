@@ -15,17 +15,6 @@ import (
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 )
 
-// expectEvent asserts the next event on the recorder's channel contains the given substring.
-func expectEvent(t *testing.T, recorder *record.FakeRecorder, contains string) {
-	t.Helper()
-	select {
-	case event := <-recorder.Events:
-		assert.Contains(t, event, contains)
-	default:
-		t.Fatalf("expected event containing %q but none received", contains)
-	}
-}
-
 // expectNoEvent asserts that no events remain on the recorder's channel.
 func expectNoEvent(t *testing.T, recorder *record.FakeRecorder) {
 	t.Helper()

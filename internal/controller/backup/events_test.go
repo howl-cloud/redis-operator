@@ -11,7 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"time"
@@ -19,44 +18,7 @@ import (
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 )
 
-// newBackupReconcilerWithRecorder is like newBackupReconciler but returns the FakeRecorder.
-func newBackupReconcilerWithRecorder(objs ...client.Object) (*BackupReconciler, client.Client, *record.FakeRecorder) {
-	scheme := testScheme()
-	builder := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithStatusSubresource(&redisv1.RedisBackup{}, &redisv1.RedisScheduledBackup{})
-	if len(objs) > 0 {
-		builder = builder.WithObjects(objs...)
-	}
-	c := builder.Build()
-	recorder := record.NewFakeRecorder(100)
-	return NewBackupReconciler(c, scheme, recorder), c, recorder
-}
 
-// newScheduledReconcilerWithRecorder is like newScheduledReconciler but returns the FakeRecorder.
-func newScheduledReconcilerWithRecorder(objs ...client.Object) (*ScheduledBackupReconciler, client.Client, *record.FakeRecorder) {
-	scheme := testScheme()
-	builder := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithStatusSubresource(&redisv1.RedisBackup{}, &redisv1.RedisScheduledBackup{})
-	if len(objs) > 0 {
-		builder = builder.WithObjects(objs...)
-	}
-	c := builder.Build()
-	recorder := record.NewFakeRecorder(100)
-	return NewScheduledBackupReconciler(c, scheme, recorder), c, recorder
-}
-
-// expectEvent asserts that the next event on the recorder's channel contains the given substring.
-func expectEvent(t *testing.T, recorder *record.FakeRecorder, contains string) {
-	t.Helper()
-	select {
-	case event := <-recorder.Events:
-		assert.Contains(t, event, contains)
-	default:
-		t.Fatalf("expected event containing %q but none received", contains)
-	}
-}
 
 // expectNoEvent asserts that no events remain on the recorder's channel.
 func expectNoEvent(t *testing.T, recorder *record.FakeRecorder) {
@@ -110,19 +72,14 @@ func TestReconcile_ClusterNotFound_EmitsBackupFailedEvent(t *testing.T) {
 		Spec:       redisv1.RedisBackupSpec{ClusterName: "missing-cluster"},
 	}
 
-	_, _, recorder := newBackupReconcilerWithRecorder(backup)
-	r, _, _ := newBackupReconcilerWithRecorder(backup)
-	// Re-create to get a single reconciler with the same recorder.
-	// Actually, let's just use the recorder from the first call:
 	scheme := testScheme()
-	builder := fake.NewClientBuilder().
+	c := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&redisv1.RedisBackup{}, &redisv1.RedisScheduledBackup{}).
-		WithObjects(backup)
-	c := builder.Build()
+		WithObjects(backup).
+		Build()
 	rec := record.NewFakeRecorder(100)
-	r = NewBackupReconciler(c, scheme, rec)
-	_ = recorder
+	r := NewBackupReconciler(c, scheme, rec)
 
 	ctx := context.Background()
 	_, err := r.Reconcile(ctx, reconcile.Request{

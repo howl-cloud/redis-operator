@@ -96,7 +96,7 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 	redisClient := redis.NewClient(&redis.Options{
 		Addr: fmt.Sprintf("127.0.0.1:%d", redisPort),
 	})
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 
 	// Step 7: Start HTTP server (goroutine).
 	srv := webserver.NewServer(

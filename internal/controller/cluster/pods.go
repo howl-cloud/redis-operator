@@ -8,7 +8,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -326,8 +325,4 @@ func podIndex(clusterName, podName string) int {
 	suffix := podName[len(clusterName)+1:]
 	idx, _ := strconv.Atoi(suffix)
 	return idx
-}
-
-func quantityPtr(q resource.Quantity) *resource.Quantity {
-	return &q
 }

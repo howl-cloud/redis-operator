@@ -103,12 +103,12 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 		// Process is running if we can signal 0
 		if cmd.ProcessState == nil {
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, "ok")
+			_, _ = fmt.Fprint(w, "ok")
 			return
 		}
 	}
 	w.WriteHeader(http.StatusServiceUnavailable)
-	fmt.Fprint(w, "redis-server not running")
+	_, _ = fmt.Fprint(w, "redis-server not running")
 }
 
 // handleReadyz checks that Redis responds to PING and is reachable.
@@ -116,11 +116,11 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := s.redisClient.Ping(ctx).Err(); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		fmt.Fprintf(w, "redis not ready: %v", err)
+		_, _ = fmt.Fprintf(w, "redis not ready: %v", err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "ok")
+	_, _ = fmt.Fprint(w, "ok")
 }
 
 // handleStatus returns JSON status for the operator's status collection.
@@ -149,7 +149,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handlePromote issues REPLICAOF NO ONE.
@@ -165,7 +165,7 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "promoted")
+	_, _ = fmt.Fprint(w, "promoted")
 }
 
 // handleDemote issues REPLICAOF <primary> 6379.
@@ -197,7 +197,7 @@ func (s *Server) handleDemote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "demoted")
+	_, _ = fmt.Fprint(w, "demoted")
 }
 
 // handleMetrics exposes Redis metrics in Prometheus exposition format.
@@ -249,9 +249,9 @@ func writePrometheusMetrics(w http.ResponseWriter, info string) {
 		if !ok {
 			continue
 		}
-		fmt.Fprintf(w, "# HELP %s %s\n", name, m.help)
-		fmt.Fprintf(w, "# TYPE %s %s\n", name, m.mtype)
-		fmt.Fprintf(w, "%s %s\n", name, val)
+		_, _ = fmt.Fprintf(w, "# HELP %s %s\n", name, m.help)
+		_, _ = fmt.Fprintf(w, "# TYPE %s %s\n", name, m.mtype)
+		_, _ = fmt.Fprintf(w, "%s %s\n", name, val)
 	}
 
 	// Role as a numeric gauge.
@@ -260,8 +260,8 @@ func writePrometheusMetrics(w http.ResponseWriter, info string) {
 		if role == "master" {
 			roleVal = "1"
 		}
-		fmt.Fprint(w, "# HELP redis_replication_role Replication role (0=replica, 1=primary)\n")
-		fmt.Fprint(w, "# TYPE redis_replication_role gauge\n")
-		fmt.Fprintf(w, "redis_replication_role %s\n", roleVal)
+		_, _ = fmt.Fprint(w, "# HELP redis_replication_role Replication role (0=replica, 1=primary)\n")
+		_, _ = fmt.Fprint(w, "# TYPE redis_replication_role gauge\n")
+		_, _ = fmt.Fprintf(w, "redis_replication_role %s\n", roleVal)
 	}
 }

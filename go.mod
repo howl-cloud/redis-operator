@@ -1,6 +1,6 @@
 module github.com/howl-cloud/redis-operator
 
-go 1.25.5
+go 1.25.1
 
 require (
 	github.com/alicebob/miniredis/v2 v2.36.1

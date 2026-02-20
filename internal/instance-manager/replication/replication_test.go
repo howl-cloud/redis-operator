@@ -39,14 +39,14 @@ func newFakeRedisServer(t *testing.T, role string, offset int64, linkStatus stri
 		linkStatus: linkStatus,
 	}
 	go srv.serve()
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 
 	client := redis.NewClient(&redis.Options{
 		Addr:            ln.Addr().String(),
 		Protocol:        2,
 		DisableIdentity: true,
 	})
-	t.Cleanup(func() { client.Close() })
+	t.Cleanup(func() { _ = client.Close() })
 
 	return srv, client
 }
@@ -62,7 +62,7 @@ func (s *fakeRedisServer) serve() {
 }
 
 func (s *fakeRedisServer) handleConn(conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	reader := bufio.NewReader(conn)
 
 	for {
@@ -84,11 +84,11 @@ func (s *fakeRedisServer) handleConn(conn net.Conn) {
 				"$4\r\nmode\r\n$10\r\nstandalone\r\n" +
 				"$4\r\nrole\r\n$6\r\nmaster\r\n" +
 				"$7\r\nmodules\r\n*0\r\n"
-			conn.Write([]byte(resp))
+			_, _ = conn.Write([]byte(resp))
 		case "PING":
-			conn.Write([]byte("+PONG\r\n"))
+			_, _ = conn.Write([]byte("+PONG\r\n"))
 		case "CLIENT":
-			conn.Write([]byte("+OK\r\n"))
+			_, _ = conn.Write([]byte("+OK\r\n"))
 		case "INFO":
 			s.mu.Lock()
 			role := s.role
@@ -101,10 +101,10 @@ func (s *fakeRedisServer) handleConn(conn net.Conn) {
 			} else {
 				info = fmt.Sprintf("# Replication\r\nrole:slave\r\nmaster_link_status:%s\r\nslave_repl_offset:%d\r\nmaster_last_io_seconds_ago:0\r\n", link, offset)
 			}
-			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(info), info)))
+			_, _ = fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(info), info)
 		case "SLAVEOF", "REPLICAOF":
 			if len(args) < 3 {
-				conn.Write([]byte("-ERR wrong number of arguments\r\n"))
+				_, _ = conn.Write([]byte("-ERR wrong number of arguments\r\n"))
 				continue
 			}
 			s.mu.Lock()
@@ -117,9 +117,9 @@ func (s *fakeRedisServer) handleConn(conn net.Conn) {
 				s.role = "slave"
 			}
 			s.mu.Unlock()
-			conn.Write([]byte("+OK\r\n"))
+			_, _ = conn.Write([]byte("+OK\r\n"))
 		default:
-			conn.Write([]byte("+OK\r\n"))
+			_, _ = conn.Write([]byte("+OK\r\n"))
 		}
 	}
 }
@@ -290,7 +290,7 @@ func TestGetInfo_Slave(t *testing.T) {
 
 func TestGetInfo_ErrorOnClosedClient(t *testing.T) {
 	_, client := newFakeRedisServer(t, "master", 0, "")
-	client.Close()
+	_ = client.Close()
 	ctx := context.Background()
 
 	_, err := GetInfo(ctx, client)
@@ -347,7 +347,7 @@ func TestReplicationOffset_Slave(t *testing.T) {
 
 func TestReplicationOffset_ErrorOnClosedClient(t *testing.T) {
 	_, client := newFakeRedisServer(t, "master", 0, "")
-	client.Close()
+	_ = client.Close()
 	ctx := context.Background()
 
 	_, err := ReplicationOffset(ctx, client)
@@ -383,7 +383,7 @@ func TestIsConnectedToPrimary_Master(t *testing.T) {
 
 func TestIsConnectedToPrimary_ErrorOnClosedClient(t *testing.T) {
 	_, client := newFakeRedisServer(t, "master", 0, "")
-	client.Close()
+	_ = client.Close()
 	ctx := context.Background()
 
 	_, err := IsConnectedToPrimary(ctx, client)

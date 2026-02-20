@@ -31,12 +31,12 @@ func GetInfo(ctx context.Context, client *redis.Client) (*Info, error) {
 
 // SetReplicaOf issues REPLICAOF <primaryIP> <port>.
 func SetReplicaOf(ctx context.Context, client *redis.Client, primaryIP string, port int) error {
-	return client.SlaveOf(ctx, primaryIP, strconv.Itoa(port)).Err()
+	return client.SlaveOf(ctx, primaryIP, strconv.Itoa(port)).Err() //nolint:staticcheck // go-redis v9.18 exposes only SlaveOf; ReplicaOf is not yet available.
 }
 
 // Promote issues REPLICAOF NO ONE to promote this instance to primary.
 func Promote(ctx context.Context, client *redis.Client) error {
-	return client.SlaveOf(ctx, "NO", "ONE").Err()
+	return client.SlaveOf(ctx, "NO", "ONE").Err() //nolint:staticcheck // go-redis v9.18 exposes only SlaveOf; ReplicaOf is not yet available.
 }
 
 // ReplicationOffset returns the current replication offset.
