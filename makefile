@@ -7,7 +7,7 @@ BINARY ?= manager
 
 # Tool versions
 CONTROLLER_GEN_VERSION ?= v0.20.1
-GOLANGCI_LINT_VERSION ?= v1.60.1
+GOLANGCI_LINT_VERSION ?= v1.64.1
 
 # Get the currently used golang install path
 GOBIN ?= $(shell go env GOPATH)/bin
