@@ -18,8 +18,6 @@ import (
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 )
 
-
-
 // expectNoEvent asserts that no events remain on the recorder's channel.
 func expectNoEvent(t *testing.T, recorder *record.FakeRecorder) {
 	t.Helper()

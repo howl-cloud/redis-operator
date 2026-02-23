@@ -27,7 +27,7 @@ func TestRollingUpdate_NoOutdatedPods(t *testing.T) {
 				Labels: map[string]string{
 					redisv1.LabelCluster:  "test",
 					redisv1.LabelInstance: "test-0",
-					"redis.io/spec-hash": desiredHash,
+					"redis.io/spec-hash":  desiredHash,
 				},
 			},
 		},
@@ -38,7 +38,7 @@ func TestRollingUpdate_NoOutdatedPods(t *testing.T) {
 				Labels: map[string]string{
 					redisv1.LabelCluster:  "test",
 					redisv1.LabelInstance: "test-1",
-					"redis.io/spec-hash": desiredHash,
+					"redis.io/spec-hash":  desiredHash,
 				},
 			},
 		},
@@ -49,7 +49,7 @@ func TestRollingUpdate_NoOutdatedPods(t *testing.T) {
 				Labels: map[string]string{
 					redisv1.LabelCluster:  "test",
 					redisv1.LabelInstance: "test-2",
-					"redis.io/spec-hash": desiredHash,
+					"redis.io/spec-hash":  desiredHash,
 				},
 			},
 		},

@@ -625,6 +625,44 @@ func TestCreatePod_WithoutSecrets(t *testing.T) {
 	}
 }
 
+func TestCreateSentinelPod_WithAuthSecretProjectsPassword(t *testing.T) {
+	cluster := newTestCluster("test", "default", 1)
+	cluster.Spec.Mode = redisv1.ClusterModeSentinel
+	cluster.Spec.AuthSecret = &redisv1.LocalObjectReference{Name: "auth-secret"}
+
+	r, c := newReconciler(cluster)
+	ctx := context.Background()
+
+	err := r.createSentinelPod(ctx, cluster, "test-sentinel-0")
+	require.NoError(t, err)
+
+	var pod corev1.Pod
+	err = c.Get(ctx, types.NamespacedName{Name: "test-sentinel-0", Namespace: "default"}, &pod)
+	require.NoError(t, err)
+
+	foundProjected := false
+	for _, vol := range pod.Spec.Volumes {
+		if vol.Name != projectedVolumeName {
+			continue
+		}
+		foundProjected = true
+		require.NotNil(t, vol.Projected)
+		require.Len(t, vol.Projected.Sources, 1)
+		require.NotNil(t, vol.Projected.Sources[0].Secret)
+		assert.Equal(t, "auth-secret", vol.Projected.Sources[0].Secret.Name)
+	}
+	assert.True(t, foundProjected, "projected volume should be present on sentinel pod")
+
+	foundMount := false
+	for _, mount := range pod.Spec.Containers[0].VolumeMounts {
+		if mount.Name == projectedVolumeName && mount.MountPath == projectedMountPath {
+			foundMount = true
+			break
+		}
+	}
+	assert.True(t, foundMount, "projected volume mount should be present on sentinel pod")
+}
+
 func TestCreatePod_ContainerSpec(t *testing.T) {
 	cluster := newTestCluster("test", "default", 1)
 	pvc := &corev1.PersistentVolumeClaim{

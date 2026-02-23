@@ -417,7 +417,7 @@ func TestReconcileConfig_SkipsRestartKeys(t *testing.T) {
 		Spec: redisv1.RedisClusterSpec{
 			Redis: map[string]string{
 				"bind":      "127.0.0.1", // requires restart -- should be skipped
-				"maxmemory": "128mb",      // does not require restart
+				"maxmemory": "128mb",     // does not require restart
 			},
 		},
 	}

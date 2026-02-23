@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -19,21 +20,31 @@ func (r *ClusterReconciler) reconcileServices(ctx context.Context, cluster *redi
 	if err := r.ensureService(ctx, cluster, leaderServiceName(cluster.Name), map[string]string{
 		redisv1.LabelCluster: cluster.Name,
 		redisv1.LabelRole:    redisv1.LabelRolePrimary,
-	}); err != nil {
+	}, 6379); err != nil {
 		return fmt.Errorf("leader service: %w", err)
 	}
 
 	if err := r.ensureService(ctx, cluster, replicaServiceName(cluster.Name), map[string]string{
 		redisv1.LabelCluster: cluster.Name,
 		redisv1.LabelRole:    redisv1.LabelRoleReplica,
-	}); err != nil {
+	}, 6379); err != nil {
 		return fmt.Errorf("replica service: %w", err)
 	}
 
 	if err := r.ensureService(ctx, cluster, anyServiceName(cluster.Name), map[string]string{
-		redisv1.LabelCluster: cluster.Name,
-	}); err != nil {
+		redisv1.LabelCluster:  cluster.Name,
+		redisv1.LabelWorkload: redisv1.LabelWorkloadData,
+	}, 6379); err != nil {
 		return fmt.Errorf("any service: %w", err)
+	}
+
+	if cluster.Spec.Mode == redisv1.ClusterModeSentinel {
+		if err := r.ensureService(ctx, cluster, sentinelServiceName(cluster.Name), map[string]string{
+			redisv1.LabelCluster: cluster.Name,
+			redisv1.LabelRole:    redisv1.LabelRoleSentinel,
+		}, redisv1.SentinelPort); err != nil {
+			return fmt.Errorf("sentinel service: %w", err)
+		}
 	}
 
 	// Update leader service selector to point to current primary.
@@ -45,13 +56,30 @@ func (r *ClusterReconciler) reconcileServices(ctx context.Context, cluster *redi
 }
 
 // ensureService creates or verifies a Service exists.
-func (r *ClusterReconciler) ensureService(ctx context.Context, cluster *redisv1.RedisCluster, name string, selector map[string]string) error {
+func (r *ClusterReconciler) ensureService(ctx context.Context, cluster *redisv1.RedisCluster, name string, selector map[string]string, port int32) error {
 	var existing corev1.Service
 	err := r.Get(ctx, types.NamespacedName{
 		Name: name, Namespace: cluster.Namespace,
 	}, &existing)
 	if err == nil {
-		return nil
+		desiredPorts := []corev1.ServicePort{
+			{
+				Name:       "redis",
+				Port:       port,
+				TargetPort: intstr.FromInt32(port),
+				Protocol:   corev1.ProtocolTCP,
+			},
+		}
+
+		if reflect.DeepEqual(existing.Spec.Selector, selector) &&
+			reflect.DeepEqual(existing.Spec.Ports, desiredPorts) {
+			return nil
+		}
+
+		patch := client.MergeFrom(existing.DeepCopy())
+		existing.Spec.Selector = selector
+		existing.Spec.Ports = desiredPorts
+		return r.Patch(ctx, &existing, patch)
 	}
 	if !errors.IsNotFound(err) {
 		return err
@@ -70,8 +98,8 @@ func (r *ClusterReconciler) ensureService(ctx context.Context, cluster *redisv1.
 			Ports: []corev1.ServicePort{
 				{
 					Name:       "redis",
-					Port:       6379,
-					TargetPort: intstr.FromInt32(6379),
+					Port:       port,
+					TargetPort: intstr.FromInt32(port),
 					Protocol:   corev1.ProtocolTCP,
 				},
 			},
@@ -115,4 +143,8 @@ func replicaServiceName(clusterName string) string {
 
 func anyServiceName(clusterName string) string {
 	return clusterName + "-any"
+}
+
+func sentinelServiceName(clusterName string) string {
+	return clusterName + "-sentinel"
 }

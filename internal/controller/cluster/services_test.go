@@ -22,7 +22,7 @@ func TestEnsureService_Creates(t *testing.T) {
 		redisv1.LabelCluster: "test",
 		redisv1.LabelRole:    redisv1.LabelRolePrimary,
 	}
-	err := r.ensureService(ctx, cluster, "test-leader", selector)
+	err := r.ensureService(ctx, cluster, "test-leader", selector, 6379)
 	require.NoError(t, err)
 
 	var svc corev1.Service
@@ -44,8 +44,59 @@ func TestEnsureService_AlreadyExists(t *testing.T) {
 	selector := map[string]string{redisv1.LabelCluster: "test"}
 
 	// Call twice -- second should be a no-op.
-	require.NoError(t, r.ensureService(ctx, cluster, "test-any", selector))
-	require.NoError(t, r.ensureService(ctx, cluster, "test-any", selector))
+	require.NoError(t, r.ensureService(ctx, cluster, "test-any", selector, 6379))
+	require.NoError(t, r.ensureService(ctx, cluster, "test-any", selector, 6379))
+}
+
+func TestEnsureService_UpdatesExistingSelector(t *testing.T) {
+	cluster := newTestCluster("test", "default", 1)
+	existing := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-any",
+			Namespace: "default",
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+				redisv1.LabelCluster: "test",
+			},
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "redis",
+					Port:       6379,
+					TargetPort: intOrString(6379),
+				},
+			},
+		},
+	}
+	r, c := newReconciler(cluster, existing)
+	ctx := context.Background()
+
+	desiredSelector := map[string]string{
+		redisv1.LabelCluster:  "test",
+		redisv1.LabelWorkload: redisv1.LabelWorkloadData,
+	}
+	require.NoError(t, r.ensureService(ctx, cluster, "test-any", desiredSelector, 6379))
+
+	var svc corev1.Service
+	err := c.Get(ctx, types.NamespacedName{Name: "test-any", Namespace: "default"}, &svc)
+	require.NoError(t, err)
+	assert.Equal(t, desiredSelector, svc.Spec.Selector)
+}
+
+func TestReconcileServices_AnyServiceTargetsDataWorkload(t *testing.T) {
+	cluster := newTestCluster("test", "default", 3)
+	cluster.Spec.Mode = redisv1.ClusterModeSentinel
+	r, c := newReconciler(cluster)
+	ctx := context.Background()
+
+	err := r.reconcileServices(ctx, cluster)
+	require.NoError(t, err)
+
+	var anySvc corev1.Service
+	err = c.Get(ctx, types.NamespacedName{Name: "test-any", Namespace: "default"}, &anySvc)
+	require.NoError(t, err)
+
+	assert.Equal(t, redisv1.LabelWorkloadData, anySvc.Spec.Selector[redisv1.LabelWorkload])
 }
 
 func TestUpdateLeaderServiceSelector_Updates(t *testing.T) {

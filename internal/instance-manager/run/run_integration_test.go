@@ -46,13 +46,12 @@ func TestWriteRedisConf_StartsServer(t *testing.T) {
 	container, err := testcontainers.Run(
 		ctx,
 		"redis:7.2",
-		testcontainers.WithExposedPorts("6379/tcp"),
 		testcontainers.WithMounts(
 			testcontainers.BindMount(dataDirPath, testcontainers.ContainerMountTarget(dataDirPath)),
 		),
 		testcontainers.WithCmd("redis-server", filepath.Join(dataDirPath, "redis.conf")),
 		testcontainers.WithWaitStrategy(
-			wait.ForListeningPort("6379/tcp").WithStartupTimeout(60*time.Second),
+			wait.ForLog("Ready to accept connections").WithStartupTimeout(60*time.Second),
 		),
 	)
 	require.NoError(t, err)
@@ -60,14 +59,11 @@ func TestWriteRedisConf_StartsServer(t *testing.T) {
 		_ = container.Terminate(context.Background())
 	})
 
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-
-	mappedPort, err := container.MappedPort(ctx, "6379/tcp")
+	containerIP, err := container.ContainerIP(ctx)
 	require.NoError(t, err)
 
 	client := redis.NewClient(&redis.Options{
-		Addr: net.JoinHostPort(host, mappedPort.Port()),
+		Addr: net.JoinHostPort(containerIP, "6379"),
 	})
 	t.Cleanup(func() {
 		_ = client.Close()

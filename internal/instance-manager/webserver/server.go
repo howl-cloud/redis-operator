@@ -33,9 +33,12 @@ type Server struct {
 	listenAddr  string
 	promoteFunc func(ctx context.Context) error
 	demoteFunc  func(ctx context.Context, primaryIP string, port int) error
+	processName string
 
 	mu       sync.RWMutex
 	redisCmd *exec.Cmd
+
+	exposeDataEndpoints bool
 }
 
 // NewServer creates a new HTTP server.
@@ -46,14 +49,28 @@ func NewServer(
 	demoteFunc func(ctx context.Context, primaryIP string, port int) error,
 ) *Server {
 	return &Server{
-		redisClient: redisClient,
-		listenAddr:  listenAddr,
-		promoteFunc: promoteFunc,
-		demoteFunc:  demoteFunc,
+		redisClient:         redisClient,
+		listenAddr:          listenAddr,
+		promoteFunc:         promoteFunc,
+		demoteFunc:          demoteFunc,
+		processName:         "redis-server",
+		exposeDataEndpoints: true,
 	}
 }
 
-// SetRedisCmd sets the current redis-server process for liveness checks.
+// NewSentinelServer creates an HTTP server for sentinel pods.
+func NewSentinelServer(redisClient *redis.Client, listenAddr string, sentinelCmd *exec.Cmd) *Server {
+	srv := &Server{
+		redisClient:         redisClient,
+		listenAddr:          listenAddr,
+		processName:         "redis-sentinel",
+		exposeDataEndpoints: false,
+	}
+	srv.SetRedisCmd(sentinelCmd)
+	return srv
+}
+
+// SetRedisCmd sets the current supervised process for liveness checks.
 func (s *Server) SetRedisCmd(cmd *exec.Cmd) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -66,10 +83,12 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
-	mux.HandleFunc("/metrics", s.handleMetrics)
-	mux.HandleFunc("/v1/status", s.handleStatus)
-	mux.HandleFunc("/v1/promote", s.handlePromote)
-	mux.HandleFunc("/v1/demote", s.handleDemote)
+	if s.exposeDataEndpoints {
+		mux.HandleFunc("/metrics", s.handleMetrics)
+		mux.HandleFunc("/v1/status", s.handleStatus)
+		mux.HandleFunc("/v1/promote", s.handlePromote)
+		mux.HandleFunc("/v1/demote", s.handleDemote)
+	}
 
 	srv := &http.Server{
 		Addr:              s.listenAddr,
@@ -93,11 +112,15 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// handleHealthz checks that redis-server is alive.
+// handleHealthz checks that the supervised redis process is alive.
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	s.mu.RLock()
 	cmd := s.redisCmd
 	s.mu.RUnlock()
+	processName := s.processName
+	if processName == "" {
+		processName = "redis-server"
+	}
 
 	if cmd != nil && cmd.Process != nil {
 		// Process is running if we can signal 0
@@ -108,7 +131,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = fmt.Fprint(w, "redis-server not running")
+	_, _ = fmt.Fprintf(w, "%s not running", processName)
 }
 
 // handleReadyz checks that Redis responds to PING and is reachable.

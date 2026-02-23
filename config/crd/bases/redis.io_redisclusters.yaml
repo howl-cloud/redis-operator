@@ -1063,7 +1063,6 @@ spec:
                 enum:
                 - standalone
                 - sentinel
-                - cluster
                 type: string
               nodeSelector:
                 additionalProperties:
@@ -1515,6 +1514,11 @@ spec:
                   SecretsResourceVersion maps secret names to their ResourceVersion.
                   Used to detect secret rotation and trigger reconciliation.
                 type: object
+              sentinelReadyInstances:
+                description: SentinelReadyInstances is the count of sentinel pods
+                  passing readiness probes.
+                format: int32
+                type: integer
             type: object
         type: object
     served: true

@@ -7,13 +7,14 @@ import (
 )
 
 // ClusterMode defines the Redis operating mode.
-// +kubebuilder:validation:Enum=standalone;sentinel;cluster
+// +kubebuilder:validation:Enum=standalone;sentinel
 type ClusterMode string
 
 const (
 	ClusterModeStandalone ClusterMode = "standalone"
 	ClusterModeSentinel   ClusterMode = "sentinel"
-	ClusterModeCluster    ClusterMode = "cluster"
+	// ClusterModeCluster is reserved for future use and currently rejected by the webhook.
+	ClusterModeCluster ClusterMode = "cluster"
 )
 
 // ClusterPhase represents the human-readable phase of a RedisCluster.
@@ -26,8 +27,8 @@ const (
 	ClusterPhaseFailingOver ClusterPhase = "FailingOver"
 	ClusterPhaseScaling     ClusterPhase = "Scaling"
 	ClusterPhaseUpdating    ClusterPhase = "Updating"
-	ClusterPhaseDeleting     ClusterPhase = "Deleting"
-	ClusterPhaseHibernating  ClusterPhase = "Hibernating"
+	ClusterPhaseDeleting    ClusterPhase = "Deleting"
+	ClusterPhaseHibernating ClusterPhase = "Hibernating"
 )
 
 // Condition types for RedisCluster.
@@ -51,11 +52,22 @@ const (
 
 // Labels used by the operator.
 const (
-	LabelCluster     = "redis.io/cluster"
-	LabelInstance    = "redis.io/instance"
-	LabelRole        = "redis.io/role"
-	LabelRolePrimary = "primary"
-	LabelRoleReplica = "replica"
+	LabelCluster          = "redis.io/cluster"
+	LabelInstance         = "redis.io/instance"
+	LabelRole             = "redis.io/role"
+	LabelRolePrimary      = "primary"
+	LabelRoleReplica      = "replica"
+	LabelRoleSentinel     = "sentinel"
+	LabelWorkload         = "redis.io/workload"
+	LabelWorkloadData     = "data"
+	LabelWorkloadSentinel = "sentinel"
+)
+
+// Sentinel defaults for sentinel mode.
+const (
+	SentinelPort      = 26379
+	SentinelInstances = 3
+	SentinelQuorum    = 2
 )
 
 // RedisClusterSpec defines the desired state of a Redis replication cluster.
@@ -198,6 +210,9 @@ type RedisClusterStatus struct {
 
 	// ReadyInstances is the count of pods passing readiness probes.
 	ReadyInstances int32 `json:"readyInstances,omitempty"`
+
+	// SentinelReadyInstances is the count of sentinel pods passing readiness probes.
+	SentinelReadyInstances int32 `json:"sentinelReadyInstances,omitempty"`
 
 	// Instances is the total number of managed pods.
 	Instances int32 `json:"instances,omitempty"`

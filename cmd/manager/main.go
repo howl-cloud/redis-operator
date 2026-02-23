@@ -63,11 +63,12 @@ func instanceCmd() *cobra.Command {
 	var clusterName string
 	var podName string
 	var podNamespace string
+	var role string
 
 	cmd := &cobra.Command{
 		Use:   "instance",
 		Short: "Run the in-pod instance manager",
-		Long:  "Supervises redis-server, runs the reconcile loop and HTTP server inside a Redis pod.",
+		Long:  "Supervises redis-server or redis-sentinel, and runs HTTP health endpoints inside the pod.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := ctrl.SetupSignalHandler()
 
@@ -86,13 +87,21 @@ func instanceCmd() *cobra.Command {
 				return fmt.Errorf("--cluster-name, --pod-name, and --pod-namespace are required (or set CLUSTER_NAME, POD_NAME, POD_NAMESPACE env vars)")
 			}
 
-			return run.Run(ctx, clusterName, podName, podNamespace)
+			switch role {
+			case "data":
+				return run.Run(ctx, clusterName, podName, podNamespace)
+			case "sentinel":
+				return run.RunSentinel(ctx, clusterName, podName, podNamespace)
+			default:
+				return fmt.Errorf("invalid --role %q: must be one of data,sentinel", role)
+			}
 		},
 	}
 
 	cmd.Flags().StringVar(&clusterName, "cluster-name", "", "Name of the RedisCluster CR")
 	cmd.Flags().StringVar(&podName, "pod-name", "", "Name of this pod")
 	cmd.Flags().StringVar(&podNamespace, "pod-namespace", "", "Namespace of this pod")
+	cmd.Flags().StringVar(&role, "role", "data", "Role for this instance manager process: data or sentinel")
 
 	return cmd
 }

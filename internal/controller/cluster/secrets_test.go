@@ -179,8 +179,8 @@ func TestUsesSecret_MatchingAndNonMatching(t *testing.T) {
 	cluster := &redisv1.RedisCluster{
 		Status: redisv1.RedisClusterStatus{
 			SecretsResourceVersion: map[string]string{
-				"auth":   "1",
-				"tls":    "2",
+				"auth": "1",
+				"tls":  "2",
 			},
 		},
 	}

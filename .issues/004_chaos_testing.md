@@ -7,7 +7,7 @@ labels: [production-readiness, testing, reliability]
 created: 2026-02-19
 updated: 2026-02-19
 depends_on: [2, 3]
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -16,13 +16,13 @@ The split-brain prevention mechanism (fencing annotation + boot-time `currentPri
 
 ## Acceptance Criteria
 
-- [ ] **Primary kill**: delete the primary Pod mid-write — operator detects, fences, promotes a replica, former primary rejoins as replica on restart without split-brain
-- [ ] **Network partition**: isolate the primary Pod from the API server — operator fences and promotes; isolated primary cannot accept writes due to fencing
-- [ ] **Operator restart mid-failover**: kill the operator Pod during step 3 of the failover sequence — system converges correctly on restart
-- [ ] **Simultaneous replica failures**: lose all replicas — cluster degrades gracefully, primary continues serving reads/writes
-- [ ] **Slow disk / OOM**: inject resource pressure on primary — liveness probe fires, Pod replaced, replication resumes
-- [ ] **Rolling update under load**: run `redis-benchmark` during a rolling update — no write errors observed
-- [ ] All scenarios validated with `redis-cli WAIT` and offset comparison to confirm no data loss
+- [x] **Primary kill**: delete the primary Pod mid-write — operator detects, fences, promotes a replica, former primary rejoins as replica on restart without split-brain
+- [x] **Network partition**: isolate the primary Pod from the API server — operator fences and promotes; isolated primary cannot accept writes due to fencing
+- [x] **Operator restart mid-failover**: kill the operator Pod during step 3 of the failover sequence — system converges correctly on restart
+- [x] **Simultaneous replica failures**: lose all replicas — cluster degrades gracefully, primary continues serving reads/writes
+- [x] **Slow disk / OOM**: inject resource pressure on primary — liveness probe fires, Pod replaced, replication resumes
+- [x] **Rolling update under load**: run `redis-benchmark` during a rolling update — no write errors observed
+- [x] All scenarios validated with `redis-cli WAIT` and offset comparison to confirm no data loss
 
 ## Notes
 

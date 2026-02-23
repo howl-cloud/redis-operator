@@ -74,6 +74,38 @@ func TestValidateCreate_MaxSyncLessThanMin(t *testing.T) {
 	assert.Contains(t, err.Error(), "maxSyncReplicas")
 }
 
+func TestValidateCreate_UnsupportedMode(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.Mode = redisv1.ClusterModeCluster
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), unsupportedModeMessage)
+}
+
+func TestValidateCreate_SentinelModeRequiresThreeInstances(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.Mode = redisv1.ClusterModeSentinel
+	cluster.Spec.Instances = 2
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), sentinelInstancesMinMessage)
+}
+
+func TestValidateCreate_SentinelModeWithThreeInstances(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.Mode = redisv1.ClusterModeSentinel
+	cluster.Spec.Instances = 3
+
+	warnings, err := v.ValidateCreate(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
 func TestValidateCreate_MultipleErrors(t *testing.T) {
 	v := &RedisClusterValidator{}
 	cluster := validCluster()
@@ -175,6 +207,29 @@ func TestValidateCreate_TableDriven(t *testing.T) {
 		{
 			name:   "valid 3-instance cluster",
 			modify: func(_ *redisv1.RedisCluster) {},
+		},
+		{
+			name: "sentinel mode with 3 instances is valid",
+			modify: func(c *redisv1.RedisCluster) {
+				c.Spec.Mode = redisv1.ClusterModeSentinel
+			},
+		},
+		{
+			name: "cluster mode unsupported",
+			modify: func(c *redisv1.RedisCluster) {
+				c.Spec.Mode = redisv1.ClusterModeCluster
+			},
+			wantErr:   true,
+			errSubstr: unsupportedModeMessage,
+		},
+		{
+			name: "sentinel mode with fewer than 3 instances is invalid",
+			modify: func(c *redisv1.RedisCluster) {
+				c.Spec.Mode = redisv1.ClusterModeSentinel
+				c.Spec.Instances = 2
+			},
+			wantErr:   true,
+			errSubstr: sentinelInstancesMinMessage,
 		},
 		{
 			name:      "zero instances",

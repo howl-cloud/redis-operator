@@ -32,7 +32,7 @@ const (
 func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.RedisCluster) error {
 	logger := log.FromContext(ctx)
 
-	existingPods, err := r.listClusterPods(ctx, cluster)
+	existingPods, err := r.listDataPods(ctx, cluster)
 	if err != nil {
 		return fmt.Errorf("listing pods: %w", err)
 	}
@@ -90,16 +90,77 @@ func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.
 	return nil
 }
 
+// reconcileSentinelPods ensures sentinel pods match the fixed desired count.
+func (r *ClusterReconciler) reconcileSentinelPods(ctx context.Context, cluster *redisv1.RedisCluster) error {
+	if cluster.Spec.Mode != redisv1.ClusterModeSentinel {
+		return nil
+	}
+	if cluster.Status.CurrentPrimary == "" {
+		return nil
+	}
+
+	logger := log.FromContext(ctx)
+	existingPods, err := r.listSentinelPods(ctx, cluster)
+	if err != nil {
+		return fmt.Errorf("listing sentinel pods: %w", err)
+	}
+
+	desired := redisv1.SentinelInstances
+	current := len(existingPods)
+
+	if current < desired {
+		logger.Info("Scaling up sentinel pods", "current", current, "desired", desired)
+	}
+	for i := 0; i < desired; i++ {
+		podName := sentinelPodNameForIndex(cluster.Name, i)
+		if err := r.createSentinelPod(ctx, cluster, podName); err != nil {
+			return fmt.Errorf("creating sentinel pod %s: %w", podName, err)
+		}
+	}
+
+	if current > desired {
+		logger.Info("Scaling down sentinel pods", "current", current, "desired", desired)
+		sort.Slice(existingPods, func(i, j int) bool {
+			return existingPods[i].Name > existingPods[j].Name
+		})
+		for i := 0; i < current-desired; i++ {
+			pod := existingPods[i]
+			if err := r.Delete(ctx, &pod); err != nil && !errors.IsNotFound(err) {
+				return fmt.Errorf("deleting sentinel pod %s: %w", pod.Name, err)
+			}
+		}
+	}
+
+	return nil
+}
+
 // createPod creates a single Redis pod.
 func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.RedisCluster, podName string, index int, role string) error {
+	labels := podLabels(cluster.Name, podName, role)
+
 	var existing corev1.Pod
 	if err := r.Get(ctx, types.NamespacedName{
 		Name: podName, Namespace: cluster.Namespace,
 	}, &existing); err == nil {
+		patch := client.MergeFrom(existing.DeepCopy())
+		changed := false
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string)
+			changed = true
+		}
+		for key, value := range labels {
+			if existing.Labels[key] != value {
+				existing.Labels[key] = value
+				changed = true
+			}
+		}
+		if changed {
+			if err := r.Patch(ctx, &existing, patch); err != nil {
+				return fmt.Errorf("patching pod %s labels: %w", podName, err)
+			}
+		}
 		return nil
 	}
-
-	labels := podLabels(cluster.Name, podName, role)
 
 	var projectedSources []corev1.VolumeProjection
 	secretRefs := []*redisv1.LocalObjectReference{
@@ -228,6 +289,158 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 	return nil
 }
 
+// createSentinelPod creates a single sentinel pod.
+func (r *ClusterReconciler) createSentinelPod(ctx context.Context, cluster *redisv1.RedisCluster, podName string) error {
+	labels := podLabels(cluster.Name, podName, redisv1.LabelRoleSentinel)
+
+	var existing corev1.Pod
+	if err := r.Get(ctx, types.NamespacedName{
+		Name: podName, Namespace: cluster.Namespace,
+	}, &existing); err == nil {
+		if cluster.Spec.AuthSecret != nil && !sentinelPodHasAuthProjection(existing, cluster.Spec.AuthSecret.Name) {
+			if err := r.Delete(ctx, &existing); err != nil && !errors.IsNotFound(err) {
+				return fmt.Errorf("deleting sentinel pod %s for auth projection update: %w", podName, err)
+			}
+			return nil
+		}
+
+		patch := client.MergeFrom(existing.DeepCopy())
+		changed := false
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string)
+			changed = true
+		}
+		for key, value := range labels {
+			if existing.Labels[key] != value {
+				existing.Labels[key] = value
+				changed = true
+			}
+		}
+		if changed {
+			if err := r.Patch(ctx, &existing, patch); err != nil {
+				return fmt.Errorf("patching sentinel pod %s labels: %w", podName, err)
+			}
+		}
+		return nil
+	}
+	var projectedSources []corev1.VolumeProjection
+	if cluster.Spec.AuthSecret != nil {
+		projectedSources = append(projectedSources, corev1.VolumeProjection{
+			Secret: &corev1.SecretProjection{
+				LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Spec.AuthSecret.Name},
+			},
+		})
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: cluster.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.PodSpec{
+			ServiceAccountName:        serviceAccountName(cluster.Name),
+			NodeSelector:              cluster.Spec.NodeSelector,
+			Affinity:                  cluster.Spec.Affinity,
+			Tolerations:               cluster.Spec.Tolerations,
+			TopologySpreadConstraints: cluster.Spec.TopologySpreadConstraints,
+			InitContainers: []corev1.Container{
+				{
+					Name:    "copy-manager",
+					Image:   r.OperatorImage,
+					Command: []string{"/manager", "copy-binary", instanceManagerBinaryPath},
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: controllerVolumeName, MountPath: controllerMountPath},
+					},
+				},
+			},
+			Containers: []corev1.Container{
+				{
+					Name:    "sentinel",
+					Image:   cluster.Spec.ImageName,
+					Command: []string{instanceManagerBinaryPath, "instance"},
+					Args: []string{
+						fmt.Sprintf("--cluster-name=%s", cluster.Name),
+						fmt.Sprintf("--pod-name=%s", podName),
+						fmt.Sprintf("--pod-namespace=%s", cluster.Namespace),
+						"--role=sentinel",
+					},
+					Ports: []corev1.ContainerPort{
+						{Name: "sentinel", ContainerPort: redisv1.SentinelPort, Protocol: corev1.ProtocolTCP},
+						{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+					},
+					Resources: cluster.Spec.Resources,
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: redisDataVolumeName, MountPath: redisDataMountPath},
+						{Name: controllerVolumeName, MountPath: controllerMountPath},
+					},
+					Env: []corev1.EnvVar{
+						{Name: "POD_NAME", Value: podName},
+						{Name: "CLUSTER_NAME", Value: cluster.Name},
+						{Name: "POD_NAMESPACE", Value: cluster.Namespace},
+					},
+					LivenessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/healthz",
+								Port: intOrString(8080),
+							},
+						},
+						InitialDelaySeconds: 10,
+						PeriodSeconds:       10,
+					},
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/readyz",
+								Port: intOrString(8080),
+							},
+						},
+						InitialDelaySeconds: 5,
+						PeriodSeconds:       5,
+					},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: redisDataVolumeName,
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+				{
+					Name: controllerVolumeName,
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+			},
+		},
+	}
+
+	if len(projectedSources) > 0 {
+		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+			Name: projectedVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{
+					Sources: projectedSources,
+				},
+			},
+		})
+		pod.Spec.Containers[0].VolumeMounts = append(
+			pod.Spec.Containers[0].VolumeMounts,
+			corev1.VolumeMount{Name: projectedVolumeName, MountPath: projectedMountPath},
+		)
+	}
+
+	if err := r.Create(ctx, pod); err != nil {
+		return fmt.Errorf("creating sentinel pod: %w", err)
+	}
+
+	r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "SentinelPodCreated", "Created sentinel pod %s", podName)
+	return nil
+}
+
 func (r *ClusterReconciler) listClusterPods(ctx context.Context, cluster *redisv1.RedisCluster) ([]corev1.Pod, error) {
 	var podList corev1.PodList
 	if err := r.List(ctx, &podList, client.InNamespace(cluster.Namespace), client.MatchingLabels{
@@ -238,8 +451,53 @@ func (r *ClusterReconciler) listClusterPods(ctx context.Context, cluster *redisv
 	return podList.Items, nil
 }
 
+func (r *ClusterReconciler) listDataPods(ctx context.Context, cluster *redisv1.RedisCluster) ([]corev1.Pod, error) {
+	allPods, err := r.listClusterPods(ctx, cluster)
+	if err != nil {
+		return nil, err
+	}
+
+	var dataPods []corev1.Pod
+	for _, pod := range allPods {
+		if pod.Labels[redisv1.LabelRole] == redisv1.LabelRoleSentinel {
+			continue
+		}
+		dataPods = append(dataPods, pod)
+	}
+	return dataPods, nil
+}
+
+func (r *ClusterReconciler) listSentinelPods(ctx context.Context, cluster *redisv1.RedisCluster) ([]corev1.Pod, error) {
+	var podList corev1.PodList
+	if err := r.List(ctx, &podList, client.InNamespace(cluster.Namespace), client.MatchingLabels{
+		redisv1.LabelCluster: cluster.Name,
+		redisv1.LabelRole:    redisv1.LabelRoleSentinel,
+	}); err != nil {
+		return nil, err
+	}
+	return podList.Items, nil
+}
+
+func sentinelPodHasAuthProjection(pod corev1.Pod, secretName string) bool {
+	for _, vol := range pod.Spec.Volumes {
+		if vol.Name != projectedVolumeName || vol.Projected == nil {
+			continue
+		}
+		for _, source := range vol.Projected.Sources {
+			if source.Secret != nil && source.Secret.Name == secretName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func podNameForIndex(clusterName string, index int) string {
 	return fmt.Sprintf("%s-%d", clusterName, index)
+}
+
+func sentinelPodNameForIndex(clusterName string, index int) string {
+	return fmt.Sprintf("%s-sentinel-%d", clusterName, index)
 }
 
 func pvcNameForIndex(clusterName string, index int) string {
@@ -247,10 +505,16 @@ func pvcNameForIndex(clusterName string, index int) string {
 }
 
 func podLabels(clusterName, podName, role string) map[string]string {
+	workload := redisv1.LabelWorkloadData
+	if role == redisv1.LabelRoleSentinel {
+		workload = redisv1.LabelWorkloadSentinel
+	}
+
 	return map[string]string{
 		redisv1.LabelCluster:  clusterName,
 		redisv1.LabelInstance: podName,
 		redisv1.LabelRole:     role,
+		redisv1.LabelWorkload: workload,
 	}
 }
 

@@ -71,8 +71,8 @@ func TestCleanupOldBackups_RemovesExcess(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: redisv1.RedisScheduledBackupSpec{
-			Schedule:                     "0 0 * * *",
-			ClusterName:                  "test-cluster",
+			Schedule:                      "0 0 * * *",
+			ClusterName:                   "test-cluster",
 			SuccessfulBackupsHistoryLimit: int32Ptr(2),
 			FailedBackupsHistoryLimit:     int32Ptr(1),
 		},
@@ -200,8 +200,8 @@ func TestCleanupOldBackups_UnderLimit(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: redisv1.RedisScheduledBackupSpec{
-			Schedule:                     "0 0 * * *",
-			ClusterName:                  "test-cluster",
+			Schedule:                      "0 0 * * *",
+			ClusterName:                   "test-cluster",
 			SuccessfulBackupsHistoryLimit: int32Ptr(5),
 		},
 	}

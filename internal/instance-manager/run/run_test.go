@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 )
@@ -19,11 +20,14 @@ func overrideDataDir(t *testing.T) string {
 	tmpDir := t.TempDir()
 	oldDataDir := dataDir
 	oldConfPath := redisConfPath
+	oldSentinelConfPath := sentinelConfPath
 	dataDir = tmpDir
 	redisConfPath = filepath.Join(tmpDir, "redis.conf")
+	sentinelConfPath = filepath.Join(tmpDir, "sentinel.conf")
 	t.Cleanup(func() {
 		dataDir = oldDataDir
 		redisConfPath = oldConfPath
+		sentinelConfPath = oldSentinelConfPath
 	})
 	return tmpDir
 }
@@ -166,6 +170,79 @@ func TestWriteRedisConf_EndsWithNewline(t *testing.T) {
 	data, err := os.ReadFile(redisConfPath)
 	require.NoError(t, err)
 	assert.True(t, strings.HasSuffix(string(data), "\n"), "config should end with newline")
+}
+
+func TestWriteSentinelConf_BasicConfig(t *testing.T) {
+	tmpDir := overrideDataDir(t)
+
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+	}
+	err := writeSentinelConf(cluster, "10.0.0.1", "")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "sentinel.conf"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "port 26379")
+	assert.Contains(t, content, "bind 0.0.0.0")
+	assert.Contains(t, content, "dir "+tmpDir)
+	assert.Contains(t, content, "sentinel monitor test-cluster 10.0.0.1 6379 2")
+	assert.Contains(t, content, "sentinel down-after-milliseconds test-cluster 5000")
+	assert.Contains(t, content, "sentinel failover-timeout test-cluster 60000")
+	assert.Contains(t, content, "sentinel parallel-syncs test-cluster 1")
+	assert.True(t, strings.HasSuffix(content, "\n"), "config should end with newline")
+}
+
+func TestWriteSentinelConf_WithAuthPass(t *testing.T) {
+	overrideDataDir(t)
+
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "secure-cluster",
+		},
+	}
+	err := writeSentinelConf(cluster, "10.0.0.2", "s3cr3t")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(sentinelConfPath)
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "sentinel auth-pass secure-cluster s3cr3t")
+}
+
+func TestResolveSentinelAuthPassword_NoneConfigured(t *testing.T) {
+	cluster := &redisv1.RedisCluster{}
+	password, err := resolveSentinelAuthPassword(cluster)
+	require.NoError(t, err)
+	assert.Equal(t, "", password)
+}
+
+func TestResolveSentinelAuthPassword_FromProjectedSecret(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldProjected := projectedSecretsDir
+	projectedSecretsDir = tmpDir
+	t.Cleanup(func() {
+		projectedSecretsDir = oldProjected
+	})
+
+	secretName := "auth-secret"
+	secretDir := filepath.Join(tmpDir, secretName)
+	require.NoError(t, os.MkdirAll(secretDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(secretDir, "password"), []byte("my-pass\n"), 0o600))
+
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			AuthSecret: &redisv1.LocalObjectReference{Name: secretName},
+		},
+	}
+	password, err := resolveSentinelAuthPassword(cluster)
+	require.NoError(t, err)
+	assert.Equal(t, "my-pass", password)
 }
 
 func TestSplitBrainGuardLogic(t *testing.T) {

@@ -18,6 +18,11 @@ type RedisClusterValidator struct{}
 
 var _ webhook.CustomValidator = &RedisClusterValidator{}
 
+const (
+	unsupportedModeMessage      = "cluster mode is not yet supported; use standalone or sentinel"
+	sentinelInstancesMinMessage = "sentinel mode requires at least 3 redis instances"
+)
+
 // SetupValidatingWebhookWithManager registers the validating webhook with the manager.
 func (v *RedisClusterValidator) SetupValidatingWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
@@ -60,6 +65,22 @@ func (v *RedisClusterValidator) ValidateDelete(_ context.Context, _ runtime.Obje
 func (v *RedisClusterValidator) validate(cluster *redisv1.RedisCluster) field.ErrorList {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
+
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("mode"),
+			cluster.Spec.Mode,
+			unsupportedModeMessage,
+		))
+	}
+
+	if cluster.Spec.Mode == redisv1.ClusterModeSentinel && cluster.Spec.Instances < 3 {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("instances"),
+			cluster.Spec.Instances,
+			sentinelInstancesMinMessage,
+		))
+	}
 
 	// Validate hibernation annotation value if present.
 	if val, ok := cluster.Annotations[redisv1.AnnotationHibernation]; ok {

@@ -25,7 +25,7 @@ type podStatusResponse struct {
 
 // pollInstanceStatuses calls GET /v1/status on every live pod IP.
 func (r *ClusterReconciler) pollInstanceStatuses(ctx context.Context, cluster *redisv1.RedisCluster) (map[string]redisv1.InstanceStatus, error) {
-	pods, err := r.listClusterPods(ctx, cluster)
+	pods, err := r.listDataPods(ctx, cluster)
 	if err != nil {
 		return nil, fmt.Errorf("listing pods for status poll: %w", err)
 	}
@@ -103,6 +103,12 @@ func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.R
 	cluster.Status.ReadyInstances = ready
 	cluster.Status.Instances = int32(len(instanceStatuses))
 
+	sentinelReady, err := r.countReadySentinelPods(ctx, cluster)
+	if err != nil {
+		return fmt.Errorf("counting ready sentinel pods: %w", err)
+	}
+	cluster.Status.SentinelReadyInstances = sentinelReady
+
 	// Update phase.
 	oldPhase := cluster.Status.Phase
 	cluster.Status.Phase = determinePhase(cluster, instanceStatuses)
@@ -116,6 +122,28 @@ func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.R
 	cluster.Status.Conditions = determineConditions(cluster, instanceStatuses)
 
 	return r.Status().Patch(ctx, cluster, patch)
+}
+
+func (r *ClusterReconciler) countReadySentinelPods(ctx context.Context, cluster *redisv1.RedisCluster) (int32, error) {
+	if cluster.Spec.Mode != redisv1.ClusterModeSentinel {
+		return 0, nil
+	}
+
+	pods, err := r.listSentinelPods(ctx, cluster)
+	if err != nil {
+		return 0, err
+	}
+
+	var ready int32
+	for _, pod := range pods {
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+				ready++
+				break
+			}
+		}
+	}
+	return ready, nil
 }
 
 // checkReachability returns true if any expected pod is unreachable (should requeue).
@@ -153,6 +181,9 @@ func determinePhase(cluster *redisv1.RedisCluster, statuses map[string]redisv1.I
 	}
 
 	if !primaryFound {
+		if cluster.Spec.Mode == redisv1.ClusterModeSentinel {
+			return redisv1.ClusterPhaseDegraded
+		}
 		return redisv1.ClusterPhaseFailingOver
 	}
 

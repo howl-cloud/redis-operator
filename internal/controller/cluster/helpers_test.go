@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/util/intstr"
+
+	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 )
 
 func TestPodNameForIndex(t *testing.T) {
@@ -49,7 +51,8 @@ func TestPodLabels(t *testing.T) {
 	assert.Equal(t, "mycluster", labels["redis.io/cluster"])
 	assert.Equal(t, "mycluster-0", labels["redis.io/instance"])
 	assert.Equal(t, "primary", labels["redis.io/role"])
-	assert.Len(t, labels, 3)
+	assert.Equal(t, redisv1.LabelWorkloadData, labels["redis.io/workload"])
+	assert.Len(t, labels, 4)
 }
 
 func TestServiceAccountName(t *testing.T) {
