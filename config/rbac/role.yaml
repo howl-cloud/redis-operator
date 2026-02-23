@@ -25,6 +25,10 @@ rules:
   - apiGroups: [""]
     resources: [events]
     verbs: [create, patch]
+  # Webhook configuration management for self-managed PKI.
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [mutatingwebhookconfigurations, validatingwebhookconfigurations]
+    verbs: [get, list, watch, update, patch]
   # PodDisruptionBudgets.
   - apiGroups: [policy]
     resources: [poddisruptionbudgets]

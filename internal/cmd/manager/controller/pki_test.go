@@ -14,19 +14,29 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
+	utilruntime.Must(admissionregistrationv1.AddToScheme(s))
 	return s
+}
+
+func testPKIOptions(namespace string) WebhookPKIOptions {
+	return WebhookPKIOptions{
+		Namespace:   namespace,
+		ServiceName: "redis-operator-webhook",
+	}
 }
 
 // generateTestCert creates a self-signed cert with the given notAfter time.
@@ -180,7 +190,7 @@ func TestEnsureWebhookPKI_CreatesSecrets(t *testing.T) {
 		Build()
 
 	ctx := context.Background()
-	err := EnsureWebhookPKI(ctx, fakeClient, "default", "redis-operator-webhook")
+	err := EnsureWebhookPKI(ctx, fakeClient, testPKIOptions("default"))
 	require.NoError(t, err)
 
 	// Verify CA secret was created.
@@ -208,7 +218,7 @@ func TestEnsureWebhookPKI_IdempotentOnValidCerts(t *testing.T) {
 	ctx := context.Background()
 
 	// First call creates the secrets.
-	err := EnsureWebhookPKI(ctx, fakeClient, "default", "redis-operator-webhook")
+	err := EnsureWebhookPKI(ctx, fakeClient, testPKIOptions("default"))
 	require.NoError(t, err)
 
 	// Get the webhook cert after first call.
@@ -218,7 +228,7 @@ func TestEnsureWebhookPKI_IdempotentOnValidCerts(t *testing.T) {
 	cert1 := string(webhookSecret1.Data["tls.crt"])
 
 	// Second call should be a no-op (certs are still valid).
-	err = EnsureWebhookPKI(ctx, fakeClient, "default", "redis-operator-webhook")
+	err = EnsureWebhookPKI(ctx, fakeClient, testPKIOptions("default"))
 	require.NoError(t, err)
 
 	var webhookSecret2 corev1.Secret
@@ -271,7 +281,7 @@ func TestEnsureWebhookPKI_RenewsExpiredWebhookCert(t *testing.T) {
 		Build()
 
 	ctx := context.Background()
-	err := EnsureWebhookPKI(ctx, fakeClient, "default", "redis-operator-webhook")
+	err := EnsureWebhookPKI(ctx, fakeClient, testPKIOptions("default"))
 	require.NoError(t, err)
 
 	// Verify webhook cert was renewed (different from original).
@@ -347,8 +357,9 @@ func TestEnsureWebhookCert_CreatesNew(t *testing.T) {
 	caKey, caCert, err := ensureCA(ctx, fakeClient, "default")
 	require.NoError(t, err)
 
-	err = ensureWebhookCert(ctx, fakeClient, "default", "redis-operator-webhook", caKey, caCert)
+	rotated, _, err := ensureWebhookCert(ctx, fakeClient, "default", "redis-operator-webhook", caKey, caCert)
 	require.NoError(t, err)
+	assert.False(t, rotated)
 
 	// Verify the webhook cert secret was created.
 	var secret corev1.Secret
@@ -372,7 +383,7 @@ func TestEnsureWebhookCert_SkipsValidCert(t *testing.T) {
 	ctx := context.Background()
 
 	// Create CA and webhook cert via EnsureWebhookPKI.
-	err := EnsureWebhookPKI(ctx, fakeClient, "default", "redis-operator-webhook")
+	err := EnsureWebhookPKI(ctx, fakeClient, testPKIOptions("default"))
 	require.NoError(t, err)
 
 	// Get the cert that was created.
@@ -389,8 +400,9 @@ func TestEnsureWebhookCert_SkipsValidCert(t *testing.T) {
 	require.NoError(t, err)
 
 	// Call ensureWebhookCert again -- should skip because cert is valid.
-	err = ensureWebhookCert(ctx, fakeClient, "default", "redis-operator-webhook", caKey, caCert)
+	rotated, _, err := ensureWebhookCert(ctx, fakeClient, "default", "redis-operator-webhook", caKey, caCert)
 	require.NoError(t, err)
+	assert.False(t, rotated)
 
 	var secret2 corev1.Secret
 	err = fakeClient.Get(ctx, clientKey("default", webhookCertSecret), &secret2)
@@ -443,14 +455,148 @@ func TestEnsureWebhookCert_RenewsExpiring(t *testing.T) {
 	caKey, caCert, err := parseCAFromSecret(caSecret)
 	require.NoError(t, err)
 
-	err = ensureWebhookCert(ctx, fakeClient, "default", "redis-operator-webhook", caKey, caCert)
+	rotated, _, err := ensureWebhookCert(ctx, fakeClient, "default", "redis-operator-webhook", caKey, caCert)
 	require.NoError(t, err)
+	assert.True(t, rotated)
 
 	// Verify it was renewed.
 	var updated corev1.Secret
 	err = fakeClient.Get(ctx, clientKey("default", webhookCertSecret), &updated)
 	require.NoError(t, err)
 	assert.NotEqual(t, string(webhookCertPEM), string(updated.Data["tls.crt"]))
+}
+
+func TestPatchWebhookConfigurations_SetsCABundle(t *testing.T) {
+	scheme := testScheme()
+	mutating := &admissionregistrationv1.MutatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "mutating"},
+		Webhooks: []admissionregistrationv1.MutatingWebhook{
+			{
+				Name: "mrediscluster.redis.io",
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					CABundle: []byte("old-ca"),
+				},
+			},
+		},
+	}
+	validating := &admissionregistrationv1.ValidatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "validating"},
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{
+			{
+				Name: "vrediscluster.redis.io",
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					CABundle: []byte("old-ca"),
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(mutating, validating).
+		Build()
+
+	ctx := context.Background()
+	newCA := []byte("new-ca")
+	err := patchWebhookConfigurations(ctx, fakeClient, newCA, mutating.Name, validating.Name)
+	require.NoError(t, err)
+
+	var gotMutating admissionregistrationv1.MutatingWebhookConfiguration
+	require.NoError(t, fakeClient.Get(ctx, clientKey("", mutating.Name), &gotMutating))
+	require.Len(t, gotMutating.Webhooks, 1)
+	assert.Equal(t, newCA, gotMutating.Webhooks[0].ClientConfig.CABundle)
+
+	var gotValidating admissionregistrationv1.ValidatingWebhookConfiguration
+	require.NoError(t, fakeClient.Get(ctx, clientKey("", validating.Name), &gotValidating))
+	require.Len(t, gotValidating.Webhooks, 1)
+	assert.Equal(t, newCA, gotValidating.Webhooks[0].ClientConfig.CABundle)
+}
+
+func TestPatchWebhookConfigurations_MissingConfiguration(t *testing.T) {
+	scheme := testScheme()
+	mutating := &admissionregistrationv1.MutatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "mutating"},
+		Webhooks: []admissionregistrationv1.MutatingWebhook{
+			{
+				Name: "mrediscluster.redis.io",
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					CABundle: []byte("old-ca"),
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(mutating).
+		Build()
+
+	ctx := context.Background()
+	newCA := []byte("new-ca")
+	err := patchWebhookConfigurations(ctx, fakeClient, newCA, mutating.Name, "missing-validating")
+	require.NoError(t, err)
+
+	var gotMutating admissionregistrationv1.MutatingWebhookConfiguration
+	require.NoError(t, fakeClient.Get(ctx, clientKey("", mutating.Name), &gotMutating))
+	require.Len(t, gotMutating.Webhooks, 1)
+	assert.Equal(t, newCA, gotMutating.Webhooks[0].ClientConfig.CABundle)
+}
+
+func TestEnsureWebhookPKI_EmitsRotationEvent(t *testing.T) {
+	scheme := testScheme()
+	caCertPEM, caKeyPEM := generateTestCert(t, time.Now().Add(3650*24*time.Hour))
+	webhookCertPEM, webhookKeyPEM := generateTestCert(t, time.Now().Add(5*24*time.Hour))
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "operator-0",
+			Namespace: "default",
+		},
+	}
+	caSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      caSecretName,
+			Namespace: "default",
+		},
+		Type: corev1.SecretTypeTLS,
+		Data: map[string][]byte{
+			"tls.crt": caCertPEM,
+			"tls.key": caKeyPEM,
+			"ca.crt":  caCertPEM,
+		},
+	}
+	webhookSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      webhookCertSecret,
+			Namespace: "default",
+		},
+		Type: corev1.SecretTypeTLS,
+		Data: map[string][]byte{
+			"tls.crt": webhookCertPEM,
+			"tls.key": webhookKeyPEM,
+			"ca.crt":  caCertPEM,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(caSecret, webhookSecret, pod).
+		Build()
+	fakeRecorder := record.NewFakeRecorder(1)
+
+	options := testPKIOptions("default")
+	options.PodName = pod.Name
+	options.EventRecorder = fakeRecorder
+
+	err := EnsureWebhookPKI(context.Background(), fakeClient, options)
+	require.NoError(t, err)
+
+	select {
+	case event := <-fakeRecorder.Events:
+		assert.Contains(t, event, "CertRotated")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected CertRotated event")
+	}
 }
 
 // client_key is a helper to create a types.NamespacedName.

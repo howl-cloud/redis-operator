@@ -321,6 +321,44 @@ func TestUpdateStatus_CountsReadyInstances(t *testing.T) {
 	assert.Equal(t, redisv1.ClusterPhaseHealthy, updated.Status.Phase)
 }
 
+func TestUpdateStatus_PreservesHibernatedCondition(t *testing.T) {
+	cluster := newTestCluster("test", "default", 1)
+	cluster.Status.CurrentPrimary = "test-0"
+	cluster.Status.Conditions = []metav1.Condition{
+		{
+			Type:               redisv1.ConditionHibernated,
+			Status:             metav1.ConditionFalse,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "HibernationDisabled",
+			Message:            "Cluster resumed",
+		},
+	}
+
+	r, c := newReconciler(cluster)
+	ctx := context.Background()
+
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Role: "master", Connected: true},
+	}
+
+	err := r.updateStatus(ctx, cluster, statuses)
+	require.NoError(t, err)
+
+	var updated redisv1.RedisCluster
+	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updated)
+	require.NoError(t, err)
+
+	var found bool
+	for i := range updated.Status.Conditions {
+		if updated.Status.Conditions[i].Type == redisv1.ConditionHibernated {
+			found = true
+			assert.Equal(t, metav1.ConditionFalse, updated.Status.Conditions[i].Status)
+			assert.Equal(t, "HibernationDisabled", updated.Status.Conditions[i].Reason)
+		}
+	}
+	assert.True(t, found, "expected Hibernated condition to be preserved")
+}
+
 func TestPollInstanceStatuses_NoPodIP(t *testing.T) {
 	cluster := newTestCluster("test", "default", 2)
 

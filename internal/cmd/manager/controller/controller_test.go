@@ -2,6 +2,7 @@ package controller
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -33,4 +34,24 @@ func TestManagerOptions_LeaderElectionDisabled(t *testing.T) {
 	assert.False(t, options.LeaderElection)
 	assert.Equal(t, leaderElectionID, options.LeaderElectionID)
 	assert.Nil(t, options.WebhookServer)
+}
+
+func TestWebhookPKIReconcileInterval_Default(t *testing.T) {
+	t.Setenv("WEBHOOK_PKI_RECONCILE_INTERVAL", "")
+	assert.Equal(t, defaultWebhookPKIReconcileInterval, webhookPKIReconcileInterval())
+}
+
+func TestWebhookPKIReconcileInterval_Valid(t *testing.T) {
+	t.Setenv("WEBHOOK_PKI_RECONCILE_INTERVAL", "45m")
+	assert.Equal(t, 45*time.Minute, webhookPKIReconcileInterval())
+}
+
+func TestWebhookPKIReconcileInterval_Invalid(t *testing.T) {
+	t.Setenv("WEBHOOK_PKI_RECONCILE_INTERVAL", "not-a-duration")
+	assert.Equal(t, defaultWebhookPKIReconcileInterval, webhookPKIReconcileInterval())
+}
+
+func TestWebhookPKIReconcileInterval_NonPositive(t *testing.T) {
+	t.Setenv("WEBHOOK_PKI_RECONCILE_INTERVAL", "-1m")
+	assert.Equal(t, defaultWebhookPKIReconcileInterval, webhookPKIReconcileInterval())
 }

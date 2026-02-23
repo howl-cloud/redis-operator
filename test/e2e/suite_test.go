@@ -23,10 +23,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -47,6 +49,7 @@ var (
 	k8sClient  client.Client
 	testEnv    *envtest.Environment
 	cancelFunc context.CancelFunc
+	recorder   record.EventRecorder
 )
 
 func TestE2E(t *testing.T) {
@@ -86,6 +89,7 @@ var _ = BeforeSuite(func() {
 	// Build scheme.
 	scheme := schemeruntime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(admissionregistrationv1.AddToScheme(scheme))
 	utilruntime.Must(redisv1.AddToScheme(scheme))
 
 	// Create a direct client for assertions.
@@ -104,7 +108,7 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	// Register reconcilers (no webhooks — envtest doesn't run the webhook server by default).
-	recorder := mgr.GetEventRecorderFor("redis-operator-e2e")
+	recorder = mgr.GetEventRecorderFor("redis-operator-e2e")
 	clusterReconciler := cluster.NewClusterReconciler(mgr.GetClient(), mgr.GetScheme(), recorder, 0)
 	Expect(clusterReconciler.SetupWithManager(mgr)).To(Succeed())
 

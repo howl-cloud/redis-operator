@@ -67,6 +67,9 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 	}
 
 	if cluster.Status.Phase != redisv1.ClusterPhaseHealthy {
+		if err := r.setBackupPending(ctx, &backup); err != nil {
+			return reconcile.Result{}, err
+		}
 		logger.Info("Cluster not healthy, requeuing backup", "cluster-phase", cluster.Status.Phase)
 		return reconcile.Result{RequeueAfter: requeueInterval}, nil
 	}
@@ -95,6 +98,17 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 	r.Recorder.Event(&backup, corev1.EventTypeNormal, "BackupCompleted", "Backup completed successfully")
 
 	return reconcile.Result{}, nil
+}
+
+// setBackupPending marks the backup as pending when prerequisites are not met yet.
+func (r *BackupReconciler) setBackupPending(ctx context.Context, backup *redisv1.RedisBackup) error {
+	if backup.Status.Phase == redisv1.BackupPhasePending {
+		return nil
+	}
+	patch := client.MergeFrom(backup.DeepCopy())
+	backup.Status.Phase = redisv1.BackupPhasePending
+	backup.Status.Error = ""
+	return r.Status().Patch(ctx, backup, patch)
 }
 
 // selectTargetPod selects a pod to run the backup on.

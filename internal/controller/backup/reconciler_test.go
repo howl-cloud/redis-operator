@@ -379,7 +379,7 @@ func TestReconcile_ClusterNotHealthy(t *testing.T) {
 		},
 	}
 
-	r, _ := newBackupReconciler(cluster, backup)
+	r, c := newBackupReconciler(cluster, backup)
 	ctx := context.Background()
 
 	result, err := r.Reconcile(ctx, reconcile.Request{
@@ -387,6 +387,11 @@ func TestReconcile_ClusterNotHealthy(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, requeueInterval, result.RequeueAfter)
+
+	var updated redisv1.RedisBackup
+	err = c.Get(ctx, types.NamespacedName{Name: "backup1", Namespace: "default"}, &updated)
+	require.NoError(t, err)
+	assert.Equal(t, redisv1.BackupPhasePending, updated.Status.Phase)
 }
 
 func TestReconcile_SuccessfulBackup(t *testing.T) {

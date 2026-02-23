@@ -90,6 +90,7 @@ func pollPodStatus(ctx context.Context, httpClient *http.Client, url string) (*p
 // updateStatus writes collected instance statuses into the cluster status.
 func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.RedisCluster, instanceStatuses map[string]redisv1.InstanceStatus) error {
 	patch := client.MergeFrom(cluster.DeepCopy())
+	existingConditions := append([]metav1.Condition(nil), cluster.Status.Conditions...)
 
 	cluster.Status.InstancesStatus = instanceStatuses
 
@@ -118,10 +119,44 @@ func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.R
 		r.Recorder.Event(cluster, corev1.EventTypeNormal, "ClusterReady", "Cluster is healthy with all instances connected")
 	}
 
-	// Update conditions.
+	// Update conditions and preserve long-lived lifecycle conditions.
 	cluster.Status.Conditions = determineConditions(cluster, instanceStatuses)
+	cluster.Status.Conditions = preserveConditions(
+		existingConditions,
+		cluster.Status.Conditions,
+		redisv1.ConditionHibernated,
+	)
 
 	return r.Status().Patch(ctx, cluster, patch)
+}
+
+func preserveConditions(existing, current []metav1.Condition, conditionTypes ...string) []metav1.Condition {
+	if len(conditionTypes) == 0 {
+		return current
+	}
+
+	hasType := func(conditions []metav1.Condition, conditionType string) bool {
+		for i := range conditions {
+			if conditions[i].Type == conditionType {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, conditionType := range conditionTypes {
+		if hasType(current, conditionType) {
+			continue
+		}
+		for i := range existing {
+			if existing[i].Type == conditionType {
+				current = append(current, existing[i])
+				break
+			}
+		}
+	}
+
+	return current
 }
 
 func (r *ClusterReconciler) countReadySentinelPods(ctx context.Context, cluster *redisv1.RedisCluster) (int32, error) {
