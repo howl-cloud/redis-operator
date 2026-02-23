@@ -20,6 +20,10 @@ spec:
     spec:
       serviceAccountName: redis-operator-controller-manager
       terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: manager
           image: redis-operator:latest

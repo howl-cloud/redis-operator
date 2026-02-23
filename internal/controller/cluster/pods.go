@@ -7,7 +7,6 @@ import (
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -191,11 +190,13 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 			Affinity:                  cluster.Spec.Affinity,
 			Tolerations:               cluster.Spec.Tolerations,
 			TopologySpreadConstraints: cluster.Spec.TopologySpreadConstraints,
+			SecurityContext:           redisPodSecurityContext(),
 			InitContainers: []corev1.Container{
 				{
-					Name:    "copy-manager",
-					Image:   r.OperatorImage,
-					Command: []string{"/manager", "copy-binary", instanceManagerBinaryPath},
+					Name:            "copy-manager",
+					Image:           r.OperatorImage,
+					Command:         []string{"/manager", "copy-binary", instanceManagerBinaryPath},
+					SecurityContext: redisContainerSecurityContext(false),
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: controllerVolumeName, MountPath: controllerMountPath},
 					},
@@ -215,7 +216,8 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 						{Name: "redis", ContainerPort: 6379, Protocol: corev1.ProtocolTCP},
 						{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
 					},
-					Resources: cluster.Spec.Resources,
+					Resources:       cluster.Spec.Resources,
+					SecurityContext: redisContainerSecurityContext(false),
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: redisDataVolumeName, MountPath: redisDataMountPath},
 						{Name: controllerVolumeName, MountPath: controllerMountPath},
@@ -344,11 +346,13 @@ func (r *ClusterReconciler) createSentinelPod(ctx context.Context, cluster *redi
 			Affinity:                  cluster.Spec.Affinity,
 			Tolerations:               cluster.Spec.Tolerations,
 			TopologySpreadConstraints: cluster.Spec.TopologySpreadConstraints,
+			SecurityContext:           redisPodSecurityContext(),
 			InitContainers: []corev1.Container{
 				{
-					Name:    "copy-manager",
-					Image:   r.OperatorImage,
-					Command: []string{"/manager", "copy-binary", instanceManagerBinaryPath},
+					Name:            "copy-manager",
+					Image:           r.OperatorImage,
+					Command:         []string{"/manager", "copy-binary", instanceManagerBinaryPath},
+					SecurityContext: redisContainerSecurityContext(false),
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: controllerVolumeName, MountPath: controllerMountPath},
 					},
@@ -369,7 +373,8 @@ func (r *ClusterReconciler) createSentinelPod(ctx context.Context, cluster *redi
 						{Name: "sentinel", ContainerPort: redisv1.SentinelPort, Protocol: corev1.ProtocolTCP},
 						{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
 					},
-					Resources: cluster.Spec.Resources,
+					Resources:       cluster.Spec.Resources,
+					SecurityContext: redisContainerSecurityContext(false),
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: redisDataVolumeName, MountPath: redisDataMountPath},
 						{Name: controllerVolumeName, MountPath: controllerMountPath},
@@ -526,102 +531,27 @@ func intOrString(port int) intstr.IntOrString {
 	return intstr.FromInt32(int32(port))
 }
 
-// reconcileServiceAccount ensures the ServiceAccount exists.
-func (r *ClusterReconciler) reconcileServiceAccount(ctx context.Context, cluster *redisv1.RedisCluster) error {
-	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceAccountName(cluster.Name),
-			Namespace: cluster.Namespace,
-			Labels: map[string]string{
-				redisv1.LabelCluster: cluster.Name,
-			},
+func redisPodSecurityContext() *corev1.PodSecurityContext {
+	runAsNonRoot := true
+	return &corev1.PodSecurityContext{
+		RunAsNonRoot: &runAsNonRoot,
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
 		},
 	}
-	var existing corev1.ServiceAccount
-	if err := r.Get(ctx, types.NamespacedName{
-		Name: sa.Name, Namespace: sa.Namespace,
-	}, &existing); err != nil {
-		if errors.IsNotFound(err) {
-			return r.Create(ctx, sa)
-		}
-		return err
-	}
-	return nil
 }
 
-// reconcileRBAC ensures the Role and RoleBinding exist for the instance manager.
-func (r *ClusterReconciler) reconcileRBAC(ctx context.Context, cluster *redisv1.RedisCluster) error {
-	name := serviceAccountName(cluster.Name)
-	labels := map[string]string{
-		redisv1.LabelCluster: cluster.Name,
-	}
-
-	role := &rbacv1.Role{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: cluster.Namespace,
-			Labels:    labels,
-		},
-		Rules: []rbacv1.PolicyRule{
-			{
-				APIGroups: []string{"redis.io"},
-				Resources: []string{"redisclusters"},
-				Verbs:     []string{"get", "list", "watch"},
-			},
-			{
-				APIGroups: []string{"redis.io"},
-				Resources: []string{"redisclusters/status"},
-				Verbs:     []string{"get", "patch", "update"},
-			},
-			{
-				APIGroups: []string{""},
-				Resources: []string{"events"},
-				Verbs:     []string{"create", "patch"},
-			},
+func redisContainerSecurityContext(readOnlyRootFilesystem bool) *corev1.SecurityContext {
+	runAsNonRoot := true
+	allowPrivilegeEscalation := false
+	return &corev1.SecurityContext{
+		RunAsNonRoot:             &runAsNonRoot,
+		AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+		ReadOnlyRootFilesystem:   &readOnlyRootFilesystem,
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
 		},
 	}
-
-	var existingRole rbacv1.Role
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, &existingRole); err != nil {
-		if !errors.IsNotFound(err) {
-			return fmt.Errorf("getting role %s: %w", name, err)
-		}
-		if err := r.Create(ctx, role); err != nil {
-			return fmt.Errorf("creating role %s: %w", name, err)
-		}
-	}
-
-	binding := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: cluster.Namespace,
-			Labels:    labels,
-		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind:      rbacv1.ServiceAccountKind,
-				Name:      name,
-				Namespace: cluster.Namespace,
-			},
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: rbacv1.GroupName,
-			Kind:     "Role",
-			Name:     name,
-		},
-	}
-
-	var existingBinding rbacv1.RoleBinding
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, &existingBinding); err != nil {
-		if !errors.IsNotFound(err) {
-			return fmt.Errorf("getting rolebinding %s: %w", name, err)
-		}
-		if err := r.Create(ctx, binding); err != nil {
-			return fmt.Errorf("creating rolebinding %s: %w", name, err)
-		}
-	}
-
-	return nil
 }
 
 // reconcileConfigMap ensures the ConfigMap with redis.conf template exists.

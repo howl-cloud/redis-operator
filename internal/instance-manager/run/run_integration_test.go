@@ -43,9 +43,13 @@ func TestWriteRedisConf_StartsServer(t *testing.T) {
 	err := writeRedisConf(cluster, "")
 	require.NoError(t, err)
 
+	// Allow the container's Redis user (uid 999) to write AOF/RDB files.
+	require.NoError(t, os.Chmod(dataDirPath, 0777))
+
 	container, err := testcontainers.Run(
 		ctx,
 		"redis:7.2",
+		testcontainers.WithExposedPorts("6379/tcp"),
 		testcontainers.WithMounts(
 			testcontainers.BindMount(dataDirPath, testcontainers.ContainerMountTarget(dataDirPath)),
 		),
@@ -59,11 +63,14 @@ func TestWriteRedisConf_StartsServer(t *testing.T) {
 		_ = container.Terminate(context.Background())
 	})
 
-	containerIP, err := container.ContainerIP(ctx)
+	host, err := container.Host(ctx)
+	require.NoError(t, err)
+
+	mappedPort, err := container.MappedPort(ctx, "6379/tcp")
 	require.NoError(t, err)
 
 	client := redis.NewClient(&redis.Options{
-		Addr: net.JoinHostPort(containerIP, "6379"),
+		Addr: net.JoinHostPort(host, mappedPort.Port()),
 	})
 	t.Cleanup(func() {
 		_ = client.Close()

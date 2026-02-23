@@ -3,7 +3,7 @@
 # --- Build stage ---
 # Use the build-platform image so the Go toolchain always runs natively,
 # even when cross-compiling for a different target (e.g. amd64 on Apple Silicon).
-FROM --platform=$BUILDPLATFORM golang:1.25.1 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25.7 AS builder
 
 WORKDIR /workspace
 

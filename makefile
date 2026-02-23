@@ -65,6 +65,15 @@ run: generate fmt vet ## Run the operator locally against the current kubeconfig
 docker-build: ## Build the Docker image
 	docker build -t $(IMG) .
 
+.PHONY: trivy-scan
+trivy-scan: docker-build ## Scan the Docker image with Trivy for critical CVEs
+	@if command -v trivy >/dev/null 2>&1; then \
+		trivy image --scanners vuln --exit-code 1 --severity CRITICAL $(IMG); \
+	else \
+		echo "trivy not found; using aquasec/trivy container"; \
+		docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --scanners vuln --exit-code 1 --severity CRITICAL $(IMG); \
+	fi
+
 .PHONY: docker-push
 docker-push: ## Push the Docker image
 	docker push $(IMG)

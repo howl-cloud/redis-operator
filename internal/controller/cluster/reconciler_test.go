@@ -9,11 +9,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -62,6 +65,31 @@ func newReconciler(objs ...client.Object) (*ClusterReconciler, client.Client) {
 	c := builder.Build()
 	recorder := record.NewFakeRecorder(100)
 	return NewClusterReconciler(c, scheme, recorder), c
+}
+
+type immutableRoleRefClient struct {
+	client.Client
+}
+
+func (c *immutableRoleRefClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	binding, ok := obj.(*rbacv1.RoleBinding)
+	if !ok {
+		return c.Client.Update(ctx, obj, opts...)
+	}
+
+	var existing rbacv1.RoleBinding
+	err := c.Client.Get(ctx, types.NamespacedName{Name: binding.Name, Namespace: binding.Namespace}, &existing)
+	if err == nil && existing.RoleRef != binding.RoleRef {
+		return apierrors.NewInvalid(
+			schema.GroupKind{Group: rbacv1.GroupName, Kind: "RoleBinding"},
+			binding.Name,
+			field.ErrorList{
+				field.Invalid(field.NewPath("roleRef"), binding.RoleRef, "field is immutable"),
+			},
+		)
+	}
+
+	return c.Client.Update(ctx, obj, opts...)
 }
 
 func TestNewClusterReconciler_UsesOperatorImageFromEnv(t *testing.T) {
@@ -432,6 +460,7 @@ func TestReconcileServiceAccount_Creates(t *testing.T) {
 	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &sa)
 	require.NoError(t, err)
 	assert.Equal(t, "test", sa.Labels[redisv1.LabelCluster])
+	assert.True(t, metav1.IsControlledBy(&sa, cluster))
 }
 
 func TestReconcileServiceAccount_Idempotent(t *testing.T) {
@@ -456,7 +485,8 @@ func TestReconcileRBAC_CreatesRoleAndRoleBinding(t *testing.T) {
 	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &role)
 	require.NoError(t, err)
 	assert.Equal(t, "test", role.Labels[redisv1.LabelCluster])
-	assert.NotEmpty(t, role.Rules)
+	assert.Equal(t, instanceManagerRoleRules(), role.Rules)
+	assert.True(t, metav1.IsControlledBy(&role, cluster))
 
 	var binding rbacv1.RoleBinding
 	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &binding)
@@ -466,6 +496,118 @@ func TestReconcileRBAC_CreatesRoleAndRoleBinding(t *testing.T) {
 	assert.Equal(t, "test", binding.Subjects[0].Name)
 	assert.Equal(t, "default", binding.Subjects[0].Namespace)
 	assert.Equal(t, "test", binding.RoleRef.Name)
+	assert.True(t, metav1.IsControlledBy(&binding, cluster))
+}
+
+func TestReconcileRBAC_UpdatesDriftedRoleAndRoleBinding(t *testing.T) {
+	cluster := newTestCluster("test", "default", 1)
+	staleRole := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test",
+			Namespace: "default",
+			Labels: map[string]string{
+				redisv1.LabelCluster: "other",
+			},
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"redis.io"},
+				Resources: []string{"redisclusters"},
+				Verbs:     []string{"get"},
+			},
+		},
+	}
+	staleBinding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test",
+			Namespace: "default",
+			Labels: map[string]string{
+				redisv1.LabelCluster: "other",
+			},
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      "wrong-name",
+				Namespace: "default",
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     "test",
+		},
+	}
+
+	r, c := newReconciler(cluster, staleRole, staleBinding)
+	ctx := context.Background()
+
+	err := r.reconcileRBAC(ctx, cluster)
+	require.NoError(t, err)
+
+	var role rbacv1.Role
+	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &role)
+	require.NoError(t, err)
+	assert.Equal(t, "test", role.Labels[redisv1.LabelCluster])
+	assert.Equal(t, instanceManagerRoleRules(), role.Rules)
+	assert.True(t, metav1.IsControlledBy(&role, cluster))
+
+	var binding rbacv1.RoleBinding
+	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &binding)
+	require.NoError(t, err)
+	assert.Equal(t, "test", binding.Labels[redisv1.LabelCluster])
+	require.Len(t, binding.Subjects, 1)
+	assert.Equal(t, "test", binding.Subjects[0].Name)
+	assert.Equal(t, "default", binding.Subjects[0].Namespace)
+	assert.Equal(t, "test", binding.RoleRef.Name)
+	assert.True(t, metav1.IsControlledBy(&binding, cluster))
+}
+
+func TestReconcileRBAC_RecreatesRoleBindingWhenRoleRefDrifts(t *testing.T) {
+	cluster := newTestCluster("test", "default", 1)
+	staleBinding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test",
+			Namespace: "default",
+			Labels: map[string]string{
+				redisv1.LabelCluster: "other",
+			},
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      "wrong-name",
+				Namespace: "default",
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     "wrong-role",
+		},
+	}
+
+	baseReconciler, fakeClient := newReconciler(cluster, staleBinding)
+	r := &ClusterReconciler{
+		Client:        &immutableRoleRefClient{Client: fakeClient},
+		Scheme:        baseReconciler.Scheme,
+		Recorder:      baseReconciler.Recorder,
+		OperatorImage: baseReconciler.OperatorImage,
+	}
+	ctx := context.Background()
+
+	err := r.reconcileRBAC(ctx, cluster)
+	require.NoError(t, err)
+
+	var binding rbacv1.RoleBinding
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &binding)
+	require.NoError(t, err)
+	assert.Equal(t, "test", binding.Labels[redisv1.LabelCluster])
+	assert.Equal(t, "test", binding.RoleRef.Name)
+	require.Len(t, binding.Subjects, 1)
+	assert.Equal(t, "test", binding.Subjects[0].Name)
+	assert.Equal(t, "default", binding.Subjects[0].Namespace)
+	assert.True(t, metav1.IsControlledBy(&binding, cluster))
 }
 
 func TestReconcileConfigMap_Creates(t *testing.T) {
@@ -661,6 +803,18 @@ func TestCreateSentinelPod_WithAuthSecretProjectsPassword(t *testing.T) {
 		}
 	}
 	assert.True(t, foundMount, "projected volume mount should be present on sentinel pod")
+	require.NotNil(t, pod.Spec.SecurityContext)
+	require.NotNil(t, pod.Spec.SecurityContext.RunAsNonRoot)
+	assert.True(t, *pod.Spec.SecurityContext.RunAsNonRoot)
+	require.NotNil(t, pod.Spec.SecurityContext.SeccompProfile)
+	assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, pod.Spec.SecurityContext.SeccompProfile.Type)
+
+	require.Len(t, pod.Spec.Containers, 1)
+	require.NotNil(t, pod.Spec.Containers[0].SecurityContext)
+	require.NotNil(t, pod.Spec.Containers[0].SecurityContext.AllowPrivilegeEscalation)
+	assert.False(t, *pod.Spec.Containers[0].SecurityContext.AllowPrivilegeEscalation)
+	require.NotNil(t, pod.Spec.Containers[0].SecurityContext.ReadOnlyRootFilesystem)
+	assert.False(t, *pod.Spec.Containers[0].SecurityContext.ReadOnlyRootFilesystem)
 }
 
 func TestCreatePod_ContainerSpec(t *testing.T) {
@@ -712,10 +866,35 @@ func TestCreatePod_ContainerSpec(t *testing.T) {
 	assert.Equal(t, "test", envMap["CLUSTER_NAME"])
 	assert.Equal(t, "default", envMap["POD_NAMESPACE"])
 
+	require.NotNil(t, pod.Spec.SecurityContext)
+	require.NotNil(t, pod.Spec.SecurityContext.RunAsNonRoot)
+	assert.True(t, *pod.Spec.SecurityContext.RunAsNonRoot)
+	require.NotNil(t, pod.Spec.SecurityContext.SeccompProfile)
+	assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, pod.Spec.SecurityContext.SeccompProfile.Type)
+
+	require.NotNil(t, container.SecurityContext)
+	require.NotNil(t, container.SecurityContext.RunAsNonRoot)
+	assert.True(t, *container.SecurityContext.RunAsNonRoot)
+	require.NotNil(t, container.SecurityContext.AllowPrivilegeEscalation)
+	assert.False(t, *container.SecurityContext.AllowPrivilegeEscalation)
+	require.NotNil(t, container.SecurityContext.ReadOnlyRootFilesystem)
+	assert.False(t, *container.SecurityContext.ReadOnlyRootFilesystem)
+	require.NotNil(t, container.SecurityContext.Capabilities)
+	assert.Contains(t, container.SecurityContext.Capabilities.Drop, corev1.Capability("ALL"))
+
 	// Verify init container.
 	require.Len(t, pod.Spec.InitContainers, 1)
 	assert.Equal(t, "copy-manager", pod.Spec.InitContainers[0].Name)
 	assert.Equal(t, r.OperatorImage, pod.Spec.InitContainers[0].Image)
+	require.NotNil(t, pod.Spec.InitContainers[0].SecurityContext)
+	require.NotNil(t, pod.Spec.InitContainers[0].SecurityContext.RunAsNonRoot)
+	assert.True(t, *pod.Spec.InitContainers[0].SecurityContext.RunAsNonRoot)
+	require.NotNil(t, pod.Spec.InitContainers[0].SecurityContext.AllowPrivilegeEscalation)
+	assert.False(t, *pod.Spec.InitContainers[0].SecurityContext.AllowPrivilegeEscalation)
+	require.NotNil(t, pod.Spec.InitContainers[0].SecurityContext.ReadOnlyRootFilesystem)
+	assert.False(t, *pod.Spec.InitContainers[0].SecurityContext.ReadOnlyRootFilesystem)
+	require.NotNil(t, pod.Spec.InitContainers[0].SecurityContext.Capabilities)
+	assert.Contains(t, pod.Spec.InitContainers[0].SecurityContext.Capabilities.Drop, corev1.Capability("ALL"))
 }
 
 func TestReconcilePDB_UpdatesMinAvailable(t *testing.T) {
