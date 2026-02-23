@@ -7,7 +7,7 @@ labels: [security, production-readiness]
 created: 2026-02-19
 updated: 2026-02-19
 depends_on: [1]
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -16,13 +16,13 @@ The operator's `ClusterRole` grants broad access to pods, PVCs, services, secret
 
 ## Acceptance Criteria
 
-- [ ] Audit `config/rbac/role.yaml` — remove any permissions not required by the reconciliation loop
-- [ ] Instance manager RBAC: implement `reconcileRBAC` to create a per-cluster `Role` and `RoleBinding` scoped to the cluster's namespace with only the permissions the instance manager needs (read `RedisCluster`, patch `RedisCluster/status`)
-- [ ] Operator deployment runs as a non-root user (`securityContext.runAsNonRoot: true`)
-- [ ] Pod security context set on generated Redis pods (`runAsNonRoot`, `readOnlyRootFilesystem` where possible, `allowPrivilegeEscalation: false`)
-- [ ] Secrets are never logged (audit all `logger.Info` and `logger.Error` calls for accidental secret value inclusion)
-- [ ] Scan image with Trivy or Snyk — no critical CVEs in final image
-- [ ] `NetworkPolicy` manifest provided in `config/` to restrict pod-to-pod traffic to Redis port (6379) and instance manager port (8080)
+- [x] Audit `config/rbac/role.yaml` — remove any permissions not required by the reconciliation loop
+- [x] Instance manager RBAC: implement `reconcileRBAC` to create a per-cluster `Role` and `RoleBinding` scoped to the cluster's namespace with only the permissions the instance manager needs (read `RedisCluster`, patch `RedisCluster/status`)
+- [x] Operator deployment runs as a non-root user (`securityContext.runAsNonRoot: true`)
+- [x] Pod security context set on generated Redis pods (`runAsNonRoot`, `readOnlyRootFilesystem` where possible, `allowPrivilegeEscalation: false`)
+- [x] Secrets are never logged (audit all `logger.Info` and `logger.Error` calls for accidental secret value inclusion)
+- [x] Scan image with Trivy or Snyk — no critical CVEs in final image
+- [x] `NetworkPolicy` manifest provided in `config/` to restrict pod-to-pod traffic to Redis port (6379) and instance manager port (8080)
 
 ## Notes
 

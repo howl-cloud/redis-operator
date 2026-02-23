@@ -53,7 +53,7 @@ func controllerCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&metricsAddr, "metrics-bind-address", ":9090", "The address the metric endpoint binds to")
-	cmd.Flags().BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager")
+	cmd.Flags().BoolVar(&enableLeaderElection, "leader-elect", true, "Enable leader election for controller manager")
 	cmd.Flags().BoolVar(&enableWebhooks, "webhook-enabled", true, "Enable admission webhooks for RedisCluster resources")
 
 	return cmd

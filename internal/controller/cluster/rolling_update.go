@@ -17,7 +17,7 @@ import (
 func (r *ClusterReconciler) rollingUpdate(ctx context.Context, cluster *redisv1.RedisCluster, desiredHash string) error {
 	logger := log.FromContext(ctx)
 
-	pods, err := r.listClusterPods(ctx, cluster)
+	pods, err := r.listDataPods(ctx, cluster)
 	if err != nil {
 		return fmt.Errorf("listing pods for rolling update: %w", err)
 	}
@@ -41,7 +41,7 @@ func (r *ClusterReconciler) rollingUpdate(ctx context.Context, cluster *redisv1.
 
 	// Update replicas one at a time.
 	for _, replica := range replicas {
-		currentHash := replica.Labels["redis.io/spec-hash"]
+		currentHash := getPodSpecHash(&replica)
 		if currentHash == desiredHash {
 			continue
 		}
@@ -56,8 +56,16 @@ func (r *ClusterReconciler) rollingUpdate(ctx context.Context, cluster *redisv1.
 
 	// Update primary last (via switchover).
 	if primary != nil {
-		currentHash := primary.Labels["redis.io/spec-hash"]
+		currentHash := getPodSpecHash(primary)
 		if currentHash != desiredHash {
+			if len(replicas) == 0 {
+				logger.Info("Rolling update: deleting single primary for recreate", "pod", primary.Name)
+				if err := r.Delete(ctx, primary); err != nil && !errors.IsNotFound(err) {
+					return fmt.Errorf("deleting primary %s for update: %w", primary.Name, err)
+				}
+				return nil
+			}
+
 			logger.Info("Rolling update: primary needs update, performing switchover", "pod", primary.Name)
 			if err := r.switchover(ctx, cluster); err != nil {
 				return fmt.Errorf("switchover during rolling update: %w", err)

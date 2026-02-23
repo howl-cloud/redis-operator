@@ -130,6 +130,11 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 		return reconcile.Result{}, fmt.Errorf("reconciling pods: %w", err)
 	}
 
+	desiredHash := r.computeSpecHash(cluster)
+	if err := r.rollingUpdate(ctx, cluster, desiredHash); err != nil {
+		return reconcile.Result{}, fmt.Errorf("rolling update: %w", err)
+	}
+
 	// Step 9: Sentinel reconciliation (sentinel mode only).
 	if cluster.Spec.Mode == redisv1.ClusterModeSentinel {
 		if err := r.reconcileSentinelPods(ctx, cluster); err != nil {

@@ -21,6 +21,8 @@ import (
 	"github.com/howl-cloud/redis-operator/webhooks"
 )
 
+const leaderElectionID = "redis-operator-leader"
+
 // RunController starts the controller-manager with all reconcilers and optional webhooks.
 func RunController(ctx context.Context, metricsAddr string, enableLeaderElection, enableWebhooks bool) error {
 	logger := log.FromContext(ctx)
@@ -34,20 +36,7 @@ func RunController(ctx context.Context, metricsAddr string, enableLeaderElection
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(redisv1.AddToScheme(scheme))
 
-	options := ctrl.Options{
-		Scheme: scheme,
-		Metrics: server.Options{
-			BindAddress: metricsAddr,
-		},
-		HealthProbeBindAddress: ":8080",
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "redis-operator-leader",
-	}
-	if enableWebhooks {
-		options.WebhookServer = webhook.NewServer(webhook.Options{
-			Port: 9443,
-		})
-	}
+	options := managerOptions(scheme, metricsAddr, enableLeaderElection, enableWebhooks)
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
 	if err != nil {
@@ -102,4 +91,22 @@ func RunController(ctx context.Context, metricsAddr string, enableLeaderElection
 	}
 
 	return nil
+}
+
+func managerOptions(scheme *runtime.Scheme, metricsAddr string, enableLeaderElection, enableWebhooks bool) ctrl.Options {
+	options := ctrl.Options{
+		Scheme: scheme,
+		Metrics: server.Options{
+			BindAddress: metricsAddr,
+		},
+		HealthProbeBindAddress: ":8080",
+		LeaderElection:         enableLeaderElection,
+		LeaderElectionID:       leaderElectionID,
+	}
+	if enableWebhooks {
+		options.WebhookServer = webhook.NewServer(webhook.Options{
+			Port: 9443,
+		})
+	}
+	return options
 }

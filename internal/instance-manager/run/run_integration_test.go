@@ -4,6 +4,7 @@ package run
 
 import (
 	"context"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -59,6 +60,14 @@ func TestWriteRedisConf_StartsServer(t *testing.T) {
 		),
 	)
 	require.NoError(t, err)
+	// chmod-all must be registered before Terminate so that (LIFO) Terminate runs
+	// first, then this walk opens up any Redis-created files (uid 999) so that
+	// t.TempDir's cleanup can remove them without "permission denied".
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(dataDirPath, func(path string, _ fs.DirEntry, _ error) error {
+			return os.Chmod(path, 0777)
+		})
+	})
 	t.Cleanup(func() {
 		_ = container.Terminate(context.Background())
 	})

@@ -2,9 +2,12 @@ package cluster
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -25,6 +28,7 @@ const (
 	controllerMountPath       = "/controller"
 	projectedVolumeName       = "projected-secrets"
 	projectedMountPath        = "/projected"
+	specHashAnnotation        = "redis.io/spec-hash"
 )
 
 // reconcilePods ensures pods match the desired state: scale up, scale down, rolling updates.
@@ -135,12 +139,24 @@ func (r *ClusterReconciler) reconcileSentinelPods(ctx context.Context, cluster *
 
 // createPod creates a single Redis pod.
 func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.RedisCluster, podName string, index int, role string) error {
+	desiredHash := r.computeSpecHash(cluster)
 	labels := podLabels(cluster.Name, podName, role)
+	logger := log.FromContext(ctx)
 
 	var existing corev1.Pod
 	if err := r.Get(ctx, types.NamespacedName{
 		Name: podName, Namespace: cluster.Namespace,
 	}, &existing); err == nil {
+		currentHash := getPodSpecHash(&existing)
+		if currentHash != desiredHash {
+			logger.V(1).Info(
+				"Pod spec hash differs from desired state; waiting for rolling update",
+				"pod", podName,
+				"currentHash", currentHash,
+				"desiredHash", desiredHash,
+			)
+		}
+
 		patch := client.MergeFrom(existing.DeepCopy())
 		changed := false
 		if existing.Labels == nil {
@@ -183,6 +199,9 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 			Name:      podName,
 			Namespace: cluster.Namespace,
 			Labels:    labels,
+			Annotations: map[string]string{
+				specHashAnnotation: desiredHash,
+			},
 		},
 		Spec: corev1.PodSpec{
 			ServiceAccountName:        serviceAccountName(cluster.Name),
@@ -507,6 +526,92 @@ func sentinelPodNameForIndex(clusterName string, index int) string {
 
 func pvcNameForIndex(clusterName string, index int) string {
 	return fmt.Sprintf("%s-data-%d", clusterName, index)
+}
+
+func getPodSpecHash(pod *corev1.Pod) string {
+	if pod.Annotations != nil {
+		if hash, ok := pod.Annotations[specHashAnnotation]; ok {
+			return hash
+		}
+	}
+	// Backward compatibility for any pre-fix pods that stored the hash as a label.
+	if pod.Labels != nil {
+		if hash, ok := pod.Labels[specHashAnnotation]; ok {
+			return hash
+		}
+	}
+	return ""
+}
+
+func (r *ClusterReconciler) computeSpecHash(cluster *redisv1.RedisCluster) string {
+	var builder strings.Builder
+
+	builder.WriteString("redisImage=")
+	builder.WriteString(cluster.Spec.ImageName)
+	builder.WriteString("\n")
+
+	builder.WriteString("operatorImage=")
+	builder.WriteString(r.OperatorImage)
+	builder.WriteString("\n")
+
+	appendResourceListHash(&builder, "resources.limits", cluster.Spec.Resources.Limits)
+	appendResourceListHash(&builder, "resources.requests", cluster.Spec.Resources.Requests)
+
+	if cluster.Spec.AuthSecret != nil {
+		builder.WriteString("authSecret=")
+		builder.WriteString(cluster.Spec.AuthSecret.Name)
+		builder.WriteString("\n")
+	}
+	if cluster.Spec.ACLConfigSecret != nil {
+		builder.WriteString("aclConfigSecret=")
+		builder.WriteString(cluster.Spec.ACLConfigSecret.Name)
+		builder.WriteString("\n")
+	}
+	if cluster.Spec.TLSSecret != nil {
+		builder.WriteString("tlsSecret=")
+		builder.WriteString(cluster.Spec.TLSSecret.Name)
+		builder.WriteString("\n")
+	}
+	if cluster.Spec.CASecret != nil {
+		builder.WriteString("caSecret=")
+		builder.WriteString(cluster.Spec.CASecret.Name)
+		builder.WriteString("\n")
+	}
+
+	redisConfigKeys := make([]string, 0, len(cluster.Spec.Redis))
+	for key := range cluster.Spec.Redis {
+		redisConfigKeys = append(redisConfigKeys, key)
+	}
+	sort.Strings(redisConfigKeys)
+	for _, key := range redisConfigKeys {
+		builder.WriteString("redis.")
+		builder.WriteString(key)
+		builder.WriteString("=")
+		builder.WriteString(cluster.Spec.Redis[key])
+		builder.WriteString("\n")
+	}
+
+	sum := sha256.Sum256([]byte(builder.String()))
+	return hex.EncodeToString(sum[:])
+}
+
+func appendResourceListHash(builder *strings.Builder, prefix string, resources corev1.ResourceList) {
+	keys := make([]string, 0, len(resources))
+	for key := range resources {
+		keys = append(keys, string(key))
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		resourceName := corev1.ResourceName(key)
+		quantity := resources[resourceName]
+		builder.WriteString(prefix)
+		builder.WriteString(".")
+		builder.WriteString(key)
+		builder.WriteString("=")
+		builder.WriteString(quantity.String())
+		builder.WriteString("\n")
+	}
 }
 
 func podLabels(clusterName, podName, role string) map[string]string {

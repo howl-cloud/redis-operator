@@ -226,6 +226,35 @@ func TestRollingUpdate_OnlyPrimaryOutdated(t *testing.T) {
 	assert.Contains(t, err.Error(), "switchover during rolling update")
 }
 
+func TestRollingUpdate_SinglePrimaryOutdatedDeletesPrimary(t *testing.T) {
+	cluster := newTestCluster("test", "default", 1)
+	cluster.Status.CurrentPrimary = "test-0"
+
+	desiredHash := "new-hash"
+	pods := []client.Object{
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-0",
+				Namespace: "default",
+				Labels: map[string]string{
+					redisv1.LabelCluster: "test",
+					"redis.io/spec-hash": "old-hash",
+				},
+			},
+		},
+	}
+
+	r, c := newReconciler(append([]client.Object{cluster}, pods...)...)
+	ctx := context.Background()
+
+	err := r.rollingUpdate(ctx, cluster, desiredHash)
+	require.NoError(t, err)
+
+	var deleted corev1.Pod
+	err = c.Get(ctx, types.NamespacedName{Name: "test-0", Namespace: "default"}, &deleted)
+	assert.Error(t, err, "single outdated primary should be deleted for recreate")
+}
+
 func TestRollingUpdate_AllUpToDate(t *testing.T) {
 	cluster := newTestCluster("test", "default", 1)
 	cluster.Status.CurrentPrimary = "test-0"

@@ -38,9 +38,7 @@ spec:
             - controller
           args:
             - --metrics-bind-address=:{{ .Values.metrics.port }}
-            {{- if .Values.leaderElection.enabled }}
-            - --leader-elect
-            {{- end }}
+            - --leader-elect={{ .Values.leaderElection.enabled }}
             - --webhook-enabled={{ .Values.webhook.enabled }}
           ports:
             {{- if .Values.metrics.enabled }}
