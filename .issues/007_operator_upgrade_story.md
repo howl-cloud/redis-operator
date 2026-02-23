@@ -7,7 +7,7 @@ labels: [production-readiness, reliability]
 created: 2026-02-19
 updated: 2026-02-19
 depends_on: [2]
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -16,13 +16,13 @@ There is no defined process for upgrading the operator itself. CRDs are at `v1al
 
 ## Acceptance Criteria
 
-- [ ] Upgrade path documented: what happens when the operator Deployment is updated to a new image
-- [ ] CRD fields that have been added/removed between versions are handled without data loss (additive-only changes preferred; removals require deprecation period)
-- [ ] If `v1alpha1` → `v1beta1` or `v1` graduation is planned, conversion webhook scaffolded and tested
-- [ ] `helm upgrade` tested against a cluster with existing `RedisCluster` resources — existing clusters continue to run without disruption
-- [ ] Operator upgrade does not trigger unintended rolling restarts of healthy Redis pods
-- [ ] Leader election enabled and tested so that a zero-downtime operator rollout is possible
-- [ ] Migration notes added to `CHANGELOG.md` for any breaking spec changes
+- [x] Upgrade path documented: what happens when the operator Deployment is updated to a new image
+- [x] CRD fields that have been added/removed between versions are handled without data loss (additive-only changes preferred; removals require deprecation period)
+- [x] If `v1alpha1` → `v1beta1` or `v1` graduation is planned, conversion webhook scaffolded and tested
+- [x] `helm upgrade` tested against a cluster with existing `RedisCluster` resources — existing clusters continue to run without disruption
+- [x] Operator upgrade does not trigger unintended rolling restarts of healthy Redis pods
+- [x] Leader election enabled and tested so that a zero-downtime operator rollout is possible
+- [x] Migration notes added to `CHANGELOG.md` for any breaking spec changes
 
 ## Notes
 

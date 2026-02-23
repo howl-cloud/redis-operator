@@ -78,7 +78,7 @@ func (c *immutableRoleRefClient) Update(ctx context.Context, obj client.Object, 
 	}
 
 	var existing rbacv1.RoleBinding
-	err := c.Client.Get(ctx, types.NamespacedName{Name: binding.Name, Namespace: binding.Namespace}, &existing)
+	err := c.Get(ctx, types.NamespacedName{Name: binding.Name, Namespace: binding.Namespace}, &existing)
 	if err == nil && existing.RoleRef != binding.RoleRef {
 		return apierrors.NewInvalid(
 			schema.GroupKind{Group: rbacv1.GroupName, Kind: "RoleBinding"},
