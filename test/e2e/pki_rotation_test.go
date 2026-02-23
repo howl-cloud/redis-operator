@@ -385,22 +385,6 @@ func verifyWebhookCert(certPEM, caPEM []byte, dnsName string) error {
 	return err
 }
 
-func parseCAKeypair(keyPEM, certPEM []byte) (*ecdsa.PrivateKey, *x509.Certificate, error) {
-	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil {
-		return nil, nil, x509.ErrUnsupportedAlgorithm
-	}
-	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
-	if err != nil {
-		return nil, nil, err
-	}
-	cert, err := parseCertificate(certPEM)
-	if err != nil {
-		return nil, nil, err
-	}
-	return key, cert, nil
-}
-
 func parseCertificate(certPEM []byte) (*x509.Certificate, error) {
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil {
@@ -496,7 +480,7 @@ func reserveLocalPort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	return ln.Addr().(*net.TCPAddr).Port, nil
 }
 

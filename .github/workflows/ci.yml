@@ -9,6 +9,7 @@ on:
 
 env:
   GO_VERSION: "1.25.1"
+  GOFLAGS: "-mod=readonly"
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
@@ -30,6 +31,32 @@ jobs:
         with:
           version: v2.10.1
           args: --timeout=5m
+
+  module-integrity:
+    name: Module integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Ensure public Go checksum database is used
+        run: |
+          if [ -n "${GONOSUMCHECK:-}" ] || [ -n "${GONOSUMDB:-}" ]; then
+            echo "GONOSUMCHECK and GONOSUMDB must be unset in CI"
+            exit 1
+          fi
+
+      - name: Verify module checksums
+        run: go mod verify
+
+      - name: Ensure go.mod and go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
 
   # ── tests ─────────────────────────────────────────────────────────────────
   test:
@@ -73,7 +100,7 @@ jobs:
   docker-build:
     name: Docker build
     runs-on: ubuntu-latest
-    needs: [lint, test, test-integration]
+    needs: [lint, module-integrity, test, test-integration]
     steps:
       - uses: actions/checkout@v4
 
