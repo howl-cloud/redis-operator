@@ -84,3 +84,13 @@ Targets **Redis 7.2** (BSD-licensed). The operator is wire-protocol compatible w
 ## Development
 
 See [`cmd/manager/README.md`](cmd/manager/README.md) to get started.
+
+### Real-cluster smoke test
+
+Issue #2 acceptance is covered by a kind + Helm smoke test script that validates operator deployment, pod/PVC lifecycle, service routing, redis-cli `PING`, scale up/down, and replica pod recreation:
+
+```bash
+make test-smoke-kind
+```
+
+CI also runs this end-to-end check in `.github/workflows/smoke-kind.yml` on pull requests.

@@ -21,29 +21,35 @@ import (
 	"github.com/howl-cloud/redis-operator/webhooks"
 )
 
-// RunController starts the controller-manager with all reconcilers and webhooks.
-func RunController(ctx context.Context, metricsAddr string, enableLeaderElection bool) error {
+// RunController starts the controller-manager with all reconcilers and optional webhooks.
+func RunController(ctx context.Context, metricsAddr string, enableLeaderElection, enableWebhooks bool) error {
 	logger := log.FromContext(ctx)
 	logger.Info("Starting controller-manager",
 		"metrics-addr", metricsAddr,
 		"leader-election", enableLeaderElection,
+		"webhooks-enabled", enableWebhooks,
 	)
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(redisv1.AddToScheme(scheme))
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	options := ctrl.Options{
 		Scheme: scheme,
 		Metrics: server.Options{
 			BindAddress: metricsAddr,
 		},
-		WebhookServer: webhook.NewServer(webhook.Options{
+		HealthProbeBindAddress: ":8080",
+		LeaderElection:         enableLeaderElection,
+		LeaderElectionID:       "redis-operator-leader",
+	}
+	if enableWebhooks {
+		options.WebhookServer = webhook.NewServer(webhook.Options{
 			Port: 9443,
-		}),
-		LeaderElection:   enableLeaderElection,
-		LeaderElectionID: "redis-operator-leader",
-	})
+		})
+	}
+
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
 	if err != nil {
 		return fmt.Errorf("creating manager: %w", err)
 	}
@@ -67,15 +73,19 @@ func RunController(ctx context.Context, metricsAddr string, enableLeaderElection
 		return fmt.Errorf("setting up ScheduledBackupReconciler: %w", err)
 	}
 
-	// Register webhooks.
-	defaulter := &webhooks.RedisClusterDefaulter{}
-	if err := defaulter.SetupWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("setting up RedisCluster defaulter webhook: %w", err)
-	}
+	if enableWebhooks {
+		// Register webhooks.
+		defaulter := &webhooks.RedisClusterDefaulter{}
+		if err := defaulter.SetupWebhookWithManager(mgr); err != nil {
+			return fmt.Errorf("setting up RedisCluster defaulter webhook: %w", err)
+		}
 
-	validator := &webhooks.RedisClusterValidator{}
-	if err := validator.SetupValidatingWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("setting up RedisCluster validator webhook: %w", err)
+		validator := &webhooks.RedisClusterValidator{}
+		if err := validator.SetupValidatingWebhookWithManager(mgr); err != nil {
+			return fmt.Errorf("setting up RedisCluster validator webhook: %w", err)
+		}
+	} else {
+		logger.Info("Webhooks are disabled; skipping webhook registration")
 	}
 
 	// Health checks.

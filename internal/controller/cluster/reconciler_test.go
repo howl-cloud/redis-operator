@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -40,8 +41,8 @@ func newTestCluster(name, namespace string, instances int32) *redisv1.RedisClust
 		},
 		Spec: redisv1.RedisClusterSpec{
 			Instances:                 instances,
-			Mode:                     redisv1.ClusterModeStandalone,
-			ImageName:                "redis:7.2",
+			Mode:                      redisv1.ClusterModeStandalone,
+			ImageName:                 "redis:7.2",
 			EnablePodDisruptionBudget: boolPtr(true),
 			Storage: redisv1.StorageSpec{
 				Size: resource.MustParse("1Gi"),
@@ -61,6 +62,28 @@ func newReconciler(objs ...client.Object) (*ClusterReconciler, client.Client) {
 	c := builder.Build()
 	recorder := record.NewFakeRecorder(100)
 	return NewClusterReconciler(c, scheme, recorder), c
+}
+
+func TestNewClusterReconciler_UsesOperatorImageFromEnv(t *testing.T) {
+	t.Setenv("OPERATOR_IMAGE_NAME", "example/redis-operator:test")
+
+	scheme := testScheme()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	recorder := record.NewFakeRecorder(1)
+
+	r := NewClusterReconciler(c, scheme, recorder)
+	assert.Equal(t, "example/redis-operator:test", r.OperatorImage)
+}
+
+func TestNewClusterReconciler_DefaultOperatorImage(t *testing.T) {
+	t.Setenv("OPERATOR_IMAGE_NAME", "")
+
+	scheme := testScheme()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	recorder := record.NewFakeRecorder(1)
+
+	r := NewClusterReconciler(c, scheme, recorder)
+	assert.Equal(t, defaultOperatorImage, r.OperatorImage)
 }
 
 func TestReconcilePDB_Creates(t *testing.T) {
@@ -319,6 +342,84 @@ func TestReconcilePods_ScaleDown(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestReconcilePods_RecreatesMissingOrdinal(t *testing.T) {
+	cluster := newTestCluster("test", "default", 3)
+	cluster.Status.CurrentPrimary = "test-0"
+
+	pod0 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				redisv1.LabelCluster:  "test",
+				redisv1.LabelInstance: "test-0",
+				redisv1.LabelRole:     redisv1.LabelRolePrimary,
+			},
+		},
+	}
+	pod2 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-2",
+			Namespace: "default",
+			Labels: map[string]string{
+				redisv1.LabelCluster:  "test",
+				redisv1.LabelInstance: "test-2",
+				redisv1.LabelRole:     redisv1.LabelRoleReplica,
+			},
+		},
+	}
+
+	r, c := newReconciler(cluster, pod0, pod2)
+	ctx := context.Background()
+
+	err := r.reconcilePods(ctx, cluster)
+	require.NoError(t, err)
+
+	var recreated corev1.Pod
+	err = c.Get(ctx, types.NamespacedName{Name: "test-1", Namespace: "default"}, &recreated)
+	require.NoError(t, err)
+	assert.Equal(t, redisv1.LabelRoleReplica, recreated.Labels[redisv1.LabelRole])
+}
+
+func TestReconcilePods_RecreatesMissingCurrentPrimaryAsPrimary(t *testing.T) {
+	cluster := newTestCluster("test", "default", 3)
+	cluster.Status.CurrentPrimary = "test-1"
+
+	pod0 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				redisv1.LabelCluster:  "test",
+				redisv1.LabelInstance: "test-0",
+				redisv1.LabelRole:     redisv1.LabelRoleReplica,
+			},
+		},
+	}
+	pod2 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-2",
+			Namespace: "default",
+			Labels: map[string]string{
+				redisv1.LabelCluster:  "test",
+				redisv1.LabelInstance: "test-2",
+				redisv1.LabelRole:     redisv1.LabelRoleReplica,
+			},
+		},
+	}
+
+	r, c := newReconciler(cluster, pod0, pod2)
+	ctx := context.Background()
+
+	err := r.reconcilePods(ctx, cluster)
+	require.NoError(t, err)
+
+	var recreatedPrimary corev1.Pod
+	err = c.Get(ctx, types.NamespacedName{Name: "test-1", Namespace: "default"}, &recreatedPrimary)
+	require.NoError(t, err)
+	assert.Equal(t, redisv1.LabelRolePrimary, recreatedPrimary.Labels[redisv1.LabelRole])
+}
+
 func TestReconcileServiceAccount_Creates(t *testing.T) {
 	cluster := newTestCluster("test", "default", 1)
 	r, c := newReconciler(cluster)
@@ -341,6 +442,30 @@ func TestReconcileServiceAccount_Idempotent(t *testing.T) {
 	// Call twice.
 	require.NoError(t, r.reconcileServiceAccount(ctx, cluster))
 	require.NoError(t, r.reconcileServiceAccount(ctx, cluster))
+}
+
+func TestReconcileRBAC_CreatesRoleAndRoleBinding(t *testing.T) {
+	cluster := newTestCluster("test", "default", 1)
+	r, c := newReconciler(cluster)
+	ctx := context.Background()
+
+	err := r.reconcileRBAC(ctx, cluster)
+	require.NoError(t, err)
+
+	var role rbacv1.Role
+	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &role)
+	require.NoError(t, err)
+	assert.Equal(t, "test", role.Labels[redisv1.LabelCluster])
+	assert.NotEmpty(t, role.Rules)
+
+	var binding rbacv1.RoleBinding
+	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &binding)
+	require.NoError(t, err)
+	assert.Equal(t, "test", binding.Labels[redisv1.LabelCluster])
+	require.Len(t, binding.Subjects, 1)
+	assert.Equal(t, "test", binding.Subjects[0].Name)
+	assert.Equal(t, "default", binding.Subjects[0].Namespace)
+	assert.Equal(t, "test", binding.RoleRef.Name)
 }
 
 func TestReconcileConfigMap_Creates(t *testing.T) {
@@ -419,8 +544,8 @@ func TestUsesSecret(t *testing.T) {
 	cluster := &redisv1.RedisCluster{
 		Status: redisv1.RedisClusterStatus{
 			SecretsResourceVersion: map[string]string{
-				"my-auth":   "100",
-				"my-tls":    "200",
+				"my-auth": "100",
+				"my-tls":  "200",
 			},
 		},
 	}
@@ -552,6 +677,7 @@ func TestCreatePod_ContainerSpec(t *testing.T) {
 	// Verify init container.
 	require.Len(t, pod.Spec.InitContainers, 1)
 	assert.Equal(t, "copy-manager", pod.Spec.InitContainers[0].Name)
+	assert.Equal(t, r.OperatorImage, pod.Spec.InitContainers[0].Image)
 }
 
 func TestReconcilePDB_UpdatesMinAvailable(t *testing.T) {
@@ -654,4 +780,3 @@ func TestListClusterPVCs_Filtering(t *testing.T) {
 	assert.Len(t, pvcs, 1)
 	assert.Equal(t, "test-data-0", pvcs[0].Name)
 }
-

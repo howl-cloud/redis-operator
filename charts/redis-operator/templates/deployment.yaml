@@ -41,6 +41,7 @@ spec:
             {{- if .Values.leaderElection.enabled }}
             - --leader-elect
             {{- end }}
+            - --webhook-enabled={{ .Values.webhook.enabled }}
           ports:
             {{- if .Values.metrics.enabled }}
             - name: metrics
@@ -77,10 +78,12 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.env }}
           env:
+            - name: OPERATOR_IMAGE_NAME
+              value: {{ include "redis-operator.image" . | quote }}
+            {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- end }}
           volumeMounts:
             {{- if .Values.webhook.enabled }}
             - name: webhook-certs

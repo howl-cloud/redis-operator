@@ -121,6 +121,11 @@ func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.R
 // checkReachability returns true if any expected pod is unreachable (should requeue).
 func (r *ClusterReconciler) checkReachability(_ context.Context, cluster *redisv1.RedisCluster, instanceStatuses map[string]redisv1.InstanceStatus) bool {
 	expected := int(cluster.Spec.Instances)
+	if len(instanceStatuses) < expected {
+		// Allow reconciliation to continue so missing pods can be created.
+		return false
+	}
+
 	reachable := 0
 	for _, s := range instanceStatuses {
 		if s.Connected {
