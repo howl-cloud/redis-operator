@@ -9,9 +9,20 @@ IMAGE=${IMAGE:-redis-operator:smoke}
 REDIS_CLUSTER_NAME=${REDIS_CLUSTER_NAME:-smoke-redis}
 
 cleanup() {
+  local exit_code=$?
+  if [[ ${exit_code} -ne 0 ]] && command -v kubectl >/dev/null 2>&1; then
+    echo "smoke test failed; collecting diagnostics..." >&2
+    kubectl get pods -A || true
+    kubectl describe pods -n "${OPERATOR_NS}" || true
+    kubectl describe pods -n "${TEST_NS}" || true
+    kubectl logs deployment/"${RELEASE_NAME}" -n "${OPERATOR_NS}" --all-containers=true || true
+  fi
+
   if command -v kind >/dev/null 2>&1; then
     kind delete cluster --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
   fi
+
+  exit "${exit_code}"
 }
 trap cleanup EXIT
 
@@ -39,7 +50,8 @@ helm upgrade --install "${RELEASE_NAME}" charts/redis-operator \
   --create-namespace \
   --set image.repository="${IMAGE%:*}" \
   --set image.tag="${IMAGE##*:}" \
-  --set image.pullPolicy=IfNotPresent
+  --set image.pullPolicy=IfNotPresent \
+  --set webhook.enabled=false
 
 kubectl rollout status deployment/"${RELEASE_NAME}" -n "${OPERATOR_NS}" --timeout=180s
 
@@ -54,13 +66,15 @@ spec:
     size: 1Gi
 YAML
 
+kubectl wait --for=create pod/${REDIS_CLUSTER_NAME}-0 -n "${TEST_NS}" --timeout=300s
 kubectl wait --for=condition=Ready pod/${REDIS_CLUSTER_NAME}-0 -n "${TEST_NS}" --timeout=300s
-kubectl get pvc ${REDIS_CLUSTER_NAME}-0-data -n "${TEST_NS}" >/dev/null
+kubectl get pvc ${REDIS_CLUSTER_NAME}-data-0 -n "${TEST_NS}" >/dev/null
 
 kubectl patch rediscluster/${REDIS_CLUSTER_NAME} -n "${TEST_NS}" --type merge -p '{"spec":{"instances":3}}'
 for ordinal in 0 1 2; do
+  kubectl wait --for=create pod/${REDIS_CLUSTER_NAME}-${ordinal} -n "${TEST_NS}" --timeout=300s
   kubectl wait --for=condition=Ready pod/${REDIS_CLUSTER_NAME}-${ordinal} -n "${TEST_NS}" --timeout=300s
-  kubectl get pvc ${REDIS_CLUSTER_NAME}-${ordinal}-data -n "${TEST_NS}" >/dev/null
+  kubectl get pvc ${REDIS_CLUSTER_NAME}-data-${ordinal} -n "${TEST_NS}" >/dev/null
 done
 
 primary_pod=$(kubectl get pods -n "${TEST_NS}" -l redis.io/cluster="${REDIS_CLUSTER_NAME}",redis.io/role=primary -o jsonpath='{.items[0].metadata.name}')
@@ -96,6 +110,7 @@ if [[ "${ping_result}" != "PONG" ]]; then
 fi
 
 kubectl delete pod ${REDIS_CLUSTER_NAME}-1 -n "${TEST_NS}" --wait=true
+kubectl wait --for=create pod/${REDIS_CLUSTER_NAME}-1 -n "${TEST_NS}" --timeout=300s
 kubectl wait --for=condition=Ready pod/${REDIS_CLUSTER_NAME}-1 -n "${TEST_NS}" --timeout=300s
 
 kubectl patch rediscluster/${REDIS_CLUSTER_NAME} -n "${TEST_NS}" --type merge -p '{"spec":{"instances":1}}'

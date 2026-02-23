@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -39,19 +40,19 @@ func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.
 	desired := int(cluster.Spec.Instances)
 	current := len(existingPods)
 
-	// Scale up: create missing pods.
+	// Ensure desired ordinals exist.
 	if current < desired {
 		logger.Info("Scaling up", "current", current, "desired", desired)
 		r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "ScaleUp", "Scaling up from %d to %d instances", current, desired)
-		for i := current; i < desired; i++ {
-			podName := podNameForIndex(cluster.Name, i)
-			role := redisv1.LabelRoleReplica
-			if i == 0 && cluster.Status.CurrentPrimary == "" {
-				role = redisv1.LabelRolePrimary
-			}
-			if err := r.createPod(ctx, cluster, podName, i, role); err != nil {
-				return fmt.Errorf("creating pod %s: %w", podName, err)
-			}
+	}
+	for i := 0; i < desired; i++ {
+		podName := podNameForIndex(cluster.Name, i)
+		role := redisv1.LabelRoleReplica
+		if podName == cluster.Status.CurrentPrimary || (cluster.Status.CurrentPrimary == "" && i == 0) {
+			role = redisv1.LabelRolePrimary
+		}
+		if err := r.createPod(ctx, cluster, podName, i, role); err != nil {
+			return fmt.Errorf("creating pod %s: %w", podName, err)
 		}
 	}
 
@@ -132,7 +133,7 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 			InitContainers: []corev1.Container{
 				{
 					Name:    "copy-manager",
-					Image:   "redis-operator:latest", // Will be overridden via env/config.
+					Image:   r.OperatorImage,
 					Command: []string{"/manager", "copy-binary", instanceManagerBinaryPath},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: controllerVolumeName, MountPath: controllerMountPath},
@@ -285,7 +286,77 @@ func (r *ClusterReconciler) reconcileServiceAccount(ctx context.Context, cluster
 }
 
 // reconcileRBAC ensures the Role and RoleBinding exist for the instance manager.
-func (r *ClusterReconciler) reconcileRBAC(_ context.Context, _ *redisv1.RedisCluster) error {
+func (r *ClusterReconciler) reconcileRBAC(ctx context.Context, cluster *redisv1.RedisCluster) error {
+	name := serviceAccountName(cluster.Name)
+	labels := map[string]string{
+		redisv1.LabelCluster: cluster.Name,
+	}
+
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: cluster.Namespace,
+			Labels:    labels,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"redis.io"},
+				Resources: []string{"redisclusters"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{"redis.io"},
+				Resources: []string{"redisclusters/status"},
+				Verbs:     []string{"get", "patch", "update"},
+			},
+			{
+				APIGroups: []string{""},
+				Resources: []string{"events"},
+				Verbs:     []string{"create", "patch"},
+			},
+		},
+	}
+
+	var existingRole rbacv1.Role
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, &existingRole); err != nil {
+		if !errors.IsNotFound(err) {
+			return fmt.Errorf("getting role %s: %w", name, err)
+		}
+		if err := r.Create(ctx, role); err != nil {
+			return fmt.Errorf("creating role %s: %w", name, err)
+		}
+	}
+
+	binding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: cluster.Namespace,
+			Labels:    labels,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      name,
+				Namespace: cluster.Namespace,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     name,
+		},
+	}
+
+	var existingBinding rbacv1.RoleBinding
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, &existingBinding); err != nil {
+		if !errors.IsNotFound(err) {
+			return fmt.Errorf("getting rolebinding %s: %w", name, err)
+		}
+		if err := r.Create(ctx, binding); err != nil {
+			return fmt.Errorf("creating rolebinding %s: %w", name, err)
+		}
+	}
+
 	return nil
 }
 

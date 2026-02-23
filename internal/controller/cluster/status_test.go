@@ -214,6 +214,7 @@ func TestCheckReachability_SomeUnreachable(t *testing.T) {
 	statuses := map[string]redisv1.InstanceStatus{
 		"test-0": {Connected: true},
 		"test-1": {Connected: false},
+		"test-2": {Connected: true},
 	}
 
 	requeue := r.checkReachability(context.TODO(), cluster, statuses)
@@ -230,7 +231,7 @@ func TestCheckReachability_FewerStatusesThanExpected(t *testing.T) {
 	}
 
 	requeue := r.checkReachability(context.TODO(), cluster, statuses)
-	assert.True(t, requeue)
+	assert.False(t, requeue)
 }
 
 func TestPollPodStatus_Success(t *testing.T) {

@@ -97,6 +97,7 @@ ENVTEST_K8S_VERSION ?= 1.31.0
 .PHONY: test-smoke-kind
 test-smoke-kind: ## Run the real-cluster smoke test using kind + Helm
 	./test/smoke/real_cluster_smoke_test.sh
+	
 .PHONY: test-e2e
 test-e2e: ## Run e2e tests using envtest (requires: make setup-envtest first)
 	KUBEBUILDER_ASSETS="$(shell setup-envtest use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path 2>/dev/null || echo '')" \

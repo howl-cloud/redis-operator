@@ -40,6 +40,7 @@ func main() {
 func controllerCmd() *cobra.Command {
 	var metricsAddr string
 	var enableLeaderElection bool
+	var enableWebhooks bool
 
 	cmd := &cobra.Command{
 		Use:   "controller",
@@ -47,12 +48,13 @@ func controllerCmd() *cobra.Command {
 		Long:  "Starts the ctrl.Manager with all reconcilers and webhooks.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := ctrl.SetupSignalHandler()
-			return controller.RunController(ctx, metricsAddr, enableLeaderElection)
+			return controller.RunController(ctx, metricsAddr, enableLeaderElection, enableWebhooks)
 		},
 	}
 
 	cmd.Flags().StringVar(&metricsAddr, "metrics-bind-address", ":9090", "The address the metric endpoint binds to")
 	cmd.Flags().BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager")
+	cmd.Flags().BoolVar(&enableWebhooks, "webhook-enabled", true, "Enable admission webhooks for RedisCluster resources")
 
 	return cmd
 }

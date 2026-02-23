@@ -4,6 +4,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -22,21 +23,30 @@ const (
 	requeueInterval = 30 * time.Second
 	// statusPollTimeout is the timeout for HTTP status polls to instance managers.
 	statusPollTimeout = 5 * time.Second
+	// defaultOperatorImage is used when OPERATOR_IMAGE_NAME is not set.
+	defaultOperatorImage = "redis-operator:latest"
 )
 
 // ClusterReconciler reconciles RedisCluster objects.
 type ClusterReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme        *runtime.Scheme
+	Recorder      record.EventRecorder
+	OperatorImage string
 }
 
 // NewClusterReconciler creates a new ClusterReconciler.
 func NewClusterReconciler(c client.Client, scheme *runtime.Scheme, recorder record.EventRecorder) *ClusterReconciler {
+	operatorImage := os.Getenv("OPERATOR_IMAGE_NAME")
+	if operatorImage == "" {
+		operatorImage = defaultOperatorImage
+	}
+
 	return &ClusterReconciler{
-		Client:   c,
-		Scheme:   scheme,
-		Recorder: recorder,
+		Client:        c,
+		Scheme:        scheme,
+		Recorder:      recorder,
+		OperatorImage: operatorImage,
 	}
 }
 
