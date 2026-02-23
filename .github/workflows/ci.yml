@@ -55,11 +55,25 @@ jobs:
           name: coverage
           path: cover.out
 
+  test-integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Integration tests
+        run: make test-integration
+
   # ── docker build ──────────────────────────────────────────────────────────
   docker-build:
     name: Docker build
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, test, test-integration]
     steps:
       - uses: actions/checkout@v4
 

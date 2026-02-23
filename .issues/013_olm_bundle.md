@@ -7,6 +7,7 @@ labels: [distribution, feature]
 created: 2026-02-19
 updated: 2026-02-19
 depends_on: [1, 6]
+completed: false
 ---
 
 ## Summary

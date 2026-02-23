@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -21,6 +22,16 @@ import (
 
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 	"github.com/howl-cloud/redis-operator/internal/instance-manager/replication"
+)
+
+const (
+	envProjectedSecretsDir = "REDIS_OPERATOR_PROJECTED_SECRETS_DIR"
+	envACLFilePath         = "REDIS_OPERATOR_ACL_FILE_PATH"
+)
+
+var (
+	projectedSecretsDir = "/projected"
+	usersACLFilePath    = "/data/users.acl"
 )
 
 // InstanceReconciler watches the RedisCluster CR from inside the pod.
@@ -209,7 +220,8 @@ func (r *InstanceReconciler) reconcileSecrets(ctx context.Context, cluster *redi
 			return fmt.Errorf("reading ACL secret: %w", err)
 		}
 		if acl != "" {
-			if err := os.WriteFile("/data/users.acl", []byte(acl), 0600); err != nil {
+			targetACLPath := resolveACLFilePath()
+			if err := os.WriteFile(targetACLPath, []byte(acl), 0600); err != nil {
 				return fmt.Errorf("writing ACL file: %w", err)
 			}
 			if err := r.redisClient.Do(ctx, "ACL", "LOAD").Err(); err != nil {
@@ -257,7 +269,7 @@ func (r *InstanceReconciler) getPodIP(_ context.Context, podName, namespace stri
 func (r *InstanceReconciler) readSecretKey(ctx context.Context, namespace, secretName, key string) (string, error) {
 	// In production, read from projected volume mount rather than API.
 	// Projected volumes are mounted at /projected/<secretName>/<key>.
-	data, err := os.ReadFile(fmt.Sprintf("/projected/%s/%s", secretName, key))
+	data, err := os.ReadFile(filepath.Join(resolveProjectedSecretsDir(), secretName, key))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -280,4 +292,18 @@ func requiresRestart(key string) bool {
 		"databases":        true,
 	}
 	return restartKeys[key]
+}
+
+func resolveProjectedSecretsDir() string {
+	if dir := strings.TrimSpace(os.Getenv(envProjectedSecretsDir)); dir != "" {
+		return dir
+	}
+	return projectedSecretsDir
+}
+
+func resolveACLFilePath() string {
+	if p := strings.TrimSpace(os.Getenv(envACLFilePath)); p != "" {
+		return p
+	}
+	return usersACLFilePath
 }

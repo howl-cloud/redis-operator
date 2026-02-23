@@ -97,6 +97,10 @@ ENVTEST_K8S_VERSION ?= 1.31.0
 .PHONY: test-smoke-kind
 test-smoke-kind: ## Run the real-cluster smoke test using kind + Helm
 	./test/smoke/real_cluster_smoke_test.sh
+
+.PHONY: test-integration
+test-integration: ## Run real Redis integration tests (requires Docker)
+	INTEGRATION_TESTS=1 go test -tags integration -v -count=1 -timeout 300s ./test/integration/... ./internal/instance-manager/reconciler ./internal/instance-manager/run
 	
 .PHONY: test-e2e
 test-e2e: ## Run e2e tests using envtest (requires: make setup-envtest first)

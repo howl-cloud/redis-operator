@@ -5,8 +5,9 @@ priority: p0
 type: testing
 labels: [production-readiness, testing]
 created: 2026-02-19
-updated: 2026-02-19
+updated: 2026-02-22
 depends_on: [1]
+completed: true
 ---
 
 ## Summary
@@ -15,15 +16,15 @@ All unit tests use `miniredis`, which does not implement Redis replication (`PSY
 
 ## Acceptance Criteria
 
-- [ ] Integration test suite using `testcontainers-go` (or a locally spawned `redis-server`) that tests:
+- [x] Integration test suite using `testcontainers-go` (or a locally spawned `redis-server`) that tests:
   - `replication.GetInfo` parses real `INFO replication` output
   - `replication.Promote` (`REPLICAOF NO ONE`) promotes a replica to primary
   - `replication.SetReplicaOf` configures replication between two real Redis instances
   - Instance manager `reconcileSecrets` applies `CONFIG SET requirepass` and the new password is enforced
   - Instance manager `reconcileSecrets` writes an ACL file and `ACL LOAD` takes effect
   - `writeRedisConf` produces a `redis.conf` that starts `redis-server` without errors
-- [ ] Tests run in CI (tagged `//go:build integration` or a separate `make test-integration` target)
-- [ ] Tests are skipped gracefully when Docker is unavailable (CI without Docker)
+- [x] Tests run in CI (tagged `//go:build integration` or a separate `make test-integration` target)
+- [x] Tests are skipped gracefully when Docker is unavailable (CI without Docker)
 
 ## Notes
 
