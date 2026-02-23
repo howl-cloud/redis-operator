@@ -5,9 +5,9 @@ priority: p2
 type: chore
 labels: [ci, security, dependencies]
 created: 2026-02-19
-updated: 2026-02-19
+updated: 2026-02-23
 depends_on: [1]
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -16,12 +16,12 @@ Dependencies (`controller-runtime`, `client-go`, `go-redis`, etc.) are pinned bu
 
 ## Acceptance Criteria
 
-- [ ] Renovate or Dependabot configured for Go module updates (`go.mod`)
-- [ ] Helm chart dependency updates covered (if any)
-- [ ] GitHub Actions workflow versions covered
-- [ ] Update PRs are grouped by ecosystem (one PR for all Go updates, not one per package)
-- [ ] Auto-merge enabled for patch-level updates that pass CI
-- [ ] Major version updates (e.g. `controller-runtime` v0.19 → v0.20) require manual review
+- [x] Renovate or Dependabot configured for Go module updates (`go.mod`)
+- [x] Helm chart dependency updates covered (if any) — chart has no external chart dependencies
+- [x] GitHub Actions workflow versions covered
+- [x] Update PRs are grouped by ecosystem (one PR for all Go updates, not one per package)
+- [x] Auto-merge enabled for patch-level updates that pass CI
+- [x] Major version updates (e.g. `controller-runtime` v0.19 → v0.20) require manual review
 
 ## Notes
 
