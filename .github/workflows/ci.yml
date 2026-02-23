@@ -115,7 +115,7 @@ jobs:
           load: true
           tags: ${{ env.IMAGE_NAME }}:ci
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=max,ignore-error=true
 
       - name: Smoke-test image
         run: docker run --rm ${{ env.IMAGE_NAME }}:ci --help
@@ -161,4 +161,4 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=max,ignore-error=true

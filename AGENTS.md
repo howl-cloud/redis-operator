@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Agent guidance for the `redis-operator` codebase. Read this before making changes.
 
