@@ -31,7 +31,7 @@ func newReconcilerWithRecorder(objs ...client.Object) (*ClusterReconciler, clien
 	}
 	c := builder.Build()
 	recorder := record.NewFakeRecorder(100)
-	return NewClusterReconciler(c, scheme, recorder), c, recorder
+	return NewClusterReconciler(c, scheme, recorder, 0), c, recorder
 }
 
 // expectEvent asserts that the next event on the recorder's channel contains the given substring.

@@ -39,6 +39,8 @@ func main() {
 
 func controllerCmd() *cobra.Command {
 	var metricsAddr string
+	var pprofBindAddr string
+	var maxConcurrentReconciles int
 	var enableLeaderElection bool
 	var enableWebhooks bool
 
@@ -48,11 +50,20 @@ func controllerCmd() *cobra.Command {
 		Long:  "Starts the ctrl.Manager with all reconcilers and webhooks.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := ctrl.SetupSignalHandler()
-			return controller.RunController(ctx, metricsAddr, enableLeaderElection, enableWebhooks)
+			return controller.RunController(
+				ctx,
+				metricsAddr,
+				pprofBindAddr,
+				maxConcurrentReconciles,
+				enableLeaderElection,
+				enableWebhooks,
+			)
 		},
 	}
 
 	cmd.Flags().StringVar(&metricsAddr, "metrics-bind-address", ":9090", "The address the metric endpoint binds to")
+	cmd.Flags().StringVar(&pprofBindAddr, "pprof-bind-address", "", "The address the pprof endpoint binds to (empty disables pprof)")
+	cmd.Flags().IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 5, "Maximum number of concurrent reconciles for RedisCluster resources")
 	cmd.Flags().BoolVar(&enableLeaderElection, "leader-elect", true, "Enable leader election for controller manager")
 	cmd.Flags().BoolVar(&enableWebhooks, "webhook-enabled", true, "Enable admission webhooks for RedisCluster resources")
 

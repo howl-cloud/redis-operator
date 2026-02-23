@@ -64,7 +64,7 @@ func newReconciler(objs ...client.Object) (*ClusterReconciler, client.Client) {
 	}
 	c := builder.Build()
 	recorder := record.NewFakeRecorder(100)
-	return NewClusterReconciler(c, scheme, recorder), c
+	return NewClusterReconciler(c, scheme, recorder, 0), c
 }
 
 type immutableRoleRefClient struct {
@@ -99,8 +99,9 @@ func TestNewClusterReconciler_UsesOperatorImageFromEnv(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	recorder := record.NewFakeRecorder(1)
 
-	r := NewClusterReconciler(c, scheme, recorder)
+	r := NewClusterReconciler(c, scheme, recorder, 0)
 	assert.Equal(t, "example/redis-operator:test", r.OperatorImage)
+	assert.Equal(t, defaultMaxConcurrentReconciles, r.MaxConcurrentReconciles)
 }
 
 func TestNewClusterReconciler_DefaultOperatorImage(t *testing.T) {
@@ -110,8 +111,18 @@ func TestNewClusterReconciler_DefaultOperatorImage(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	recorder := record.NewFakeRecorder(1)
 
-	r := NewClusterReconciler(c, scheme, recorder)
+	r := NewClusterReconciler(c, scheme, recorder, 0)
 	assert.Equal(t, defaultOperatorImage, r.OperatorImage)
+	assert.Equal(t, defaultMaxConcurrentReconciles, r.MaxConcurrentReconciles)
+}
+
+func TestNewClusterReconciler_CustomMaxConcurrentReconciles(t *testing.T) {
+	scheme := testScheme()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	recorder := record.NewFakeRecorder(1)
+
+	r := NewClusterReconciler(c, scheme, recorder, 9)
+	assert.Equal(t, 9, r.MaxConcurrentReconciles)
 }
 
 func TestReconcilePDB_Creates(t *testing.T) {

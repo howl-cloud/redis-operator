@@ -105,7 +105,7 @@ var _ = BeforeSuite(func() {
 
 	// Register reconcilers (no webhooks — envtest doesn't run the webhook server by default).
 	recorder := mgr.GetEventRecorderFor("redis-operator-e2e")
-	clusterReconciler := cluster.NewClusterReconciler(mgr.GetClient(), mgr.GetScheme(), recorder)
+	clusterReconciler := cluster.NewClusterReconciler(mgr.GetClient(), mgr.GetScheme(), recorder, 0)
 	Expect(clusterReconciler.SetupWithManager(mgr)).To(Succeed())
 
 	backupReconciler := backup.NewBackupReconciler(mgr.GetClient(), mgr.GetScheme(), recorder)

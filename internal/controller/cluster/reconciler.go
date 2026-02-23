@@ -12,6 +12,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -23,6 +24,8 @@ const (
 	requeueInterval = 30 * time.Second
 	// statusPollTimeout is the timeout for HTTP status polls to instance managers.
 	statusPollTimeout = 5 * time.Second
+	// defaultMaxConcurrentReconciles is the default number of parallel reconciles.
+	defaultMaxConcurrentReconciles = 5
 	// defaultOperatorImage is used when OPERATOR_IMAGE_NAME is not set.
 	defaultOperatorImage = "redis-operator:latest"
 )
@@ -30,23 +33,28 @@ const (
 // ClusterReconciler reconciles RedisCluster objects.
 type ClusterReconciler struct {
 	client.Client
-	Scheme        *runtime.Scheme
-	Recorder      record.EventRecorder
-	OperatorImage string
+	Scheme                  *runtime.Scheme
+	Recorder                record.EventRecorder
+	OperatorImage           string
+	MaxConcurrentReconciles int
 }
 
 // NewClusterReconciler creates a new ClusterReconciler.
-func NewClusterReconciler(c client.Client, scheme *runtime.Scheme, recorder record.EventRecorder) *ClusterReconciler {
+func NewClusterReconciler(c client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, maxConcurrentReconciles int) *ClusterReconciler {
 	operatorImage := os.Getenv("OPERATOR_IMAGE_NAME")
 	if operatorImage == "" {
 		operatorImage = defaultOperatorImage
 	}
+	if maxConcurrentReconciles <= 0 {
+		maxConcurrentReconciles = defaultMaxConcurrentReconciles
+	}
 
 	return &ClusterReconciler{
-		Client:        c,
-		Scheme:        scheme,
-		Recorder:      recorder,
-		OperatorImage: operatorImage,
+		Client:                  c,
+		Scheme:                  scheme,
+		Recorder:                recorder,
+		OperatorImage:           operatorImage,
+		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}
 }
 
@@ -170,5 +178,8 @@ func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&redisv1.RedisCluster{}).
 		Named("cluster-reconciler").
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: r.MaxConcurrentReconciles,
+		}).
 		Complete(r)
 }

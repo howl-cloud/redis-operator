@@ -24,10 +24,17 @@ import (
 const leaderElectionID = "redis-operator-leader"
 
 // RunController starts the controller-manager with all reconcilers and optional webhooks.
-func RunController(ctx context.Context, metricsAddr string, enableLeaderElection, enableWebhooks bool) error {
+func RunController(
+	ctx context.Context,
+	metricsAddr, pprofBindAddr string,
+	maxConcurrentReconciles int,
+	enableLeaderElection, enableWebhooks bool,
+) error {
 	logger := log.FromContext(ctx)
 	logger.Info("Starting controller-manager",
 		"metrics-addr", metricsAddr,
+		"pprof-addr", pprofBindAddr,
+		"max-concurrent-reconciles", maxConcurrentReconciles,
 		"leader-election", enableLeaderElection,
 		"webhooks-enabled", enableWebhooks,
 	)
@@ -36,7 +43,7 @@ func RunController(ctx context.Context, metricsAddr string, enableLeaderElection
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(redisv1.AddToScheme(scheme))
 
-	options := managerOptions(scheme, metricsAddr, enableLeaderElection, enableWebhooks)
+	options := managerOptions(scheme, metricsAddr, pprofBindAddr, enableLeaderElection, enableWebhooks)
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
 	if err != nil {
@@ -47,7 +54,7 @@ func RunController(ctx context.Context, metricsAddr string, enableLeaderElection
 	recorder := mgr.GetEventRecorderFor("redis-operator")
 
 	// Register reconcilers.
-	clusterReconciler := cluster.NewClusterReconciler(mgr.GetClient(), mgr.GetScheme(), recorder)
+	clusterReconciler := cluster.NewClusterReconciler(mgr.GetClient(), mgr.GetScheme(), recorder, maxConcurrentReconciles)
 	if err := clusterReconciler.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up ClusterReconciler: %w", err)
 	}
@@ -93,13 +100,18 @@ func RunController(ctx context.Context, metricsAddr string, enableLeaderElection
 	return nil
 }
 
-func managerOptions(scheme *runtime.Scheme, metricsAddr string, enableLeaderElection, enableWebhooks bool) ctrl.Options {
+func managerOptions(
+	scheme *runtime.Scheme,
+	metricsAddr, pprofBindAddr string,
+	enableLeaderElection, enableWebhooks bool,
+) ctrl.Options {
 	options := ctrl.Options{
 		Scheme: scheme,
 		Metrics: server.Options{
 			BindAddress: metricsAddr,
 		},
 		HealthProbeBindAddress: ":8080",
+		PprofBindAddress:       pprofBindAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       leaderElectionID,
 	}
