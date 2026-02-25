@@ -145,6 +145,7 @@ func (r *ClusterReconciler) failover(ctx context.Context, cluster *redisv1.Redis
 
 	logger.Info("Failover completed", "new-primary", candidate, "former-primary", formerPrimary)
 	r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "FailoverCompleted", "Failover completed: new primary is %s (former: %s)", candidate, formerPrimary)
+	incrementFailoverMetric(cluster)
 	return nil
 }
 

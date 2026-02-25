@@ -124,6 +124,7 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 			return replication.SetReplicaOf(demCtx, redisClient, primaryIP, port)
 		},
 	)
+	srv.SetMetricsIdentity(clusterName, namespace, podName)
 	srv.SetPrimaryIsolationConfig(k8sClient, webserver.PrimaryIsolationConfig{
 		Enabled:          primaryIsolationEnabled(cluster.Spec.PrimaryIsolation),
 		ClusterName:      clusterName,

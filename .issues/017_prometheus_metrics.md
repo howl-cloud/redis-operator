@@ -7,7 +7,7 @@ labels: [production-readiness, observability, monitoring]
 created: 2026-02-23
 updated: 2026-02-23
 depends_on: []
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -80,12 +80,12 @@ CNPG also supports **custom metrics** defined via ConfigMap/Secret, letting user
 
 ## Acceptance Criteria
 
-- [ ] `/metrics` on instance manager pods returns Prometheus-format metrics from `INFO ALL`
-- [ ] At least 15 distinct Redis metrics are exported (see table above)
-- [ ] Metrics include `namespace`, `cluster`, `pod`, `role` labels
-- [ ] Controller-level metrics exported on the manager's metrics port
-- [ ] ServiceMonitor template works with Prometheus Operator out of the box
-- [ ] Grafana dashboard JSON included in `charts/redis-operator/dashboards/` (optional but recommended)
+- [x] `/metrics` on instance manager pods returns Prometheus-format metrics from `INFO ALL`
+- [x] At least 15 distinct Redis metrics are exported (see table above)
+- [x] Metrics include `namespace`, `cluster`, `pod`, `role` labels
+- [x] Controller-level metrics exported on the manager's metrics port
+- [x] ServiceMonitor template works with Prometheus Operator out of the box
+- [x] Grafana dashboard JSON included in `charts/redis-operator/dashboards/` (optional but recommended)
 
 ## Notes
 

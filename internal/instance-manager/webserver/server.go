@@ -10,10 +10,11 @@ import (
 	"os/exec"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -21,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
+	instmetrics "github.com/howl-cloud/redis-operator/internal/instance-manager/metrics"
 	"github.com/howl-cloud/redis-operator/internal/instance-manager/replication"
 )
 
@@ -139,6 +141,15 @@ func (s *Server) SetRedisCmd(cmd *exec.Cmd) {
 	s.redisCmd = cmd
 }
 
+// SetMetricsIdentity sets identity labels used for Redis Prometheus metrics.
+func (s *Server) SetMetricsIdentity(clusterName, namespace, podName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clusterName = clusterName
+	s.namespace = namespace
+	s.podName = podName
+}
+
 // Start starts the HTTP server. It blocks until the context is cancelled.
 func (s *Server) Start(ctx context.Context) error {
 	logger := log.FromContext(ctx)
@@ -146,7 +157,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
 	if s.exposeDataEndpoints {
-		mux.HandleFunc("/metrics", s.handleMetrics)
+		mux.Handle("/metrics", s.metricsHandler())
 		mux.HandleFunc("/v1/status", s.handleStatus)
 		mux.HandleFunc("/v1/promote", s.handlePromote)
 		mux.HandleFunc("/v1/demote", s.handleDemote)
@@ -424,6 +435,69 @@ func (s *Server) peerTargetsForIsolation() []string {
 	return cachedTargets
 }
 
+func (s *Server) metricsHandler() http.Handler {
+	s.mu.RLock()
+	collector := instmetrics.NewRedisCollector(
+		s.redisClient,
+		s.namespace,
+		s.clusterName,
+		s.podName,
+		s.isCurrentPodFenced,
+	)
+	s.mu.RUnlock()
+
+	registry := prometheus.NewRegistry()
+	if err := registry.Register(collector); err != nil {
+		emptyRegistry := prometheus.NewRegistry()
+		return promhttp.HandlerFor(emptyRegistry, promhttp.HandlerOpts{})
+	}
+	return promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+}
+
+func (s *Server) isCurrentPodFenced(ctx context.Context) (bool, error) {
+	s.mu.RLock()
+	k8sClient := s.k8sClient
+	clusterName := s.clusterName
+	namespace := s.namespace
+	podName := s.podName
+	s.mu.RUnlock()
+
+	if k8sClient == nil || clusterName == "" || namespace == "" || podName == "" {
+		return false, nil
+	}
+
+	var cluster redisv1.RedisCluster
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: clusterName, Namespace: namespace}, &cluster); err != nil {
+		return false, err
+	}
+	return podIsFenced(&cluster, podName), nil
+}
+
+func podIsFenced(cluster *redisv1.RedisCluster, podName string) bool {
+	if cluster == nil || podName == "" {
+		return false
+	}
+	if cluster.Annotations == nil {
+		return false
+	}
+
+	raw := cluster.Annotations[redisv1.FencingAnnotationKey]
+	if raw == "" {
+		return false
+	}
+
+	var fencedPods []string
+	if err := json.Unmarshal([]byte(raw), &fencedPods); err != nil {
+		return false
+	}
+	for _, fencedPod := range fencedPods {
+		if fencedPod == podName {
+			return true
+		}
+	}
+	return false
+}
+
 // handleReadyz checks that Redis responds to PING and is reachable.
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -511,70 +585,4 @@ func (s *Server) handleDemote(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprint(w, "demoted")
-}
-
-// handleMetrics exposes Redis metrics in Prometheus exposition format.
-func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	result, err := s.redisClient.Info(ctx, "all").Result()
-	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to get INFO all: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	writePrometheusMetrics(w, result)
-}
-
-// writePrometheusMetrics converts Redis INFO all output to Prometheus exposition format.
-func writePrometheusMetrics(w http.ResponseWriter, info string) {
-	metrics := map[string]struct {
-		help    string
-		mtype   string
-		infoKey string
-	}{
-		"redis_connected_clients":        {"Number of client connections", "gauge", "connected_clients"},
-		"redis_blocked_clients":          {"Number of clients pending on a blocking call", "gauge", "blocked_clients"},
-		"redis_used_memory_bytes":        {"Total memory used by Redis in bytes", "gauge", "used_memory"},
-		"redis_used_memory_peak_bytes":   {"Peak memory consumed by Redis in bytes", "gauge", "used_memory_peak"},
-		"redis_connected_replicas":       {"Number of connected replicas", "gauge", "connected_slaves"},
-		"redis_replication_offset":       {"Replication offset", "gauge", "master_repl_offset"},
-		"redis_uptime_seconds":           {"Number of seconds since Redis server start", "gauge", "uptime_in_seconds"},
-		"redis_keyspace_hits_total":      {"Number of successful lookup of keys", "counter", "keyspace_hits"},
-		"redis_keyspace_misses_total":    {"Number of failed lookup of keys", "counter", "keyspace_misses"},
-		"redis_commands_processed_total": {"Total number of commands processed by the server", "counter", "total_commands_processed"},
-	}
-
-	// Parse INFO all into a key-value map.
-	kvMap := make(map[string]string)
-	for _, line := range strings.Split(info, "\r\n") {
-		if strings.HasPrefix(line, "#") || line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) == 2 {
-			kvMap[parts[0]] = parts[1]
-		}
-	}
-
-	for name, m := range metrics {
-		val, ok := kvMap[m.infoKey]
-		if !ok {
-			continue
-		}
-		_, _ = fmt.Fprintf(w, "# HELP %s %s\n", name, m.help)
-		_, _ = fmt.Fprintf(w, "# TYPE %s %s\n", name, m.mtype)
-		_, _ = fmt.Fprintf(w, "%s %s\n", name, val)
-	}
-
-	// Role as a numeric gauge.
-	if role, ok := kvMap["role"]; ok {
-		roleVal := "0"
-		if role == "master" {
-			roleVal = "1"
-		}
-		_, _ = fmt.Fprint(w, "# HELP redis_replication_role Replication role (0=replica, 1=primary)\n")
-		_, _ = fmt.Fprint(w, "# TYPE redis_replication_role gauge\n")
-		_, _ = fmt.Fprintf(w, "redis_replication_role %s\n", roleVal)
-	}
 }

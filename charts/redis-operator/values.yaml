@@ -84,6 +84,8 @@ metrics:
   # -- Create a ServiceMonitor for Prometheus Operator (requires prometheus-operator CRD).
   serviceMonitor:
     enabled: false
+    # -- Namespace where the ServiceMonitor is created. Defaults to the release namespace.
+    namespace: ""
     interval: 30s
     scrapeTimeout: 10s
     labels: {}

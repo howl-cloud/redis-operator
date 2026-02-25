@@ -199,83 +199,6 @@ func TestHandleDemote_Error(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "demote failed")
 }
 
-func TestWritePrometheusMetrics_Master(t *testing.T) {
-	info := "# Server\r\n" +
-		"redis_version:7.2.0\r\n" +
-		"uptime_in_seconds:3600\r\n" +
-		"# Clients\r\n" +
-		"connected_clients:10\r\n" +
-		"blocked_clients:2\r\n" +
-		"# Memory\r\n" +
-		"used_memory:1048576\r\n" +
-		"used_memory_peak:2097152\r\n" +
-		"# Replication\r\n" +
-		"role:master\r\n" +
-		"connected_slaves:2\r\n" +
-		"master_repl_offset:12345\r\n" +
-		"# Stats\r\n" +
-		"keyspace_hits:100\r\n" +
-		"keyspace_misses:5\r\n" +
-		"total_commands_processed:200\r\n"
-
-	w := httptest.NewRecorder()
-	writePrometheusMetrics(w, info)
-	output := w.Body.String()
-
-	// Verify key metrics are present.
-	assert.Contains(t, output, "redis_connected_clients 10")
-	assert.Contains(t, output, "redis_blocked_clients 2")
-	assert.Contains(t, output, "redis_used_memory_bytes 1048576")
-	assert.Contains(t, output, "redis_used_memory_peak_bytes 2097152")
-	assert.Contains(t, output, "redis_connected_replicas 2")
-	assert.Contains(t, output, "redis_replication_offset 12345")
-	assert.Contains(t, output, "redis_uptime_seconds 3600")
-	assert.Contains(t, output, "redis_keyspace_hits_total 100")
-	assert.Contains(t, output, "redis_keyspace_misses_total 5")
-	assert.Contains(t, output, "redis_commands_processed_total 200")
-
-	// Role: master -> 1
-	assert.Contains(t, output, "redis_replication_role 1")
-
-	// Verify HELP and TYPE lines exist.
-	assert.Contains(t, output, "# HELP redis_connected_clients")
-	assert.Contains(t, output, "# TYPE redis_connected_clients gauge")
-}
-
-func TestWritePrometheusMetrics_Slave(t *testing.T) {
-	info := "# Replication\r\n" +
-		"role:slave\r\n" +
-		"connected_slaves:0\r\n"
-
-	w := httptest.NewRecorder()
-	writePrometheusMetrics(w, info)
-	output := w.Body.String()
-
-	// Role: slave -> 0
-	assert.Contains(t, output, "redis_replication_role 0")
-}
-
-func TestWritePrometheusMetrics_Empty(t *testing.T) {
-	w := httptest.NewRecorder()
-	writePrometheusMetrics(w, "")
-	output := w.Body.String()
-
-	// Should not panic, output may be empty.
-	assert.NotNil(t, output)
-}
-
-func TestWritePrometheusMetrics_PartialData(t *testing.T) {
-	info := "# Memory\r\nused_memory:999\r\n"
-
-	w := httptest.NewRecorder()
-	writePrometheusMetrics(w, info)
-	output := w.Body.String()
-
-	assert.Contains(t, output, "redis_used_memory_bytes 999")
-	// Other metrics should not be present.
-	assert.True(t, !strings.Contains(output, "redis_connected_clients"))
-}
-
 // --- handleReadyz tests ---
 
 func TestHandleReadyz_PingSuccess(t *testing.T) {
@@ -505,29 +428,30 @@ func TestHandleStatus_SlaveJSON(t *testing.T) {
 	assert.True(t, resp.Connected)
 }
 
-func TestHandleMetrics_WithRedisInfo(t *testing.T) {
+func TestMetricsHandler_WithRedisInfo(t *testing.T) {
 	_, client := newFakeRedisForStatus(t, "master", 9999)
 
 	srv := &Server{
 		redisClient: client,
 		listenAddr:  ":0",
 	}
+	srv.SetMetricsIdentity("test-cluster", "default", "test-cluster-0")
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
-	srv.handleMetrics(w, req)
+	srv.metricsHandler().ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Header().Get("Content-Type"), "text/plain")
 
 	output := w.Body.String()
-	assert.Contains(t, output, "redis_connected_clients 5")
-	assert.Contains(t, output, "redis_used_memory_bytes 524288")
-	assert.Contains(t, output, "redis_replication_role 1")
-	assert.Contains(t, output, "redis_uptime_seconds 3600")
+	assert.Contains(t, output, `redis_up{cluster="test-cluster",namespace="default",pod="test-cluster-0",role="master"} 1`)
+	assert.Contains(t, output, `redis_connected_clients{cluster="test-cluster",namespace="default",pod="test-cluster-0",role="master"} 5`)
+	assert.Contains(t, output, `redis_used_memory_bytes{cluster="test-cluster",namespace="default",pod="test-cluster-0",role="master"} 524288`)
+	assert.Contains(t, output, `redis_total_commands_processed{cluster="test-cluster",namespace="default",pod="test-cluster-0",role="master"} 100`)
 }
 
-func TestHandleMetrics_RedisDown(t *testing.T) {
+func TestMetricsHandler_RedisDown(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
@@ -537,13 +461,14 @@ func TestHandleMetrics_RedisDown(t *testing.T) {
 		redisClient: client,
 		listenAddr:  ":0",
 	}
+	srv.SetMetricsIdentity("test-cluster", "default", "test-cluster-0")
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
-	srv.handleMetrics(w, req)
+	srv.metricsHandler().ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "failed to get INFO all")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `redis_up{cluster="test-cluster",namespace="default",pod="test-cluster-0",role="unknown"} 0`)
 }
 
 func TestHandleHealthz_ProcessExited(t *testing.T) {

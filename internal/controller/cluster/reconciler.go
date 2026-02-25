@@ -67,6 +67,10 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req reconcile.Request
 	if err := r.Get(ctx, req.NamespacedName, &cluster); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
+	startTime := time.Now()
+	defer func() {
+		observeReconcileDurationMetric(&cluster, time.Since(startTime))
+	}()
 
 	logger.Info("Reconciling RedisCluster", "instances", cluster.Spec.Instances, "phase", cluster.Status.Phase)
 
@@ -122,6 +126,8 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 	if err := r.updateStatus(ctx, cluster, instanceStatuses); err != nil {
 		return reconcile.Result{}, fmt.Errorf("updating status: %w", err)
 	}
+	setClusterInstancesMetrics(cluster, len(instanceStatuses))
+	setClusterPhaseMetric(cluster)
 
 	// Step 6: Reachability check.
 	if requeue := r.checkReachability(ctx, cluster, instanceStatuses); requeue {
