@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/howl-cloud/redis-operator/internal/cmd/manager/controller"
+	"github.com/howl-cloud/redis-operator/internal/cmd/manager/restore"
 	"github.com/howl-cloud/redis-operator/internal/instance-manager/run"
 )
 
@@ -30,6 +31,7 @@ func main() {
 	rootCmd.AddCommand(controllerCmd())
 	rootCmd.AddCommand(instanceCmd())
 	rootCmd.AddCommand(copyBinaryCmd())
+	rootCmd.AddCommand(restoreCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -131,6 +133,42 @@ func copyBinaryCmd() *cobra.Command {
 			return copyBinary(src, args[0])
 		},
 	}
+}
+
+func restoreCmd() *cobra.Command {
+	var clusterName string
+	var backupName string
+	var backupNamespace string
+	var dataDir string
+
+	cmd := &cobra.Command{
+		Use:   "restore",
+		Short: "Restore Redis data from a RedisBackup",
+		Long:  "Downloads a completed RedisBackup object from S3 into the pod data directory.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := ctrl.SetupSignalHandler()
+
+			if backupNamespace == "" {
+				backupNamespace = os.Getenv("POD_NAMESPACE")
+			}
+			if clusterName == "" {
+				clusterName = os.Getenv("CLUSTER_NAME")
+			}
+
+			if clusterName == "" || backupName == "" || backupNamespace == "" || dataDir == "" {
+				return fmt.Errorf("--cluster-name, --backup-name, --backup-namespace, and --data-dir are required (or set CLUSTER_NAME/POD_NAMESPACE env vars)")
+			}
+
+			return restore.Run(ctx, clusterName, backupName, backupNamespace, dataDir)
+		},
+	}
+
+	cmd.Flags().StringVar(&clusterName, "cluster-name", "", "Name of the RedisCluster being restored")
+	cmd.Flags().StringVar(&backupName, "backup-name", "", "Name of the RedisBackup CR to restore from")
+	cmd.Flags().StringVar(&backupNamespace, "backup-namespace", "", "Namespace of the RedisBackup CR")
+	cmd.Flags().StringVar(&dataDir, "data-dir", "/data", "Data directory where dump.rdb should be written")
+
+	return cmd
 }
 
 // copyBinary copies the file at src to dst with executable permissions (0o755).

@@ -103,7 +103,7 @@ func RunController(
 			return fmt.Errorf("setting up RedisCluster defaulter webhook: %w", err)
 		}
 
-		validator := &webhooks.RedisClusterValidator{}
+		validator := &webhooks.RedisClusterValidator{Reader: mgr.GetClient()}
 		if err := validator.SetupValidatingWebhookWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up RedisCluster validator webhook: %w", err)
 		}

@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -215,13 +216,20 @@ func TestSetBackupCompleted(t *testing.T) {
 	r, c := newBackupReconciler(backup)
 	ctx := context.Background()
 
-	err := r.setBackupCompleted(ctx, backup)
+	err := r.setBackupCompleted(ctx, backup, &BackupResult{
+		ArtifactType: redisv1.BackupArtifactTypeRDB,
+		BackupPath:   "s3://test-bucket/backups/test-backup.rdb",
+		BackupSize:   1024,
+	})
 	require.NoError(t, err)
 
 	var updated redisv1.RedisBackup
 	err = c.Get(ctx, types.NamespacedName{Name: "test-backup", Namespace: "default"}, &updated)
 	require.NoError(t, err)
 	assert.Equal(t, redisv1.BackupPhaseCompleted, updated.Status.Phase)
+	assert.Equal(t, "s3://test-bucket/backups/test-backup.rdb", updated.Status.BackupPath)
+	assert.Equal(t, int64(1024), updated.Status.BackupSize)
+	assert.Equal(t, redisv1.BackupArtifactTypeRDB, updated.Status.ArtifactType)
 	assert.NotNil(t, updated.Status.CompletedAt)
 }
 
@@ -397,7 +405,12 @@ func TestReconcile_ClusterNotHealthy(t *testing.T) {
 func TestReconcile_SuccessfulBackup(t *testing.T) {
 	// Start a mock instance manager that accepts the backup request.
 	podIP, cleanup := overrideBackupPort(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		assert.Equal(t, "backup1", payload["backupName"])
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"artifactType":"rdb","backupPath":"s3://test-bucket/backups/backup1.rdb","backupSize":321}`))
 	}))
 	defer cleanup()
 
@@ -429,6 +442,12 @@ func TestReconcile_SuccessfulBackup(t *testing.T) {
 		Spec: redisv1.RedisBackupSpec{
 			ClusterName: "cluster",
 			Target:      redisv1.BackupTargetPrimary,
+			Destination: &redisv1.BackupDestination{
+				S3: &redisv1.S3Destination{
+					Bucket: "test-bucket",
+					Path:   "backups",
+				},
+			},
 		},
 	}
 
@@ -446,6 +465,9 @@ func TestReconcile_SuccessfulBackup(t *testing.T) {
 	err = c.Get(ctx, types.NamespacedName{Name: "backup1", Namespace: "default"}, &updated)
 	require.NoError(t, err)
 	assert.Equal(t, redisv1.BackupPhaseCompleted, updated.Status.Phase)
+	assert.Equal(t, "s3://test-bucket/backups/backup1.rdb", updated.Status.BackupPath)
+	assert.Equal(t, int64(321), updated.Status.BackupSize)
+	assert.Equal(t, redisv1.BackupArtifactTypeRDB, updated.Status.ArtifactType)
 	assert.NotNil(t, updated.Status.CompletedAt)
 }
 
@@ -484,6 +506,12 @@ func TestReconcile_BackupHTTPFailure(t *testing.T) {
 		Spec: redisv1.RedisBackupSpec{
 			ClusterName: "cluster",
 			Target:      redisv1.BackupTargetPrimary,
+			Destination: &redisv1.BackupDestination{
+				S3: &redisv1.S3Destination{
+					Bucket: "test-bucket",
+					Path:   "backups",
+				},
+			},
 		},
 	}
 

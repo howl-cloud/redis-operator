@@ -168,6 +168,8 @@ func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective string) er
 		"bind 0.0.0.0",
 		fmt.Sprintf("dir %s", dataDir),
 		"appendonly yes",
+		"aof-use-rdb-preamble yes",
+		"appenddirname appendonlydir",
 		"save 900 1",
 		"save 300 10",
 		"save 60 10000",

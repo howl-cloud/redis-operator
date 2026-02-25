@@ -100,6 +100,17 @@ spec:
           status:
             description: RedisBackupStatus defines the observed state of a RedisBackup.
             properties:
+              artifactType:
+                description: ArtifactType indicates the format of the backup artifact
+                  in object storage.
+                enum:
+                - rdb
+                - aof-archive
+                type: string
+              backupPath:
+                description: BackupPath is the object storage path/key where the backup
+                  is written.
+                type: string
               backupSize:
                 description: BackupSize is the size of the backup in bytes.
                 format: int64

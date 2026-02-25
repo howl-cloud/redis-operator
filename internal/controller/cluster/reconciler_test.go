@@ -638,6 +638,8 @@ func TestReconcileConfigMap_Creates(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, cm.Data["redis.conf"], "port 6379")
 	assert.Contains(t, cm.Data["redis.conf"], "appendonly yes")
+	assert.Contains(t, cm.Data["redis.conf"], "aof-use-rdb-preamble yes")
+	assert.Contains(t, cm.Data["redis.conf"], "appenddirname appendonlydir")
 	// User-specified params should be present (order may vary).
 	assert.Contains(t, cm.Data["redis.conf"], "maxmemory 256mb")
 	assert.Contains(t, cm.Data["redis.conf"], "maxmemory-policy allkeys-lru")
@@ -906,6 +908,182 @@ func TestCreatePod_ContainerSpec(t *testing.T) {
 	assert.False(t, *pod.Spec.InitContainers[0].SecurityContext.ReadOnlyRootFilesystem)
 	require.NotNil(t, pod.Spec.InitContainers[0].SecurityContext.Capabilities)
 	assert.Contains(t, pod.Spec.InitContainers[0].SecurityContext.Capabilities.Drop, corev1.Capability("ALL"))
+}
+
+func TestShouldRestoreFromBackup_OnlyFirstBootstrapPrimary(t *testing.T) {
+	cluster := newTestCluster("test", "default", 3)
+	cluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: "seed-backup"}
+
+	tests := []struct {
+		name               string
+		podName            string
+		index              int
+		currentPrimaryName string
+		want               bool
+	}{
+		{
+			name:    "initial ordinal-0 pod restores",
+			podName: "test-0",
+			index:   0,
+			want:    true,
+		},
+		{
+			name:    "replica does not restore on bootstrap",
+			podName: "test-1",
+			index:   1,
+			want:    false,
+		},
+		{
+			name:               "primary recreation does not restore once primary is set",
+			podName:            "test-0",
+			index:              0,
+			currentPrimaryName: "test-0",
+			want:               false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cluster.Status.CurrentPrimary = tt.currentPrimaryName
+			got := shouldRestoreFromBackup(cluster, tt.podName, tt.index)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCreatePod_DoesNotInjectRestoreAfterBootstrap(t *testing.T) {
+	cluster := newTestCluster("test", "default", 1)
+	cluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: "seed-backup"}
+	cluster.Status.CurrentPrimary = "test-0"
+
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-data-0",
+			Namespace: "default",
+		},
+	}
+	r, c := newReconciler(cluster, pvc)
+	ctx := context.Background()
+
+	err := r.createPod(ctx, cluster, "test-0", 0, redisv1.LabelRolePrimary)
+	require.NoError(t, err)
+
+	var pod corev1.Pod
+	err = c.Get(ctx, types.NamespacedName{Name: "test-0", Namespace: "default"}, &pod)
+	require.NoError(t, err)
+	require.Len(t, pod.Spec.InitContainers, 1)
+	assert.Equal(t, "copy-manager", pod.Spec.InitContainers[0].Name)
+}
+
+func TestCreatePod_InjectsRestoreForAOFBackup(t *testing.T) {
+	cluster := newTestCluster("test", "default", 1)
+	cluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: "seed-backup"}
+	cluster.Spec.BackupCredentialsSecret = &redisv1.LocalObjectReference{Name: "backup-creds"}
+
+	backup := &redisv1.RedisBackup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "seed-backup",
+			Namespace: "default",
+		},
+		Spec: redisv1.RedisBackupSpec{
+			ClusterName: "source-cluster",
+			Method:      redisv1.BackupMethodAOF,
+			Destination: &redisv1.BackupDestination{
+				S3: &redisv1.S3Destination{
+					Bucket: "test-bucket",
+					Path:   "backups",
+				},
+			},
+		},
+		Status: redisv1.RedisBackupStatus{
+			Phase:        redisv1.BackupPhaseCompleted,
+			BackupPath:   "s3://test-bucket/backups/seed-backup.aof.tar.gz",
+			ArtifactType: redisv1.BackupArtifactTypeAOFArchive,
+		},
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-data-0",
+			Namespace: "default",
+		},
+	}
+
+	r, c := newReconciler(cluster, backup, pvc)
+	ctx := context.Background()
+
+	err := r.createPod(ctx, cluster, "test-0", 0, redisv1.LabelRolePrimary)
+	require.NoError(t, err)
+
+	var pod corev1.Pod
+	err = c.Get(ctx, types.NamespacedName{Name: "test-0", Namespace: "default"}, &pod)
+	require.NoError(t, err)
+	require.Len(t, pod.Spec.InitContainers, 2)
+
+	var restoreInit *corev1.Container
+	for i := range pod.Spec.InitContainers {
+		if pod.Spec.InitContainers[i].Name == restoreDataInitName {
+			restoreInit = &pod.Spec.InitContainers[i]
+			break
+		}
+	}
+	require.NotNil(t, restoreInit)
+	assert.Equal(t, []string{"/manager", "restore"}, restoreInit.Command)
+	assert.Contains(t, restoreInit.Args, "--backup-name=seed-backup")
+	assert.Contains(t, restoreInit.Args, "--cluster-name=test")
+	assert.Contains(t, restoreInit.Args, "--backup-namespace=default")
+	assert.Contains(t, restoreInit.Args, "--data-dir=/data")
+	assert.Contains(t, restoreInit.VolumeMounts, corev1.VolumeMount{
+		Name:      backupCredsVolumeName,
+		MountPath: backupCredsMountPath,
+		ReadOnly:  true,
+	})
+
+	require.NotEmpty(t, pod.Spec.Containers)
+	assert.Contains(t, pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{
+		Name:      backupCredsVolumeName,
+		MountPath: backupCredsMountPath,
+		ReadOnly:  true,
+	})
+}
+
+func TestInstanceManagerRoleRules_IncludeRestorePermissions(t *testing.T) {
+	rules := instanceManagerRoleRules()
+
+	hasPermission := func(apiGroup, resource, verb string) bool {
+		for _, rule := range rules {
+			groupMatch := false
+			for _, g := range rule.APIGroups {
+				if g == apiGroup {
+					groupMatch = true
+					break
+				}
+			}
+			if !groupMatch {
+				continue
+			}
+
+			resourceMatch := false
+			for _, r := range rule.Resources {
+				if r == resource {
+					resourceMatch = true
+					break
+				}
+			}
+			if !resourceMatch {
+				continue
+			}
+
+			for _, v := range rule.Verbs {
+				if v == verb {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	assert.True(t, hasPermission("redis.io", "redisbackups", "get"))
+	assert.True(t, hasPermission("", "secrets", "get"))
 }
 
 func TestReconcilePDB_UpdatesMinAvailable(t *testing.T) {

@@ -46,6 +46,8 @@ func TestWriteRedisConf_BasicConfig(t *testing.T) {
 	assert.Contains(t, content, "port 6379")
 	assert.Contains(t, content, "bind 0.0.0.0")
 	assert.Contains(t, content, "appendonly yes")
+	assert.Contains(t, content, "aof-use-rdb-preamble yes")
+	assert.Contains(t, content, "appenddirname appendonlydir")
 	assert.Contains(t, content, "save 900 1")
 	assert.Contains(t, content, "save 300 10")
 	assert.Contains(t, content, "save 60 10000")

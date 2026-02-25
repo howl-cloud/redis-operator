@@ -12,8 +12,43 @@ HTTP server running inside each Redis pod, listening on `:8080`.
 | `GET` | `/v1/status` | Operator | Returns JSON status: role, replication offset, connected replicas, lag |
 | `POST` | `/v1/promote` | Operator | Issues `REPLICAOF NO ONE` to promote this instance to primary |
 | `POST` | `/v1/demote` | Operator | Issues `REPLICAOF <primary> 6379` to (re)join as replica |
-| `POST` | `/v1/backup` | Operator | Triggers `BGSAVE` (or AOF rewrite) and optionally uploads to object storage |
+| `POST` | `/v1/backup` | Operator | Triggers `BGSAVE` or `BGREWRITEAOF`, uploads the resulting artifact to object storage, and returns metadata |
 | `PUT` | `/v1/update` | Operator | Accepts new instance manager binary, performs in-place upgrade via `syscall.Exec` |
+
+## Backup API contract (`POST /v1/backup`)
+
+Request body:
+
+```json
+{
+  "backupName": "backup-2026-02-23",
+  "method": "rdb",
+  "destination": {
+    "s3": {
+      "bucket": "my-bucket",
+      "path": "backups",
+      "endpoint": "https://s3.amazonaws.com",
+      "region": "us-east-1"
+    }
+  }
+}
+```
+
+- `method` supports `rdb` and `aof`
+- `backupName` is used to construct the object key (`<path>/<backupName>.rdb` or `<path>/<backupName>.aof.tar.gz`)
+- For `aof`, Redis 7.2 multi-part AOF data (`appendonlydir/`) is archived as a single `tar.gz` object
+
+Response body:
+
+```json
+{
+  "artifactType": "aof-archive",
+  "backupPath": "s3://my-bucket/backups/backup-2026-02-23.aof.tar.gz",
+  "objectKey": "backups/backup-2026-02-23.aof.tar.gz",
+  "backupSize": 12345,
+  "checksumSHA256": "..."
+}
+```
 
 ## Metrics
 

@@ -28,6 +28,9 @@ const (
 	controllerMountPath       = "/controller"
 	projectedVolumeName       = "projected-secrets"
 	projectedMountPath        = "/projected"
+	restoreDataInitName       = "restore-data"
+	backupCredsVolumeName     = "backup-credentials"
+	backupCredsMountPath      = "/backup-credentials"
 	specHashAnnotation        = "redis.io/spec-hash"
 )
 
@@ -194,6 +197,77 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 		}
 	}
 
+	initContainers := []corev1.Container{
+		{
+			Name:            "copy-manager",
+			Image:           r.OperatorImage,
+			Command:         []string{"/manager", "copy-binary", instanceManagerBinaryPath},
+			SecurityContext: redisContainerSecurityContext(false),
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: controllerVolumeName, MountPath: controllerMountPath},
+			},
+		},
+	}
+
+	backupCredsSecretName := ""
+	if cluster.Spec.BackupCredentialsSecret != nil {
+		backupCredsSecretName = cluster.Spec.BackupCredentialsSecret.Name
+	}
+
+	if shouldRestoreFromBackup(cluster, podName, index) {
+		backup, err := r.getBootstrapBackup(ctx, cluster)
+		if err != nil {
+			return fmt.Errorf("getting bootstrap backup %q: %w", cluster.Spec.Bootstrap.BackupName, err)
+		}
+
+		if backup.Status.Phase != redisv1.BackupPhaseCompleted {
+			return fmt.Errorf("bootstrap backup %s/%s is not completed (phase=%s)", backup.Namespace, backup.Name, backup.Status.Phase)
+		}
+		if backup.Spec.Destination == nil || backup.Spec.Destination.S3 == nil {
+			return fmt.Errorf("bootstrap backup %s/%s has no S3 destination", backup.Namespace, backup.Name)
+		}
+		if backup.Status.BackupPath == "" {
+			return fmt.Errorf("bootstrap backup %s/%s has empty status.backupPath", backup.Namespace, backup.Name)
+		}
+		backupMethod := backup.Spec.Method
+		if backupMethod == "" {
+			backupMethod = redisv1.BackupMethodRDB
+		}
+		if backupMethod != redisv1.BackupMethodRDB && backupMethod != redisv1.BackupMethodAOF {
+			return fmt.Errorf("bootstrap backup %s/%s uses unsupported method %q",
+				backup.Namespace,
+				backup.Name,
+				backupMethod,
+			)
+		}
+
+		restoreInit := corev1.Container{
+			Name:            restoreDataInitName,
+			Image:           r.OperatorImage,
+			Command:         []string{"/manager", "restore"},
+			SecurityContext: redisContainerSecurityContext(false),
+			Args: []string{
+				fmt.Sprintf("--cluster-name=%s", cluster.Name),
+				fmt.Sprintf("--backup-name=%s", backup.Name),
+				fmt.Sprintf("--backup-namespace=%s", backup.Namespace),
+				fmt.Sprintf("--data-dir=%s", redisDataMountPath),
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: redisDataVolumeName, MountPath: redisDataMountPath},
+			},
+		}
+
+		if backupCredsSecretName != "" {
+			restoreInit.VolumeMounts = append(restoreInit.VolumeMounts, corev1.VolumeMount{
+				Name:      backupCredsVolumeName,
+				MountPath: backupCredsMountPath,
+				ReadOnly:  true,
+			})
+		}
+
+		initContainers = append(initContainers, restoreInit)
+	}
+
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
@@ -210,17 +284,7 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 			Tolerations:               cluster.Spec.Tolerations,
 			TopologySpreadConstraints: cluster.Spec.TopologySpreadConstraints,
 			SecurityContext:           redisPodSecurityContext(),
-			InitContainers: []corev1.Container{
-				{
-					Name:            "copy-manager",
-					Image:           r.OperatorImage,
-					Command:         []string{"/manager", "copy-binary", instanceManagerBinaryPath},
-					SecurityContext: redisContainerSecurityContext(false),
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: controllerVolumeName, MountPath: controllerMountPath},
-					},
-				},
-			},
+			InitContainers:            initContainers,
 			Containers: []corev1.Container{
 				{
 					Name:    "redis",
@@ -302,12 +366,57 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 		)
 	}
 
+	if backupCredsSecretName != "" {
+		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+			Name: backupCredsVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{
+					Sources: []corev1.VolumeProjection{
+						{
+							Secret: &corev1.SecretProjection{
+								LocalObjectReference: corev1.LocalObjectReference{Name: backupCredsSecretName},
+							},
+						},
+					},
+				},
+			},
+		})
+		pod.Spec.Containers[0].VolumeMounts = append(
+			pod.Spec.Containers[0].VolumeMounts,
+			corev1.VolumeMount{Name: backupCredsVolumeName, MountPath: backupCredsMountPath, ReadOnly: true},
+		)
+	}
+
 	if err := r.Create(ctx, pod); err != nil {
 		return fmt.Errorf("creating pod: %w", err)
 	}
 
 	r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "PodCreated", "Created pod %s with role %s", podName, role)
 	return nil
+}
+
+func shouldRestoreFromBackup(cluster *redisv1.RedisCluster, podName string, index int) bool {
+	if cluster.Spec.Bootstrap == nil || cluster.Spec.Bootstrap.BackupName == "" {
+		return false
+	}
+	// Restore is a one-time bootstrap action for the very first primary only.
+	return cluster.Status.CurrentPrimary == "" && index == 0 && podName == podNameForIndex(cluster.Name, 0)
+}
+
+func (r *ClusterReconciler) getBootstrapBackup(ctx context.Context, cluster *redisv1.RedisCluster) (*redisv1.RedisBackup, error) {
+	var backup redisv1.RedisBackup
+	if cluster.Spec.Bootstrap == nil || cluster.Spec.Bootstrap.BackupName == "" {
+		return nil, fmt.Errorf("spec.bootstrap.backupName is required")
+	}
+
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      cluster.Spec.Bootstrap.BackupName,
+		Namespace: cluster.Namespace,
+	}, &backup); err != nil {
+		return nil, err
+	}
+
+	return &backup, nil
 }
 
 // createSentinelPod creates a single sentinel pod.
@@ -670,7 +779,7 @@ func (r *ClusterReconciler) reconcileConfigMap(ctx context.Context, cluster *red
 	}
 
 	// Build redis.conf content from spec.
-	conf := "port 6379\nbind 0.0.0.0\nappendonly yes\n"
+	conf := "port 6379\nbind 0.0.0.0\nappendonly yes\naof-use-rdb-preamble yes\nappenddirname appendonlydir\n"
 	for key, val := range cluster.Spec.Redis {
 		conf += fmt.Sprintf("%s %s\n", key, val)
 	}

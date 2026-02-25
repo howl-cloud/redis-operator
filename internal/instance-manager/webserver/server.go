@@ -34,11 +34,14 @@ type Server struct {
 	promoteFunc func(ctx context.Context) error
 	demoteFunc  func(ctx context.Context, primaryIP string, port int) error
 	processName string
+	dataDir     string
 
 	mu       sync.RWMutex
 	redisCmd *exec.Cmd
 
-	exposeDataEndpoints bool
+	exposeDataEndpoints  bool
+	backupCredentialsDir string
+	backupUploader       backupUploaderFunc
 }
 
 // NewServer creates a new HTTP server.
@@ -49,12 +52,14 @@ func NewServer(
 	demoteFunc func(ctx context.Context, primaryIP string, port int) error,
 ) *Server {
 	return &Server{
-		redisClient:         redisClient,
-		listenAddr:          listenAddr,
-		promoteFunc:         promoteFunc,
-		demoteFunc:          demoteFunc,
-		processName:         "redis-server",
-		exposeDataEndpoints: true,
+		redisClient:          redisClient,
+		listenAddr:           listenAddr,
+		promoteFunc:          promoteFunc,
+		demoteFunc:           demoteFunc,
+		processName:          "redis-server",
+		dataDir:              defaultBackupDataDir,
+		backupCredentialsDir: defaultBackupCredsMountPath,
+		exposeDataEndpoints:  true,
 	}
 }
 
@@ -88,6 +93,7 @@ func (s *Server) Start(ctx context.Context) error {
 		mux.HandleFunc("/v1/status", s.handleStatus)
 		mux.HandleFunc("/v1/promote", s.handlePromote)
 		mux.HandleFunc("/v1/demote", s.handleDemote)
+		mux.HandleFunc("/v1/backup", s.handleBackup)
 	}
 
 	srv := &http.Server{

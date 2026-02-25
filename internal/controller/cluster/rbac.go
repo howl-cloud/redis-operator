@@ -178,6 +178,16 @@ func instanceManagerRoleRules() []rbacv1.PolicyRule {
 			Verbs:     []string{"get", "patch", "update"},
 		},
 		{
+			APIGroups: []string{"redis.io"},
+			Resources: []string{"redisbackups"},
+			Verbs:     []string{"get"},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"secrets"},
+			Verbs:     []string{"get"},
+		},
+		{
 			APIGroups: []string{""},
 			Resources: []string{"events"},
 			Verbs:     []string{"create", "patch"},

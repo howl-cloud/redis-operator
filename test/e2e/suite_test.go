@@ -124,7 +124,7 @@ var _ = BeforeSuite(func() {
 		defaulter := &webhooks.RedisClusterDefaulter{}
 		Expect(defaulter.SetupWebhookWithManager(mgr)).To(Succeed())
 
-		validator := &webhooks.RedisClusterValidator{}
+		validator := &webhooks.RedisClusterValidator{Reader: mgr.GetClient()}
 		Expect(validator.SetupValidatingWebhookWithManager(mgr)).To(Succeed())
 	}
 

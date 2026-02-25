@@ -32,6 +32,15 @@ const (
 	BackupMethodAOF BackupMethod = "aof"
 )
 
+// BackupArtifactType defines the backup artifact format stored in object storage.
+// +kubebuilder:validation:Enum=rdb;aof-archive
+type BackupArtifactType string
+
+const (
+	BackupArtifactTypeRDB        BackupArtifactType = "rdb"
+	BackupArtifactTypeAOFArchive BackupArtifactType = "aof-archive"
+)
+
 // RedisBackupSpec defines the desired state of a RedisBackup.
 type RedisBackupSpec struct {
 	// ClusterName is the name of the RedisCluster to back up.
@@ -94,6 +103,14 @@ type RedisBackupStatus struct {
 	// BackupSize is the size of the backup in bytes.
 	// +optional
 	BackupSize int64 `json:"backupSize,omitempty"`
+
+	// BackupPath is the object storage path/key where the backup is written.
+	// +optional
+	BackupPath string `json:"backupPath,omitempty"`
+
+	// ArtifactType indicates the format of the backup artifact in object storage.
+	// +optional
+	ArtifactType BackupArtifactType `json:"artifactType,omitempty"`
 
 	// Error contains the error message if the backup failed.
 	// +optional

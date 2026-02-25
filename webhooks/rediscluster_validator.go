@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -14,7 +17,9 @@ import (
 )
 
 // RedisClusterValidator implements admission.CustomValidator for RedisCluster.
-type RedisClusterValidator struct{}
+type RedisClusterValidator struct {
+	Reader client.Reader
+}
 
 var _ webhook.CustomValidator = &RedisClusterValidator{}
 
@@ -32,16 +37,16 @@ func (v *RedisClusterValidator) SetupValidatingWebhookWithManager(mgr ctrl.Manag
 }
 
 // ValidateCreate validates a RedisCluster on creation.
-func (v *RedisClusterValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (v *RedisClusterValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	cluster, ok := obj.(*redisv1.RedisCluster)
 	if !ok {
 		return nil, fmt.Errorf("expected RedisCluster, got %T", obj)
 	}
-	return nil, v.validate(cluster).ToAggregate()
+	return nil, v.validate(ctx, cluster).ToAggregate()
 }
 
 // ValidateUpdate validates a RedisCluster on update.
-func (v *RedisClusterValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+func (v *RedisClusterValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
 	oldCluster, ok := oldObj.(*redisv1.RedisCluster)
 	if !ok {
 		return nil, fmt.Errorf("expected RedisCluster, got %T", oldObj)
@@ -51,7 +56,7 @@ func (v *RedisClusterValidator) ValidateUpdate(_ context.Context, oldObj, newObj
 		return nil, fmt.Errorf("expected RedisCluster, got %T", newObj)
 	}
 
-	allErrs := v.validate(newCluster)
+	allErrs := v.validate(ctx, newCluster)
 	allErrs = append(allErrs, v.validateUpdate(oldCluster, newCluster)...)
 	return nil, allErrs.ToAggregate()
 }
@@ -62,7 +67,7 @@ func (v *RedisClusterValidator) ValidateDelete(_ context.Context, _ runtime.Obje
 }
 
 // validate checks invariants on a RedisCluster spec.
-func (v *RedisClusterValidator) validate(cluster *redisv1.RedisCluster) field.ErrorList {
+func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.RedisCluster) field.ErrorList {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
@@ -118,6 +123,8 @@ func (v *RedisClusterValidator) validate(cluster *redisv1.RedisCluster) field.Er
 		))
 	}
 
+	allErrs = append(allErrs, v.validateBootstrapReference(ctx, cluster)...)
+
 	return allErrs
 }
 
@@ -142,5 +149,73 @@ func (v *RedisClusterValidator) validateUpdate(oldCluster, newCluster *redisv1.R
 		))
 	}
 
+	if bootstrapBackupName(oldCluster.Spec.Bootstrap) != bootstrapBackupName(newCluster.Spec.Bootstrap) {
+		allErrs = append(allErrs, field.Forbidden(
+			specPath.Child("bootstrap", "backupName"),
+			"bootstrap backupName is immutable after creation",
+		))
+	}
+
 	return allErrs
+}
+
+func (v *RedisClusterValidator) validateBootstrapReference(ctx context.Context, cluster *redisv1.RedisCluster) field.ErrorList {
+	if cluster.Spec.Bootstrap == nil || cluster.Spec.Bootstrap.BackupName == "" {
+		return nil
+	}
+
+	var allErrs field.ErrorList
+	backupNamePath := field.NewPath("spec", "bootstrap", "backupName")
+	backupName := cluster.Spec.Bootstrap.BackupName
+
+	if v.Reader == nil {
+		allErrs = append(allErrs, field.InternalError(backupNamePath, fmt.Errorf("validator reader is not configured")))
+		return allErrs
+	}
+
+	var backup redisv1.RedisBackup
+	if err := v.Reader.Get(ctx, types.NamespacedName{
+		Name:      backupName,
+		Namespace: cluster.Namespace,
+	}, &backup); err != nil {
+		if apierrors.IsNotFound(err) {
+			allErrs = append(allErrs, field.NotFound(backupNamePath, backupName))
+			return allErrs
+		}
+		allErrs = append(allErrs, field.InternalError(backupNamePath, fmt.Errorf("fetching RedisBackup %s/%s: %w", cluster.Namespace, backupName, err)))
+		return allErrs
+	}
+
+	if backup.Status.Phase != redisv1.BackupPhaseCompleted {
+		allErrs = append(allErrs, field.Invalid(
+			backupNamePath,
+			backupName,
+			fmt.Sprintf("referenced RedisBackup must be in phase %q", redisv1.BackupPhaseCompleted),
+		))
+	}
+
+	if backup.Spec.Destination == nil || backup.Spec.Destination.S3 == nil {
+		allErrs = append(allErrs, field.Invalid(
+			backupNamePath,
+			backupName,
+			"referenced RedisBackup must define an S3 destination",
+		))
+	}
+
+	if backup.Status.BackupPath == "" {
+		allErrs = append(allErrs, field.Invalid(
+			backupNamePath,
+			backupName,
+			"referenced RedisBackup must have status.backupPath set",
+		))
+	}
+
+	return allErrs
+}
+
+func bootstrapBackupName(spec *redisv1.BootstrapSpec) string {
+	if spec == nil {
+		return ""
+	}
+	return spec.BackupName
 }

@@ -2,8 +2,10 @@ package backup
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,7 +15,6 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"time"
 
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 )
@@ -91,7 +92,9 @@ func TestReconcile_ClusterNotFound_EmitsBackupFailedEvent(t *testing.T) {
 
 func TestReconcile_SuccessfulBackup_EmitsStartedAndCompletedEvents(t *testing.T) {
 	podIP, cleanup := overrideBackupPort(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"artifactType":"rdb","backupPath":"s3://test-bucket/backups/backup1.rdb","backupSize":111}`))
 	}))
 	defer cleanup()
 
@@ -114,6 +117,12 @@ func TestReconcile_SuccessfulBackup_EmitsStartedAndCompletedEvents(t *testing.T)
 		Spec: redisv1.RedisBackupSpec{
 			ClusterName: "cluster",
 			Target:      redisv1.BackupTargetPrimary,
+			Destination: &redisv1.BackupDestination{
+				S3: &redisv1.S3Destination{
+					Bucket: "test-bucket",
+					Path:   "backups",
+				},
+			},
 		},
 	}
 
@@ -140,6 +149,9 @@ func TestReconcile_SuccessfulBackup_EmitsStartedAndCompletedEvents(t *testing.T)
 
 func TestReconcile_BackupHTTPFailure_EmitsStartedAndFailedEvents(t *testing.T) {
 	podIP, cleanup := overrideBackupPort(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		assert.Equal(t, "backup1", payload["backupName"])
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer cleanup()
@@ -163,6 +175,12 @@ func TestReconcile_BackupHTTPFailure_EmitsStartedAndFailedEvents(t *testing.T) {
 		Spec: redisv1.RedisBackupSpec{
 			ClusterName: "cluster",
 			Target:      redisv1.BackupTargetPrimary,
+			Destination: &redisv1.BackupDestination{
+				S3: &redisv1.S3Destination{
+					Bucket: "test-bucket",
+					Path:   "backups",
+				},
+			},
 		},
 	}
 

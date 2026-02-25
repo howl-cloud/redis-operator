@@ -8,6 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 )
@@ -30,6 +33,37 @@ func validCluster() *redisv1.RedisCluster {
 			MaxSyncReplicas: 0,
 		},
 	}
+}
+
+func completedBackup(name, namespace string) *redisv1.RedisBackup {
+	return &redisv1.RedisBackup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: redisv1.RedisBackupSpec{
+			ClusterName: "source-cluster",
+			Method:      redisv1.BackupMethodRDB,
+			Destination: &redisv1.BackupDestination{
+				S3: &redisv1.S3Destination{
+					Bucket: "test-bucket",
+				},
+			},
+		},
+		Status: redisv1.RedisBackupStatus{
+			Phase:      redisv1.BackupPhaseCompleted,
+			BackupPath: "s3://test-bucket/backups/source-cluster.rdb",
+		},
+	}
+}
+
+func validatorWithReader(t *testing.T, objects ...client.Object) *RedisClusterValidator {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, redisv1.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	return &RedisClusterValidator{Reader: fakeClient}
 }
 
 func TestValidateCreate_ValidCluster(t *testing.T) {
@@ -274,4 +308,84 @@ func TestValidateCreate_TableDriven(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateCreate_BootstrapBackupNotFound(t *testing.T) {
+	v := validatorWithReader(t)
+	cluster := validCluster()
+	cluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: "missing-backup"}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Not found")
+}
+
+func TestValidateCreate_BootstrapBackupIncomplete(t *testing.T) {
+	backup := completedBackup("incomplete", "default")
+	backup.Status.Phase = redisv1.BackupPhaseRunning
+
+	v := validatorWithReader(t, backup)
+	cluster := validCluster()
+	cluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: backup.Name}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be in phase")
+}
+
+func TestValidateCreate_BootstrapBackupMissingS3Destination(t *testing.T) {
+	backup := completedBackup("missing-destination", "default")
+	backup.Spec.Destination = nil
+
+	v := validatorWithReader(t, backup)
+	cluster := validCluster()
+	cluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: backup.Name}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must define an S3 destination")
+}
+
+func TestValidateCreate_BootstrapBackupAOFAccepted(t *testing.T) {
+	backup := completedBackup("aof-backup", "default")
+	backup.Spec.Method = redisv1.BackupMethodAOF
+	backup.Status.BackupPath = "s3://test-bucket/backups/source-cluster.aof.tar.gz"
+	backup.Status.ArtifactType = redisv1.BackupArtifactTypeAOFArchive
+
+	v := validatorWithReader(t, backup)
+	cluster := validCluster()
+	cluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: backup.Name}
+
+	warnings, err := v.ValidateCreate(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
+func TestValidateCreate_BootstrapBackupCompletedAccepted(t *testing.T) {
+	backup := completedBackup("completed", "default")
+
+	v := validatorWithReader(t, backup)
+	cluster := validCluster()
+	cluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: backup.Name}
+
+	warnings, err := v.ValidateCreate(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
+func TestValidateUpdate_BootstrapBackupNameImmutable(t *testing.T) {
+	backupOne := completedBackup("backup-one", "default")
+	backupTwo := completedBackup("backup-two", "default")
+
+	v := validatorWithReader(t, backupOne, backupTwo)
+	oldCluster := validCluster()
+	oldCluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: backupOne.Name}
+
+	newCluster := validCluster()
+	newCluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: backupTwo.Name}
+
+	_, err := v.ValidateUpdate(context.Background(), oldCluster, newCluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bootstrap")
+	assert.Contains(t, err.Error(), "immutable")
 }
