@@ -184,6 +184,30 @@ func TestValidateCreate_TLSAndCASecretsSet(t *testing.T) {
 	assert.Nil(t, warnings)
 }
 
+func TestValidateCreate_PrimaryUpdateApprovalAnnotationValid(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Annotations = map[string]string{
+		redisv1.AnnotationApprovePrimaryUpdate: "true",
+	}
+
+	warnings, err := v.ValidateCreate(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
+func TestValidateCreate_PrimaryUpdateApprovalAnnotationInvalid(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Annotations = map[string]string{
+		redisv1.AnnotationApprovePrimaryUpdate: "false",
+	}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), primaryUpdateApprovalValue)
+}
+
 func TestValidateCreate_MultipleErrors(t *testing.T) {
 	v := &RedisClusterValidator{}
 	cluster := validCluster()

@@ -29,6 +29,7 @@ const (
 	sentinelTLSUnsupported      = "TLS is not supported in sentinel mode yet"
 	tlsSecretRequiredMessage    = "tlsSecret is required when caSecret is set"
 	caSecretRequiredMessage     = "caSecret is required when tlsSecret is set"
+	primaryUpdateApprovalValue  = `must be "true" when present`
 )
 
 // SetupValidatingWebhookWithManager registers the validating webhook with the manager.
@@ -121,6 +122,17 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 				field.NewPath("metadata", "annotations", redisv1.AnnotationHibernation),
 				val,
 				`must be "on", "off", "true", "false", or empty`,
+			))
+		}
+	}
+
+	// Validate supervised primary update approval annotation if present.
+	if val, ok := cluster.Annotations[redisv1.AnnotationApprovePrimaryUpdate]; ok {
+		if val != "true" && val != "" {
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("metadata", "annotations", redisv1.AnnotationApprovePrimaryUpdate),
+				val,
+				primaryUpdateApprovalValue,
 			))
 		}
 	}

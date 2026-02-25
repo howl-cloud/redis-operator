@@ -53,6 +53,7 @@ var knownClusterPhases = []string{
 	string(redisv1.ClusterPhaseFailingOver),
 	string(redisv1.ClusterPhaseScaling),
 	string(redisv1.ClusterPhaseUpdating),
+	string(redisv1.ClusterPhaseWaitingForUser),
 	string(redisv1.ClusterPhaseDeleting),
 	string(redisv1.ClusterPhaseHibernating),
 	unknownPhase,

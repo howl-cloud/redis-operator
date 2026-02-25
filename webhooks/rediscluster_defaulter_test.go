@@ -30,6 +30,7 @@ func TestDefault_EmptySpec(t *testing.T) {
 	assert.Equal(t, int32(1), cluster.Spec.Instances)
 	assert.Equal(t, "redis:7.2", cluster.Spec.ImageName)
 	assert.Equal(t, redisv1.ClusterModeStandalone, cluster.Spec.Mode)
+	assert.Equal(t, redisv1.PrimaryUpdateStrategyUnsupervised, cluster.Spec.PrimaryUpdateStrategy)
 	assert.Equal(t, resource.MustParse("1Gi"), cluster.Spec.Storage.Size)
 
 	require.NotNil(t, cluster.Spec.Resources.Requests)
@@ -58,9 +59,10 @@ func TestDefault_PreservesExistingValues(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: redisv1.RedisClusterSpec{
-			Instances: 5,
-			Mode:      redisv1.ClusterModeCluster,
-			ImageName: "redis:7.4",
+			Instances:             5,
+			Mode:                  redisv1.ClusterModeCluster,
+			ImageName:             "redis:7.4",
+			PrimaryUpdateStrategy: redisv1.PrimaryUpdateStrategySupervised,
 			Storage: redisv1.StorageSpec{
 				Size: resource.MustParse("10Gi"),
 			},
@@ -86,6 +88,7 @@ func TestDefault_PreservesExistingValues(t *testing.T) {
 	assert.Equal(t, int32(5), cluster.Spec.Instances)
 	assert.Equal(t, "redis:7.4", cluster.Spec.ImageName)
 	assert.Equal(t, redisv1.ClusterModeCluster, cluster.Spec.Mode)
+	assert.Equal(t, redisv1.PrimaryUpdateStrategySupervised, cluster.Spec.PrimaryUpdateStrategy)
 	assert.Equal(t, resource.MustParse("10Gi"), cluster.Spec.Storage.Size)
 	assert.Equal(t, resource.MustParse("1Gi"), cluster.Spec.Resources.Requests[corev1.ResourceMemory])
 	assert.Equal(t, resource.MustParse("500m"), cluster.Spec.Resources.Requests[corev1.ResourceCPU])
@@ -125,6 +128,7 @@ func TestDefault_PartialSpec(t *testing.T) {
 	assert.Equal(t, int32(3), cluster.Spec.Instances)
 	assert.Equal(t, "redis:7.2", cluster.Spec.ImageName)
 	assert.Equal(t, redisv1.ClusterModeStandalone, cluster.Spec.Mode)
+	assert.Equal(t, redisv1.PrimaryUpdateStrategyUnsupervised, cluster.Spec.PrimaryUpdateStrategy)
 	assert.Equal(t, resource.MustParse("1Gi"), cluster.Spec.Storage.Size)
 	require.NotNil(t, cluster.Spec.Resources.Requests)
 	require.NotNil(t, cluster.Spec.EnablePodDisruptionBudget)

@@ -1244,3 +1244,78 @@ func TestListClusterPVCs_Filtering(t *testing.T) {
 	assert.Len(t, pvcs, 1)
 	assert.Equal(t, "test-data-0", pvcs[0].Name)
 }
+
+func TestReconcile_SentinelModeContinuesWhenRollingUpdateStops(t *testing.T) {
+	ctx := context.Background()
+	cluster := newTestCluster("test", "default", 3)
+	cluster.Spec.Mode = redisv1.ClusterModeSentinel
+	cluster.Spec.PrimaryUpdateStrategy = redisv1.PrimaryUpdateStrategySupervised
+	cluster.Status.CurrentPrimary = "test-0"
+
+	r, c := newReconciler(cluster)
+	desiredHash := r.computeSpecHash(cluster)
+
+	dataPods := []corev1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-0",
+				Namespace: "default",
+				Labels: map[string]string{
+					redisv1.LabelCluster:  "test",
+					redisv1.LabelInstance: "test-0",
+					redisv1.LabelRole:     redisv1.LabelRolePrimary,
+					specHashAnnotation:    "old-hash",
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-1",
+				Namespace: "default",
+				Labels: map[string]string{
+					redisv1.LabelCluster:  "test",
+					redisv1.LabelInstance: "test-1",
+					redisv1.LabelRole:     redisv1.LabelRoleReplica,
+					specHashAnnotation:    desiredHash,
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-2",
+				Namespace: "default",
+				Labels: map[string]string{
+					redisv1.LabelCluster:  "test",
+					redisv1.LabelInstance: "test-2",
+					redisv1.LabelRole:     redisv1.LabelRoleReplica,
+					specHashAnnotation:    desiredHash,
+				},
+			},
+		},
+	}
+	for i := range dataPods {
+		require.NoError(t, c.Create(ctx, &dataPods[i]))
+	}
+
+	result, err := r.reconcile(ctx, cluster)
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+
+	var updated redisv1.RedisCluster
+	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updated)
+	require.NoError(t, err)
+	assert.Equal(t, redisv1.ClusterPhaseWaitingForUser, updated.Status.Phase)
+
+	var sentinelPods corev1.PodList
+	err = c.List(
+		ctx,
+		&sentinelPods,
+		client.InNamespace("default"),
+		client.MatchingLabels{
+			redisv1.LabelCluster: "test",
+			redisv1.LabelRole:    redisv1.LabelRoleSentinel,
+		},
+	)
+	require.NoError(t, err)
+	assert.Len(t, sentinelPods.Items, redisv1.SentinelInstances)
+}

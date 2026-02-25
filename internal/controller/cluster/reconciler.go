@@ -145,7 +145,8 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 	}
 
 	desiredHash := r.computeSpecHash(cluster)
-	if err := r.rollingUpdate(ctx, cluster, desiredHash); err != nil {
+	stop, err := r.rollingUpdate(ctx, cluster, desiredHash)
+	if err != nil {
 		return reconcile.Result{}, fmt.Errorf("rolling update: %w", err)
 	}
 
@@ -157,6 +158,9 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 		if err := r.reconcileSentinelMaster(ctx, cluster); err != nil {
 			return reconcile.Result{}, fmt.Errorf("reconciling sentinel master: %w", err)
 		}
+	}
+	if stop {
+		return reconcile.Result{}, nil
 	}
 
 	return reconcile.Result{RequeueAfter: requeueInterval}, nil

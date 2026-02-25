@@ -629,11 +629,49 @@ func TestRollingUpdate_Started_EmitsEvent(t *testing.T) {
 	ctx := context.Background()
 
 	// Will delete one replica and return (one at a time).
-	err := r.rollingUpdate(ctx, cluster, desiredHash)
+	_, err := r.rollingUpdate(ctx, cluster, desiredHash)
 	require.NoError(t, err)
 
 	events := drainEvents(recorder)
 	assertContainsEvent(t, events, "Normal", "RollingUpdateStarted", "Rolling update started")
+}
+
+func TestRollingUpdate_SupervisedPause_EmitsEvent(t *testing.T) {
+	cluster := newTestCluster("test", "default", 2)
+	cluster.Spec.PrimaryUpdateStrategy = redisv1.PrimaryUpdateStrategySupervised
+	cluster.Status.CurrentPrimary = "test-0"
+
+	desiredHash := "new-hash"
+	pods := []client.Object{
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-0", Namespace: "default",
+				Labels: map[string]string{
+					redisv1.LabelCluster: "test",
+					"redis.io/spec-hash": "old-hash",
+				},
+			},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-1", Namespace: "default",
+				Labels: map[string]string{
+					redisv1.LabelCluster: "test",
+					"redis.io/spec-hash": desiredHash,
+				},
+			},
+		},
+	}
+
+	r, _, recorder := newReconcilerWithRecorder(append([]client.Object{cluster}, pods...)...)
+	ctx := context.Background()
+
+	_, err := r.rollingUpdate(ctx, cluster, desiredHash)
+	require.NoError(t, err)
+
+	events := drainEvents(recorder)
+	assertContainsEvent(t, events, "Normal", "RollingUpdateStarted", "Rolling update started")
+	assertContainsEvent(t, events, "Normal", "PrimaryUpdatePaused", "approve-primary-update")
 }
 
 func TestRollingUpdate_Completed_EmitsEvent(t *testing.T) {
@@ -665,7 +703,7 @@ func TestRollingUpdate_Completed_EmitsEvent(t *testing.T) {
 	r, _, recorder := newReconcilerWithRecorder(append([]client.Object{cluster}, pods...)...)
 	ctx := context.Background()
 
-	err := r.rollingUpdate(ctx, cluster, desiredHash)
+	_, err := r.rollingUpdate(ctx, cluster, desiredHash)
 	require.NoError(t, err)
 
 	events := drainEvents(recorder)
@@ -702,7 +740,7 @@ func TestRollingUpdate_Incomplete_NoCompletedEvent(t *testing.T) {
 	r, _, recorder := newReconcilerWithRecorder(append([]client.Object{cluster}, pods...)...)
 	ctx := context.Background()
 
-	err := r.rollingUpdate(ctx, cluster, desiredHash)
+	_, err := r.rollingUpdate(ctx, cluster, desiredHash)
 	require.NoError(t, err)
 
 	events := drainEvents(recorder)

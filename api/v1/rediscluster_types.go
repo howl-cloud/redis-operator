@@ -17,27 +17,38 @@ const (
 	ClusterModeCluster ClusterMode = "cluster"
 )
 
+// PrimaryUpdateStrategy defines how the primary is updated during rolling updates.
+// +kubebuilder:validation:Enum=unsupervised;supervised
+type PrimaryUpdateStrategy string
+
+const (
+	PrimaryUpdateStrategyUnsupervised PrimaryUpdateStrategy = "unsupervised"
+	PrimaryUpdateStrategySupervised   PrimaryUpdateStrategy = "supervised"
+)
+
 // ClusterPhase represents the human-readable phase of a RedisCluster.
 type ClusterPhase string
 
 const (
-	ClusterPhaseCreating    ClusterPhase = "Creating"
-	ClusterPhaseHealthy     ClusterPhase = "Healthy"
-	ClusterPhaseDegraded    ClusterPhase = "Degraded"
-	ClusterPhaseFailingOver ClusterPhase = "FailingOver"
-	ClusterPhaseScaling     ClusterPhase = "Scaling"
-	ClusterPhaseUpdating    ClusterPhase = "Updating"
-	ClusterPhaseDeleting    ClusterPhase = "Deleting"
-	ClusterPhaseHibernating ClusterPhase = "Hibernating"
+	ClusterPhaseCreating       ClusterPhase = "Creating"
+	ClusterPhaseHealthy        ClusterPhase = "Healthy"
+	ClusterPhaseDegraded       ClusterPhase = "Degraded"
+	ClusterPhaseFailingOver    ClusterPhase = "FailingOver"
+	ClusterPhaseScaling        ClusterPhase = "Scaling"
+	ClusterPhaseUpdating       ClusterPhase = "Updating"
+	ClusterPhaseWaitingForUser ClusterPhase = "WaitingForUser"
+	ClusterPhaseDeleting       ClusterPhase = "Deleting"
+	ClusterPhaseHibernating    ClusterPhase = "Hibernating"
 )
 
 // Condition types for RedisCluster.
 const (
-	ConditionReady               = "Ready"
-	ConditionPrimaryAvailable    = "PrimaryAvailable"
-	ConditionReplicationHealthy  = "ReplicationHealthy"
-	ConditionLastBackupSucceeded = "LastBackupSucceeded"
-	ConditionHibernated          = "Hibernated"
+	ConditionReady                = "Ready"
+	ConditionPrimaryAvailable     = "PrimaryAvailable"
+	ConditionReplicationHealthy   = "ReplicationHealthy"
+	ConditionPrimaryUpdateWaiting = "PrimaryUpdateWaiting"
+	ConditionLastBackupSucceeded  = "LastBackupSucceeded"
+	ConditionHibernated           = "Hibernated"
 )
 
 // Fencing annotation key. The annotation value is a JSON list of fenced pod names.
@@ -47,7 +58,8 @@ const (
 
 // Hibernation annotation key. Set to "on" or "true" to hibernate the cluster.
 const (
-	AnnotationHibernation = "redis.io/hibernation"
+	AnnotationHibernation          = "redis.io/hibernation"
+	AnnotationApprovePrimaryUpdate = "redis.io/approve-primary-update"
 )
 
 // Labels used by the operator.
@@ -80,6 +92,13 @@ type RedisClusterSpec struct {
 	// Mode defines the Redis operating mode.
 	// +kubebuilder:default=standalone
 	Mode ClusterMode `json:"mode,omitempty"`
+
+	// PrimaryUpdateStrategy controls whether primary replacement runs automatically
+	// after replicas are updated (unsupervised), or waits for operator approval (supervised).
+	// +kubebuilder:validation:Enum=unsupervised;supervised
+	// +kubebuilder:default=unsupervised
+	// +optional
+	PrimaryUpdateStrategy PrimaryUpdateStrategy `json:"primaryUpdateStrategy,omitempty"`
 
 	// ImageName is the Redis container image.
 	// +kubebuilder:default="redis:7.2"

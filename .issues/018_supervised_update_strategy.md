@@ -7,7 +7,7 @@ labels: [production-readiness, operations, rolling-update]
 created: 2026-02-23
 updated: 2026-02-23
 depends_on: []
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -54,12 +54,12 @@ Additionally, `spec.primaryUpdateMethod` controls *how* the primary is updated:
 
 ## Acceptance Criteria
 
-- [ ] `spec.primaryUpdateStrategy: supervised` pauses rolling updates after replicas are done
-- [ ] Cluster enters a visible waiting state (phase or condition)
-- [ ] Event recorded: `PrimaryUpdatePaused` with message explaining how to resume
-- [ ] Setting annotation `redis.io/approve-primary-update: "true"` resumes the update
-- [ ] `spec.primaryUpdateStrategy: unsupervised` (default) behaves as today
-- [ ] E2E test: supervised update pauses at the right point and resumes on annotation
+- [x] `spec.primaryUpdateStrategy: supervised` pauses rolling updates after replicas are done
+- [x] Cluster enters a visible waiting state (phase or condition)
+- [x] Event recorded: `PrimaryUpdatePaused` with message explaining how to resume
+- [x] Setting annotation `redis.io/approve-primary-update: "true"` resumes the update
+- [x] `spec.primaryUpdateStrategy: unsupervised` (default) behaves as today
+- [x] E2E test: supervised update pauses at the right point and resumes on annotation
 
 ## Notes
 

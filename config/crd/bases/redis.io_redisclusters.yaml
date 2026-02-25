@@ -1089,6 +1089,19 @@ spec:
                       reachability checks.
                     type: string
                 type: object
+              primaryUpdateStrategy:
+                allOf:
+                - enum:
+                  - unsupervised
+                  - supervised
+                - enum:
+                  - unsupervised
+                  - supervised
+                default: unsupervised
+                description: |-
+                  PrimaryUpdateStrategy controls whether primary replacement runs automatically
+                  after replicas are updated (unsupervised), or waits for operator approval (supervised).
+                type: string
               redis:
                 additionalProperties:
                   type: string
