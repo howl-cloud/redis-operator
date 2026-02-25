@@ -26,6 +26,9 @@ var _ webhook.CustomValidator = &RedisClusterValidator{}
 const (
 	unsupportedModeMessage      = "cluster mode is not yet supported; use standalone or sentinel"
 	sentinelInstancesMinMessage = "sentinel mode requires at least 3 redis instances"
+	sentinelTLSUnsupported      = "TLS is not supported in sentinel mode yet"
+	tlsSecretRequiredMessage    = "tlsSecret is required when caSecret is set"
+	caSecretRequiredMessage     = "caSecret is required when tlsSecret is set"
 )
 
 // SetupValidatingWebhookWithManager registers the validating webhook with the manager.
@@ -84,6 +87,29 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 			specPath.Child("instances"),
 			cluster.Spec.Instances,
 			sentinelInstancesMinMessage,
+		))
+	}
+
+	if cluster.Spec.Mode == redisv1.ClusterModeSentinel &&
+		(cluster.Spec.TLSSecret != nil || cluster.Spec.CASecret != nil) {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("mode"),
+			cluster.Spec.Mode,
+			sentinelTLSUnsupported,
+		))
+	}
+
+	if cluster.Spec.TLSSecret != nil && cluster.Spec.CASecret == nil {
+		allErrs = append(allErrs, field.Required(
+			specPath.Child("caSecret"),
+			caSecretRequiredMessage,
+		))
+	}
+
+	if cluster.Spec.CASecret != nil && cluster.Spec.TLSSecret == nil {
+		allErrs = append(allErrs, field.Required(
+			specPath.Child("tlsSecret"),
+			tlsSecretRequiredMessage,
 		))
 	}
 

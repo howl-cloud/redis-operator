@@ -3,6 +3,8 @@ package reconciler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,6 +34,9 @@ const (
 var (
 	projectedSecretsDir = "/projected"
 	usersACLFilePath    = "/data/users.acl"
+	tlsCertFilePath     = "/tls/tls.crt"
+	tlsKeyFilePath      = "/tls/tls.key"
+	tlsCAFilePath       = "/tls/ca.crt"
 )
 
 // InstanceReconciler watches the RedisCluster CR from inside the pod.
@@ -45,6 +50,8 @@ type InstanceReconciler struct {
 
 	mu       sync.Mutex
 	redisCmd *exec.Cmd
+
+	tlsCertChecksums map[string]string
 }
 
 // NewInstanceReconciler creates a new InstanceReconciler.
@@ -55,12 +62,13 @@ func NewInstanceReconciler(
 	clusterName, podName, namespace string,
 ) *InstanceReconciler {
 	return &InstanceReconciler{
-		client:      c,
-		redisClient: redisClient,
-		recorder:    recorder,
-		clusterName: clusterName,
-		podName:     podName,
-		namespace:   namespace,
+		client:           c,
+		redisClient:      redisClient,
+		recorder:         recorder,
+		clusterName:      clusterName,
+		podName:          podName,
+		namespace:        namespace,
+		tlsCertChecksums: map[string]string{},
 	}
 }
 
@@ -112,7 +120,13 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, _ reconcile.Request)
 		// Not fatal -- continue to status reporting.
 	}
 
-	// Step 5: Status reporting.
+	// Step 5: TLS certificate rotation reconciliation.
+	if err := r.reconcileTLSCerts(ctx, &cluster); err != nil {
+		logger.Error(err, "Failed to reconcile TLS certificates")
+		// Not fatal -- continue to status reporting.
+	}
+
+	// Step 6: Status reporting.
 	if err := r.reportStatus(ctx, &cluster); err != nil {
 		logger.Error(err, "Failed to report status")
 		return reconcile.Result{}, err
@@ -233,6 +247,43 @@ func (r *InstanceReconciler) reconcileSecrets(ctx context.Context, cluster *redi
 	return nil
 }
 
+func (r *InstanceReconciler) reconcileTLSCerts(ctx context.Context, cluster *redisv1.RedisCluster) error {
+	if !isTLSEnabled(cluster) {
+		r.tlsCertChecksums = map[string]string{}
+		return nil
+	}
+
+	currentChecksums, err := readTLSCertChecksums()
+	if err != nil {
+		return err
+	}
+
+	if len(r.tlsCertChecksums) == 0 {
+		r.tlsCertChecksums = currentChecksums
+		return nil
+	}
+
+	if checksumsEqual(r.tlsCertChecksums, currentChecksums) {
+		return nil
+	}
+
+	if err := r.redisClient.ConfigSet(ctx, "tls-cert-file", tlsCertFilePath).Err(); err != nil {
+		return fmt.Errorf("CONFIG SET tls-cert-file: %w", err)
+	}
+	if err := r.redisClient.ConfigSet(ctx, "tls-key-file", tlsKeyFilePath).Err(); err != nil {
+		return fmt.Errorf("CONFIG SET tls-key-file: %w", err)
+	}
+	if err := r.redisClient.ConfigSet(ctx, "tls-ca-cert-file", tlsCAFilePath).Err(); err != nil {
+		return fmt.Errorf("CONFIG SET tls-ca-cert-file: %w", err)
+	}
+
+	if r.recorder != nil {
+		r.recorder.Event(cluster, corev1.EventTypeNormal, "CertificatesRotated", "TLS certificates reloaded")
+	}
+	r.tlsCertChecksums = currentChecksums
+	return nil
+}
+
 // reportStatus patches the instancesStatus map for this pod.
 func (r *InstanceReconciler) reportStatus(ctx context.Context, cluster *redisv1.RedisCluster) error {
 	info, err := replication.GetInfo(ctx, r.redisClient)
@@ -282,16 +333,49 @@ func (r *InstanceReconciler) readSecretKey(ctx context.Context, namespace, secre
 // requiresRestart returns true for Redis config keys that need a server restart.
 func requiresRestart(key string) bool {
 	restartKeys := map[string]bool{
-		"bind":             true,
-		"port":             true,
-		"tls-port":         true,
-		"tls-cert-file":    true,
-		"tls-key-file":     true,
-		"tls-ca-cert-file": true,
-		"unixsocket":       true,
-		"databases":        true,
+		"bind":       true,
+		"port":       true,
+		"tls-port":   true,
+		"unixsocket": true,
+		"databases":  true,
 	}
 	return restartKeys[key]
+}
+
+func isTLSEnabled(cluster *redisv1.RedisCluster) bool {
+	return cluster.Spec.TLSSecret != nil && cluster.Spec.CASecret != nil
+}
+
+func readTLSCertChecksums() (map[string]string, error) {
+	checksums := make(map[string]string, 3)
+	certFiles := map[string]string{
+		"tls-cert-file":    tlsCertFilePath,
+		"tls-key-file":     tlsKeyFilePath,
+		"tls-ca-cert-file": tlsCAFilePath,
+	}
+
+	for key, path := range certFiles {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading TLS certificate file %s: %w", path, err)
+		}
+		sum := sha256.Sum256(content)
+		checksums[key] = hex.EncodeToString(sum[:])
+	}
+
+	return checksums, nil
+}
+
+func checksumsEqual(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, leftValue := range left {
+		if rightValue, ok := right[key]; !ok || rightValue != leftValue {
+			return false
+		}
+	}
+	return true
 }
 
 func resolveProjectedSecretsDir() string {

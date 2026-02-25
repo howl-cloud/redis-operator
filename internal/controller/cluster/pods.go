@@ -28,6 +28,8 @@ const (
 	controllerMountPath       = "/controller"
 	projectedVolumeName       = "projected-secrets"
 	projectedMountPath        = "/projected"
+	tlsVolumeName             = "tls-certs"
+	tlsMountPath              = "/tls"
 	restoreDataInitName       = "restore-data"
 	backupCredsVolumeName     = "backup-credentials"
 	backupCredsMountPath      = "/backup-credentials"
@@ -184,8 +186,6 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 	secretRefs := []*redisv1.LocalObjectReference{
 		cluster.Spec.AuthSecret,
 		cluster.Spec.ACLConfigSecret,
-		cluster.Spec.TLSSecret,
-		cluster.Spec.CASecret,
 	}
 	for _, ref := range secretRefs {
 		if ref != nil {
@@ -363,6 +363,39 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 		pod.Spec.Containers[0].VolumeMounts = append(
 			pod.Spec.Containers[0].VolumeMounts,
 			corev1.VolumeMount{Name: projectedVolumeName, MountPath: projectedMountPath},
+		)
+	}
+
+	if isTLSEnabled(cluster) {
+		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+			Name: tlsVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{
+					Sources: []corev1.VolumeProjection{
+						{
+							Secret: &corev1.SecretProjection{
+								LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Spec.TLSSecret.Name},
+								Items: []corev1.KeyToPath{
+									{Key: "tls.crt", Path: "tls.crt"},
+									{Key: "tls.key", Path: "tls.key"},
+								},
+							},
+						},
+						{
+							Secret: &corev1.SecretProjection{
+								LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Spec.CASecret.Name},
+								Items: []corev1.KeyToPath{
+									{Key: "ca.crt", Path: "ca.crt"},
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+		pod.Spec.Containers[0].VolumeMounts = append(
+			pod.Spec.Containers[0].VolumeMounts,
+			corev1.VolumeMount{Name: tlsVolumeName, MountPath: tlsMountPath, ReadOnly: true},
 		)
 	}
 
@@ -739,6 +772,10 @@ func podLabels(clusterName, podName, role string) map[string]string {
 
 func serviceAccountName(clusterName string) string {
 	return clusterName
+}
+
+func isTLSEnabled(cluster *redisv1.RedisCluster) bool {
+	return cluster.Spec.TLSSecret != nil && cluster.Spec.CASecret != nil
 }
 
 func intOrString(port int) intstr.IntOrString {

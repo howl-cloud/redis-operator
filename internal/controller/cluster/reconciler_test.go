@@ -714,6 +714,7 @@ func TestCreatePod_WithSecrets(t *testing.T) {
 	cluster := newTestCluster("test", "default", 1)
 	cluster.Spec.AuthSecret = &redisv1.LocalObjectReference{Name: "auth-secret"}
 	cluster.Spec.TLSSecret = &redisv1.LocalObjectReference{Name: "tls-secret"}
+	cluster.Spec.CASecret = &redisv1.LocalObjectReference{Name: "ca-secret"}
 
 	// Pre-create PVC.
 	pvc := &corev1.PersistentVolumeClaim{
@@ -734,24 +735,51 @@ func TestCreatePod_WithSecrets(t *testing.T) {
 
 	// Verify projected volume exists.
 	foundProjected := false
+	foundTLSVolume := false
 	for _, vol := range pod.Spec.Volumes {
 		if vol.Name == projectedVolumeName {
 			foundProjected = true
 			require.NotNil(t, vol.Projected)
-			assert.Len(t, vol.Projected.Sources, 2) // auth + tls
+			assert.Len(t, vol.Projected.Sources, 1) // auth only
+		}
+		if vol.Name == tlsVolumeName {
+			foundTLSVolume = true
+			require.NotNil(t, vol.Projected)
+			require.Len(t, vol.Projected.Sources, 2)
+
+			require.NotNil(t, vol.Projected.Sources[0].Secret)
+			assert.Equal(t, "tls-secret", vol.Projected.Sources[0].Secret.Name)
+			assert.Equal(t, []corev1.KeyToPath{
+				{Key: "tls.crt", Path: "tls.crt"},
+				{Key: "tls.key", Path: "tls.key"},
+			}, vol.Projected.Sources[0].Secret.Items)
+
+			require.NotNil(t, vol.Projected.Sources[1].Secret)
+			assert.Equal(t, "ca-secret", vol.Projected.Sources[1].Secret.Name)
+			assert.Equal(t, []corev1.KeyToPath{
+				{Key: "ca.crt", Path: "ca.crt"},
+			}, vol.Projected.Sources[1].Secret.Items)
 		}
 	}
 	assert.True(t, foundProjected, "projected volume should be present")
+	assert.True(t, foundTLSVolume, "tls volume should be present")
 
 	// Verify mount.
 	foundMount := false
+	foundTLSMount := false
 	for _, mount := range pod.Spec.Containers[0].VolumeMounts {
 		if mount.Name == projectedVolumeName {
 			foundMount = true
 			assert.Equal(t, projectedMountPath, mount.MountPath)
 		}
+		if mount.Name == tlsVolumeName {
+			foundTLSMount = true
+			assert.Equal(t, tlsMountPath, mount.MountPath)
+			assert.True(t, mount.ReadOnly)
+		}
 	}
 	assert.True(t, foundMount, "projected volume mount should be present")
+	assert.True(t, foundTLSMount, "tls volume mount should be present")
 }
 
 func TestCreatePod_WithoutSecrets(t *testing.T) {

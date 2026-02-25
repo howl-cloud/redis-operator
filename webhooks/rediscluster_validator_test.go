@@ -140,6 +140,50 @@ func TestValidateCreate_SentinelModeWithThreeInstances(t *testing.T) {
 	assert.Nil(t, warnings)
 }
 
+func TestValidateCreate_SentinelModeRejectsTLS(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.Mode = redisv1.ClusterModeSentinel
+	cluster.Spec.Instances = 3
+	cluster.Spec.TLSSecret = &redisv1.LocalObjectReference{Name: "tls-secret"}
+	cluster.Spec.CASecret = &redisv1.LocalObjectReference{Name: "ca-secret"}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), sentinelTLSUnsupported)
+}
+
+func TestValidateCreate_TLSSecretRequiresCASecret(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.TLSSecret = &redisv1.LocalObjectReference{Name: "tls-secret"}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), caSecretRequiredMessage)
+}
+
+func TestValidateCreate_CASecretRequiresTLSSecret(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.CASecret = &redisv1.LocalObjectReference{Name: "ca-secret"}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), tlsSecretRequiredMessage)
+}
+
+func TestValidateCreate_TLSAndCASecretsSet(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.TLSSecret = &redisv1.LocalObjectReference{Name: "tls-secret"}
+	cluster.Spec.CASecret = &redisv1.LocalObjectReference{Name: "ca-secret"}
+
+	warnings, err := v.ValidateCreate(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
 func TestValidateCreate_MultipleErrors(t *testing.T) {
 	v := &RedisClusterValidator{}
 	cluster := validCluster()
@@ -264,6 +308,16 @@ func TestValidateCreate_TableDriven(t *testing.T) {
 			},
 			wantErr:   true,
 			errSubstr: sentinelInstancesMinMessage,
+		},
+		{
+			name: "sentinel mode with TLS is invalid",
+			modify: func(c *redisv1.RedisCluster) {
+				c.Spec.Mode = redisv1.ClusterModeSentinel
+				c.Spec.TLSSecret = &redisv1.LocalObjectReference{Name: "tls-secret"}
+				c.Spec.CASecret = &redisv1.LocalObjectReference{Name: "ca-secret"}
+			},
+			wantErr:   true,
+			errSubstr: sentinelTLSUnsupported,
 		},
 		{
 			name:      "zero instances",

@@ -33,8 +33,7 @@ func TestRDBBackupRestoreRoundTrip(t *testing.T) {
 	require.NoError(t, sourceClient.Set(ctx, "rdb-roundtrip", "ok", 0).Err())
 	triggerAndWaitBGSAVE(t, ctx, sourceClient)
 
-	require.FileExists(t, filepath.Join(sourceDataDir, "dump.rdb"))
-	require.NoError(t, copyFile(filepath.Join(sourceDataDir, "dump.rdb"), filepath.Join(restoredDataDir, "dump.rdb")))
+	copyContainerFileToHost(t, ctx, source, "/data/dump.rdb", filepath.Join(restoredDataDir, "dump.rdb"))
 
 	restored := startRedisWithDataDir(ctx, t, restoredDataDir)
 	restoredClient := newRedisClient(ctx, t, restored, "", "")
@@ -61,10 +60,8 @@ func TestAOFBackupRestoreRoundTrip(t *testing.T) {
 	require.NoError(t, sourceClient.Set(ctx, "aof-roundtrip", "ok", 0).Err())
 	triggerAndWaitBGREWRITEAOF(t, ctx, sourceClient)
 
-	appendOnlyDir := filepath.Join(sourceDataDir, "appendonlydir")
-	require.FileExists(t, filepath.Join(appendOnlyDir, "appendonly.aof.manifest"))
-
-	require.NoError(t, archiveDirectory(appendOnlyDir, archivePath))
+	createContainerTarArchive(t, ctx, source, "/tmp/appendonlydir.tar.gz", "/data/appendonlydir")
+	copyContainerFileToHost(t, ctx, source, "/tmp/appendonlydir.tar.gz", archivePath)
 	require.NoError(t, extractArchive(archivePath, filepath.Join(restoredDataDir, "appendonlydir")))
 
 	restored := startRedisWithDataDir(ctx, t, restoredDataDir)
@@ -146,73 +143,32 @@ func mustTempDir(t *testing.T, pattern string) string {
 	return dir
 }
 
-func copyFile(source, destination string) error {
-	in, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer in.Close() //nolint:errcheck // test helper
+func copyContainerFileToHost(t *testing.T, ctx context.Context, container testcontainers.Container, containerPath, hostPath string) {
+	t.Helper()
 
-	out, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	defer out.Close() //nolint:errcheck // test helper
+	reader, err := container.CopyFileFromContainer(ctx, containerPath)
+	require.NoError(t, err)
+	defer reader.Close() //nolint:errcheck // test helper
 
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return nil
+	require.NoError(t, os.MkdirAll(filepath.Dir(hostPath), 0o755))
+
+	file, err := os.OpenFile(hostPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	require.NoError(t, err)
+	defer file.Close() //nolint:errcheck // test helper
+
+	_, err = io.Copy(file, reader)
+	require.NoError(t, err)
 }
 
-func archiveDirectory(sourceDir, archivePath string) error {
-	archiveFile, err := os.OpenFile(archivePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	defer archiveFile.Close() //nolint:errcheck // test helper
+func createContainerTarArchive(t *testing.T, ctx context.Context, container testcontainers.Container, archivePath, sourceDir string) {
+	t.Helper()
 
-	gzipWriter := gzip.NewWriter(archiveFile)
-	defer gzipWriter.Close() //nolint:errcheck // test helper
+	exitCode, output, err := container.Exec(ctx, []string{"tar", "-czf", archivePath, "-C", sourceDir, "."})
+	require.NoError(t, err)
 
-	tarWriter := tar.NewWriter(gzipWriter)
-	defer tarWriter.Close() //nolint:errcheck // test helper
-
-	return filepath.Walk(sourceDir, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == sourceDir {
-			return nil
-		}
-
-		relPath, err := filepath.Rel(sourceDir, path)
-		if err != nil {
-			return err
-		}
-
-		header, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return err
-		}
-		header.Name = filepath.ToSlash(relPath)
-
-		if err := tarWriter.WriteHeader(header); err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return nil
-		}
-
-		file, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer file.Close() //nolint:errcheck // test helper
-
-		_, err = io.Copy(tarWriter, file)
-		return err
-	})
+	outputBytes, err := io.ReadAll(output)
+	require.NoError(t, err)
+	require.Equalf(t, 0, exitCode, "failed to create container archive: %s", strings.TrimSpace(string(outputBytes)))
 }
 
 func extractArchive(archivePath, destinationDir string) error {

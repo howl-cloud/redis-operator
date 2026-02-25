@@ -3,6 +3,8 @@ package run
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,6 +29,9 @@ import (
 var (
 	dataDir       = "/data"
 	redisConfPath = "/data/redis.conf"
+	tlsCertPath   = "/tls/tls.crt"
+	tlsKeyPath    = "/tls/tls.key"
+	tlsCAPath     = "/tls/ca.crt"
 )
 
 const (
@@ -62,6 +67,9 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 	}, &cluster); err != nil {
 		return fmt.Errorf("fetching RedisCluster %s/%s: %w", namespace, clusterName, err)
 	}
+	if err := validateTLSMode(&cluster); err != nil {
+		return err
+	}
 
 	// Step 3: Determine role and apply split-brain guard.
 	isPrimary := cluster.Status.CurrentPrimary == podName || cluster.Status.CurrentPrimary == ""
@@ -93,8 +101,13 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 	logger.Info("redis-server started", "pid", redisCmd.Process.Pid)
 
 	// Step 6: Create Redis client for local instance.
+	tlsConfig, err := redisTLSConfig(&cluster)
+	if err != nil {
+		return fmt.Errorf("building redis client TLS config: %w", err)
+	}
 	redisClient := redis.NewClient(&redis.Options{
-		Addr: fmt.Sprintf("127.0.0.1:%d", redisPort),
+		Addr:      fmt.Sprintf("127.0.0.1:%d", redisPort),
+		TLSConfig: tlsConfig,
 	})
 	defer func() { _ = redisClient.Close() }()
 
@@ -163,9 +176,7 @@ func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective string) er
 	var lines []string
 
 	// Base configuration.
-	lines = append(lines,
-		fmt.Sprintf("port %d", redisPort),
-		"bind 0.0.0.0",
+	lines = append(lines, "bind 0.0.0.0",
 		fmt.Sprintf("dir %s", dataDir),
 		"appendonly yes",
 		"aof-use-rdb-preamble yes",
@@ -174,6 +185,19 @@ func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective string) er
 		"save 300 10",
 		"save 60 10000",
 	)
+	if isTLSEnabled(cluster) {
+		lines = append(lines,
+			fmt.Sprintf("tls-port %d", redisPort),
+			"port 0",
+			fmt.Sprintf("tls-cert-file %s", tlsCertPath),
+			fmt.Sprintf("tls-key-file %s", tlsKeyPath),
+			fmt.Sprintf("tls-ca-cert-file %s", tlsCAPath),
+			"tls-auth-clients optional",
+			"tls-replication yes",
+		)
+	} else {
+		lines = append(lines, fmt.Sprintf("port %d", redisPort))
+	}
 
 	// Replication directive (split-brain guard).
 	if replicaOfDirective != "" {
@@ -192,6 +216,84 @@ func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective string) er
 
 	content := strings.Join(lines, "\n") + "\n"
 	return os.WriteFile(redisConfPath, []byte(content), 0644)
+}
+
+func hasTLSSpec(cluster *redisv1.RedisCluster) bool {
+	return cluster.Spec.TLSSecret != nil && cluster.Spec.CASecret != nil
+}
+
+func hasAnyTLSSpecReference(cluster *redisv1.RedisCluster) bool {
+	return cluster.Spec.TLSSecret != nil || cluster.Spec.CASecret != nil
+}
+
+func isTLSEnabled(cluster *redisv1.RedisCluster) bool {
+	return hasTLSSpec(cluster) && cluster.Spec.Mode != redisv1.ClusterModeSentinel
+}
+
+func validateTLSMode(cluster *redisv1.RedisCluster) error {
+	if cluster.Spec.Mode == redisv1.ClusterModeSentinel && hasAnyTLSSpecReference(cluster) {
+		return fmt.Errorf("TLS is not supported in sentinel mode yet")
+	}
+	return nil
+}
+
+func redisTLSConfig(cluster *redisv1.RedisCluster) (*tls.Config, error) {
+	if !isTLSEnabled(cluster) {
+		return nil, nil
+	}
+
+	rootCAs, err := loadRootCAsFromFile(tlsCAPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// The local client connects via 127.0.0.1, so hostname verification is not
+	// meaningful. Verify the certificate chain against the configured CA instead.
+	// The CA bundle is re-read on each handshake so projected secret updates are
+	// picked up without restarting the process.
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    rootCAs,
+		//nolint:gosec // hostname is intentionally skipped for loopback-only local client
+		InsecureSkipVerify: true,
+		VerifyConnection: func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return fmt.Errorf("redis server did not present a certificate")
+			}
+			currentRootCAs, err := loadRootCAsFromFile(tlsCAPath)
+			if err != nil {
+				return fmt.Errorf("reloading CA certificate for Redis TLS verification: %w", err)
+			}
+
+			intermediates := x509.NewCertPool()
+			for _, cert := range state.PeerCertificates[1:] {
+				intermediates.AddCert(cert)
+			}
+
+			_, err = state.PeerCertificates[0].Verify(x509.VerifyOptions{
+				Roots:         currentRootCAs,
+				Intermediates: intermediates,
+				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			})
+			if err != nil {
+				return fmt.Errorf("verifying redis server certificate chain: %w", err)
+			}
+			return nil
+		},
+	}, nil
+}
+
+func loadRootCAsFromFile(path string) (*x509.CertPool, error) {
+	caCert, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading CA certificate %s: %w", path, err)
+	}
+
+	rootCAs := x509.NewCertPool()
+	if ok := rootCAs.AppendCertsFromPEM(caCert); !ok {
+		return nil, fmt.Errorf("parsing CA certificate %s", path)
+	}
+	return rootCAs, nil
 }
 
 // resolvePodIP resolves a pod name to its cluster IP via DNS.

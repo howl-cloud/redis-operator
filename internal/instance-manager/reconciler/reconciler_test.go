@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -248,6 +249,34 @@ func readRESPBulkString(r *bufio.Reader) (string, error) {
 	return string(data[:length]), nil
 }
 
+func overrideTLSPaths(t *testing.T) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+
+	oldTLSCertFilePath := tlsCertFilePath
+	oldTLSKeyFilePath := tlsKeyFilePath
+	oldTLSCAFilePath := tlsCAFilePath
+
+	tlsCertFilePath = filepath.Join(tmpDir, "tls.crt")
+	tlsKeyFilePath = filepath.Join(tmpDir, "tls.key")
+	tlsCAFilePath = filepath.Join(tmpDir, "ca.crt")
+
+	t.Cleanup(func() {
+		tlsCertFilePath = oldTLSCertFilePath
+		tlsKeyFilePath = oldTLSKeyFilePath
+		tlsCAFilePath = oldTLSCAFilePath
+	})
+
+	return tmpDir
+}
+
+func writeTLSFiles(t *testing.T, dir, cert, key, ca string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tls.crt"), []byte(cert), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tls.key"), []byte(key), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ca.crt"), []byte(ca), 0o600))
+}
+
 func TestIsFenced_NoAnnotations(t *testing.T) {
 	r := &InstanceReconciler{podName: "mycluster-0"}
 	cluster := &redisv1.RedisCluster{}
@@ -334,9 +363,9 @@ func TestRequiresRestart(t *testing.T) {
 		{"bind", true},
 		{"port", true},
 		{"tls-port", true},
-		{"tls-cert-file", true},
-		{"tls-key-file", true},
-		{"tls-ca-cert-file", true},
+		{"tls-cert-file", false},
+		{"tls-key-file", false},
+		{"tls-ca-cert-file", false},
 		{"unixsocket", true},
 		{"databases", true},
 		{"maxmemory", false},
@@ -352,6 +381,64 @@ func TestRequiresRestart(t *testing.T) {
 		t.Run(tt.key, func(t *testing.T) {
 			assert.Equal(t, tt.expected, requiresRestart(tt.key))
 		})
+	}
+}
+
+func TestReconcileTLSCerts_DisabledClearsChecksums(t *testing.T) {
+	rec := &InstanceReconciler{
+		tlsCertChecksums: map[string]string{
+			"tls-cert-file": "old",
+		},
+	}
+
+	err := rec.reconcileTLSCerts(context.Background(), &redisv1.RedisCluster{})
+	require.NoError(t, err)
+	assert.Empty(t, rec.tlsCertChecksums)
+}
+
+func TestReconcileTLSCerts_ReloadsOnChecksumChange(t *testing.T) {
+	srv, redisClient := newFakeRedisServer(t)
+	recorder := record.NewFakeRecorder(10)
+
+	tlsDir := overrideTLSPaths(t)
+	writeTLSFiles(t, tlsDir, "cert-v1", "key-v1", "ca-v1")
+
+	rec := &InstanceReconciler{
+		redisClient:      redisClient,
+		recorder:         recorder,
+		tlsCertChecksums: map[string]string{},
+	}
+
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
+			CASecret:  &redisv1.LocalObjectReference{Name: "ca-secret"},
+		},
+	}
+
+	// First reconcile establishes baseline checksums.
+	require.NoError(t, rec.reconcileTLSCerts(context.Background(), cluster))
+
+	srv.mu.Lock()
+	assert.Empty(t, srv.configValues)
+	srv.mu.Unlock()
+
+	// Rotate cert material.
+	writeTLSFiles(t, tlsDir, "cert-v2", "key-v2", "ca-v2")
+
+	require.NoError(t, rec.reconcileTLSCerts(context.Background(), cluster))
+
+	srv.mu.Lock()
+	assert.Equal(t, tlsCertFilePath, srv.configValues["tls-cert-file"])
+	assert.Equal(t, tlsKeyFilePath, srv.configValues["tls-key-file"])
+	assert.Equal(t, tlsCAFilePath, srv.configValues["tls-ca-cert-file"])
+	srv.mu.Unlock()
+
+	select {
+	case event := <-recorder.Events:
+		assert.Contains(t, event, "CertificatesRotated")
+	default:
+		t.Fatal("expected CertificatesRotated event")
 	}
 }
 

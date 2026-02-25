@@ -2,10 +2,19 @@ package run
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,6 +39,117 @@ func overrideDataDir(t *testing.T) string {
 		sentinelConfPath = oldSentinelConfPath
 	})
 	return tmpDir
+}
+
+func overrideTLSPaths(t *testing.T) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+
+	oldTLSCertPath := tlsCertPath
+	oldTLSKeyPath := tlsKeyPath
+	oldTLSCAPath := tlsCAPath
+
+	tlsCertPath = filepath.Join(tmpDir, "tls.crt")
+	tlsKeyPath = filepath.Join(tmpDir, "tls.key")
+	tlsCAPath = filepath.Join(tmpDir, "ca.crt")
+
+	t.Cleanup(func() {
+		tlsCertPath = oldTLSCertPath
+		tlsKeyPath = oldTLSKeyPath
+		tlsCAPath = oldTLSCAPath
+	})
+
+	return tmpDir
+}
+
+func writeTestCACert(t *testing.T, targetPath string) {
+	t.Helper()
+
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: "redis-operator-test-ca",
+		},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, privateKey.Public(), privateKey)
+	require.NoError(t, err)
+
+	cert, err := x509.ParseCertificate(derBytes)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(targetPath, pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: cert.Raw,
+	}), 0o600))
+}
+
+func generateTestCA(t *testing.T, serial int64, commonName string) (*ecdsa.PrivateKey, *x509.Certificate, []byte) {
+	t.Helper()
+
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(serial),
+		Subject: pkix.Name{
+			CommonName: commonName,
+		},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, privateKey.Public(), privateKey)
+	require.NoError(t, err)
+
+	cert, err := x509.ParseCertificate(derBytes)
+	require.NoError(t, err)
+
+	return privateKey, cert, pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: cert.Raw,
+	})
+}
+
+func generateServerCertSignedByCA(
+	t *testing.T,
+	serial int64,
+	caKey *ecdsa.PrivateKey,
+	caCert *x509.Certificate,
+) *x509.Certificate {
+	t.Helper()
+
+	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(serial),
+		Subject: pkix.Name{
+			CommonName: "redis-server",
+		},
+		NotBefore:   time.Now().Add(-time.Hour),
+		NotAfter:    time.Now().Add(time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, caCert, serverKey.Public(), caKey)
+	require.NoError(t, err)
+
+	cert, err := x509.ParseCertificate(derBytes)
+	require.NoError(t, err)
+	return cert
 }
 
 func TestWriteRedisConf_BasicConfig(t *testing.T) {
@@ -132,6 +252,172 @@ func TestWriteRedisConf_AllOptions(t *testing.T) {
 	assert.Contains(t, content, "replicaof 10.0.0.5 6379")
 	assert.Contains(t, content, "hz 50")
 	assert.Contains(t, content, "aclfile")
+}
+
+func TestWriteRedisConf_WithTLS(t *testing.T) {
+	overrideDataDir(t)
+
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
+			CASecret:  &redisv1.LocalObjectReference{Name: "ca-secret"},
+		},
+	}
+
+	err := writeRedisConf(cluster, "")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(redisConfPath)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+
+	assert.Contains(t, lines, "tls-port 6379")
+	assert.Contains(t, lines, "port 0")
+	assert.Contains(t, lines, "tls-cert-file /tls/tls.crt")
+	assert.Contains(t, lines, "tls-key-file /tls/tls.key")
+	assert.Contains(t, lines, "tls-ca-cert-file /tls/ca.crt")
+	assert.Contains(t, lines, "tls-auth-clients optional")
+	assert.Contains(t, lines, "tls-replication yes")
+	assert.NotContains(t, lines, "port 6379")
+}
+
+func TestWriteRedisConf_WithTLSInSentinelMode(t *testing.T) {
+	overrideDataDir(t)
+
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			Mode:      redisv1.ClusterModeSentinel,
+			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
+			CASecret:  &redisv1.LocalObjectReference{Name: "ca-secret"},
+		},
+	}
+
+	err := writeRedisConf(cluster, "")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(redisConfPath)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+
+	assert.Contains(t, lines, "port 6379")
+	assert.NotContains(t, lines, "tls-port 6379")
+	assert.NotContains(t, lines, "port 0")
+}
+
+func TestIsTLSEnabled_SentinelModeDisabled(t *testing.T) {
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			Mode:      redisv1.ClusterModeSentinel,
+			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
+			CASecret:  &redisv1.LocalObjectReference{Name: "ca-secret"},
+		},
+	}
+	assert.False(t, isTLSEnabled(cluster))
+}
+
+func TestValidateTLSMode_SentinelTLSRejected(t *testing.T) {
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			Mode:      redisv1.ClusterModeSentinel,
+			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
+			CASecret:  &redisv1.LocalObjectReference{Name: "ca-secret"},
+		},
+	}
+	err := validateTLSMode(cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported in sentinel mode")
+}
+
+func TestValidateTLSMode_SentinelSingleTLSReferenceRejected(t *testing.T) {
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			Mode:      redisv1.ClusterModeSentinel,
+			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
+		},
+	}
+	err := validateTLSMode(cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported in sentinel mode")
+}
+
+func TestRedisTLSConfig_Disabled(t *testing.T) {
+	cluster := &redisv1.RedisCluster{}
+
+	cfg, err := redisTLSConfig(cluster)
+	require.NoError(t, err)
+	assert.Nil(t, cfg)
+}
+
+func TestRedisTLSConfig_EnabledMissingCA(t *testing.T) {
+	overrideTLSPaths(t)
+
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
+			CASecret:  &redisv1.LocalObjectReference{Name: "ca-secret"},
+		},
+	}
+
+	cfg, err := redisTLSConfig(cluster)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.Contains(t, err.Error(), "reading CA certificate")
+}
+
+func TestRedisTLSConfig_EnabledWithCA(t *testing.T) {
+	tlsDir := overrideTLSPaths(t)
+	writeTestCACert(t, filepath.Join(tlsDir, "ca.crt"))
+
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
+			CASecret:  &redisv1.LocalObjectReference{Name: "ca-secret"},
+		},
+	}
+
+	cfg, err := redisTLSConfig(cluster)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, uint16(tls.VersionTLS12), cfg.MinVersion)
+	assert.NotNil(t, cfg.RootCAs)
+}
+
+func TestRedisTLSConfig_ReloadsCAOnHandshake(t *testing.T) {
+	tlsDir := overrideTLSPaths(t)
+	ca1Key, ca1Cert, ca1PEM := generateTestCA(t, 101, "redis-test-ca-1")
+	require.NoError(t, os.WriteFile(filepath.Join(tlsDir, "ca.crt"), ca1PEM, 0o600))
+
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
+			CASecret:  &redisv1.LocalObjectReference{Name: "ca-secret"},
+		},
+	}
+
+	cfg, err := redisTLSConfig(cluster)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	require.NotNil(t, cfg.VerifyConnection)
+
+	certFromCA1 := generateServerCertSignedByCA(t, 201, ca1Key, ca1Cert)
+	err = cfg.VerifyConnection(tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{certFromCA1},
+	})
+	require.NoError(t, err)
+
+	ca2Key, ca2Cert, ca2PEM := generateTestCA(t, 102, "redis-test-ca-2")
+	require.NoError(t, os.WriteFile(filepath.Join(tlsDir, "ca.crt"), ca2PEM, 0o600))
+
+	err = cfg.VerifyConnection(tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{certFromCA1},
+	})
+	require.Error(t, err)
+
+	certFromCA2 := generateServerCertSignedByCA(t, 202, ca2Key, ca2Cert)
+	err = cfg.VerifyConnection(tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{certFromCA2},
+	})
+	require.NoError(t, err)
 }
 
 func TestWriteRedisConf_CreatesDirectory(t *testing.T) {

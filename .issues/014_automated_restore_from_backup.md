@@ -7,7 +7,7 @@ labels: [production-readiness, data-safety, backup]
 created: 2026-02-23
 updated: 2026-02-23
 depends_on: []
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -45,11 +45,11 @@ CNPG also supports `bootstrap.pg_basebackup` for cloning an existing cluster via
 
 ## Acceptance Criteria
 
-- [ ] `spec.bootstrap.backupName` referencing a completed `RedisBackup` triggers an init container that downloads and restores the RDB
-- [ ] New cluster bootstraps from the restored data and reaches `Healthy` phase
-- [ ] Replicas created after bootstrap stream from the restored primary
-- [ ] Webhook rejects `backupName` referencing a non-existent or incomplete backup
-- [ ] E2E test: create backup → delete cluster → create new cluster from backup → verify data
+- [x] `spec.bootstrap.backupName` referencing a completed `RedisBackup` triggers an init container that downloads and restores the RDB
+- [x] New cluster bootstraps from the restored data and reaches `Healthy` phase
+- [x] Replicas created after bootstrap stream from the restored primary
+- [x] Webhook rejects `backupName` referencing a non-existent or incomplete backup
+- [x] E2E test: create backup → delete cluster → create new cluster from backup → verify data
 
 ## Notes
 
