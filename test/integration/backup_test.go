@@ -19,6 +19,13 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
+type persistenceMode int
+
+const (
+	persistenceRDB persistenceMode = iota
+	persistenceAOF
+)
+
 func TestRDBBackupRestoreRoundTrip(t *testing.T) {
 	requireIntegrationDocker(t)
 	ctx := context.Background()
@@ -26,7 +33,7 @@ func TestRDBBackupRestoreRoundTrip(t *testing.T) {
 	sourceDataDir := mustTempDir(t, "redis-src-rdb-")
 	restoredDataDir := mustTempDir(t, "redis-dst-rdb-")
 
-	source := startRedisWithDataDir(ctx, t, sourceDataDir)
+	source := startRedisWithDataDir(ctx, t, sourceDataDir, persistenceRDB)
 	sourceClient := newRedisClient(ctx, t, source, "", "")
 	waitForRedisReady(t, ctx, sourceClient)
 
@@ -35,7 +42,7 @@ func TestRDBBackupRestoreRoundTrip(t *testing.T) {
 
 	copyContainerFileToHost(t, ctx, source, "/data/dump.rdb", filepath.Join(restoredDataDir, "dump.rdb"))
 
-	restored := startRedisWithDataDir(ctx, t, restoredDataDir)
+	restored := startRedisWithDataDir(ctx, t, restoredDataDir, persistenceRDB)
 	restoredClient := newRedisClient(ctx, t, restored, "", "")
 	waitForRedisReady(t, ctx, restoredClient)
 
@@ -53,7 +60,7 @@ func TestAOFBackupRestoreRoundTrip(t *testing.T) {
 	restoredDataDir := mustTempDir(t, "redis-dst-aof-")
 	archivePath := filepath.Join(mustTempDir(t, "redis-aof-archive-"), "appendonlydir.tar.gz")
 
-	source := startRedisWithDataDir(ctx, t, sourceDataDir)
+	source := startRedisWithDataDir(ctx, t, sourceDataDir, persistenceAOF)
 	sourceClient := newRedisClient(ctx, t, source, "", "")
 	waitForRedisReady(t, ctx, sourceClient)
 
@@ -64,7 +71,7 @@ func TestAOFBackupRestoreRoundTrip(t *testing.T) {
 	copyContainerFileToHost(t, ctx, source, "/tmp/appendonlydir.tar.gz", archivePath)
 	require.NoError(t, extractArchive(archivePath, filepath.Join(restoredDataDir, "appendonlydir")))
 
-	restored := startRedisWithDataDir(ctx, t, restoredDataDir)
+	restored := startRedisWithDataDir(ctx, t, restoredDataDir, persistenceAOF)
 	restoredClient := newRedisClient(ctx, t, restored, "", "")
 	waitForRedisReady(t, ctx, restoredClient)
 
@@ -74,11 +81,23 @@ func TestAOFBackupRestoreRoundTrip(t *testing.T) {
 	}, 30*time.Second, 250*time.Millisecond)
 }
 
-func startRedisWithDataDir(ctx context.Context, t *testing.T, hostDataDir string) testcontainers.Container {
+func startRedisWithDataDir(ctx context.Context, t *testing.T, hostDataDir string, mode persistenceMode) testcontainers.Container {
 	t.Helper()
 
 	require.NoError(t, os.MkdirAll(hostDataDir, 0o777))
 	require.NoError(t, os.Chmod(hostDataDir, 0o777))
+
+	cmd := []string{"redis-server", "--dir", "/data"}
+	switch mode {
+	case persistenceRDB:
+		// RDB round-trip: avoid AOF files changing startup restore behavior.
+		cmd = append(cmd, "--appendonly", "no")
+	case persistenceAOF:
+		// AOF round-trip: disable RDB autosave to keep persisted data source unambiguous.
+		cmd = append(cmd, "--appendonly", "yes", "--appenddirname", "appendonlydir", "--save", "")
+	default:
+		t.Fatalf("unknown persistence mode: %d", mode)
+	}
 
 	container, err := testcontainers.Run(
 		ctx,
@@ -87,13 +106,7 @@ func startRedisWithDataDir(ctx context.Context, t *testing.T, hostDataDir string
 		testcontainers.WithMounts(
 			testcontainers.BindMount(hostDataDir, testcontainers.ContainerMountTarget("/data")),
 		),
-		testcontainers.WithCmd(
-			"redis-server",
-			"--dir", "/data",
-			"--appendonly", "yes",
-			"--appenddirname", "appendonlydir",
-			"--save", "",
-		),
+		testcontainers.WithCmd(cmd...),
 		testcontainers.WithWaitStrategy(
 			wait.ForListeningPort(redisPort).WithStartupTimeout(60*time.Second),
 		),
@@ -152,7 +165,7 @@ func copyContainerFileToHost(t *testing.T, ctx context.Context, container testco
 
 	require.NoError(t, os.MkdirAll(filepath.Dir(hostPath), 0o755))
 
-	file, err := os.OpenFile(hostPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	file, err := os.OpenFile(hostPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	require.NoError(t, err)
 	defer file.Close() //nolint:errcheck // test helper
 
@@ -208,7 +221,7 @@ func extractArchive(archivePath, destinationDir string) error {
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				return err
 			}
-			out, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+			out, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 			if err != nil {
 				return err
 			}

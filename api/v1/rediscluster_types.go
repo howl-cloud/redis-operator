@@ -131,6 +131,10 @@ type RedisClusterSpec struct {
 	// +optional
 	BackupCredentialsSecret *LocalObjectReference `json:"backupCredentialsSecret,omitempty"`
 
+	// PrimaryIsolation configures runtime split-brain prevention for primary pods.
+	// +optional
+	PrimaryIsolation *PrimaryIsolationSpec `json:"primaryIsolation,omitempty"`
+
 	// NodeSelector constrains pods to nodes with matching labels.
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
@@ -173,6 +177,23 @@ type LocalObjectReference struct {
 type BootstrapSpec struct {
 	// BackupName references a RedisBackup to restore from.
 	BackupName string `json:"backupName"`
+}
+
+// PrimaryIsolationSpec defines runtime primary-isolation detection settings.
+type PrimaryIsolationSpec struct {
+	// Enabled controls runtime primary-isolation checks in /healthz.
+	// +kubebuilder:default=true
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// APIServerTimeout is the timeout for Kubernetes API reachability checks.
+	// +kubebuilder:default="5s"
+	// +optional
+	APIServerTimeout *metav1.Duration `json:"apiServerTimeout,omitempty"`
+
+	// PeerTimeout is the timeout for peer instance-manager reachability checks.
+	// +kubebuilder:default="5s"
+	// +optional
+	PeerTimeout *metav1.Duration `json:"peerTimeout,omitempty"`
 }
 
 // InstanceStatus holds live status reported by a single instance manager.

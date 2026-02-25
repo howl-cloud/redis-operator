@@ -3,6 +3,7 @@ package webhooks
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,11 +38,20 @@ func TestDefault_EmptySpec(t *testing.T) {
 
 	require.NotNil(t, cluster.Spec.EnablePodDisruptionBudget)
 	assert.True(t, *cluster.Spec.EnablePodDisruptionBudget)
+	require.NotNil(t, cluster.Spec.PrimaryIsolation)
+	require.NotNil(t, cluster.Spec.PrimaryIsolation.Enabled)
+	assert.True(t, *cluster.Spec.PrimaryIsolation.Enabled)
+	require.NotNil(t, cluster.Spec.PrimaryIsolation.APIServerTimeout)
+	assert.Equal(t, 5*time.Second, cluster.Spec.PrimaryIsolation.APIServerTimeout.Duration)
+	require.NotNil(t, cluster.Spec.PrimaryIsolation.PeerTimeout)
+	assert.Equal(t, 5*time.Second, cluster.Spec.PrimaryIsolation.PeerTimeout.Duration)
 }
 
 func TestDefault_PreservesExistingValues(t *testing.T) {
 	d := &RedisClusterDefaulter{}
 	f := false
+	apiTimeout := metav1.Duration{Duration: 11 * time.Second}
+	peerTimeout := metav1.Duration{Duration: 13 * time.Second}
 	cluster := &redisv1.RedisCluster{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test",
@@ -61,6 +71,11 @@ func TestDefault_PreservesExistingValues(t *testing.T) {
 				},
 			},
 			EnablePodDisruptionBudget: &f,
+			PrimaryIsolation: &redisv1.PrimaryIsolationSpec{
+				Enabled:          &f,
+				APIServerTimeout: &apiTimeout,
+				PeerTimeout:      &peerTimeout,
+			},
 		},
 	}
 
@@ -75,6 +90,13 @@ func TestDefault_PreservesExistingValues(t *testing.T) {
 	assert.Equal(t, resource.MustParse("1Gi"), cluster.Spec.Resources.Requests[corev1.ResourceMemory])
 	assert.Equal(t, resource.MustParse("500m"), cluster.Spec.Resources.Requests[corev1.ResourceCPU])
 	assert.False(t, *cluster.Spec.EnablePodDisruptionBudget)
+	require.NotNil(t, cluster.Spec.PrimaryIsolation)
+	require.NotNil(t, cluster.Spec.PrimaryIsolation.Enabled)
+	assert.False(t, *cluster.Spec.PrimaryIsolation.Enabled)
+	require.NotNil(t, cluster.Spec.PrimaryIsolation.APIServerTimeout)
+	assert.Equal(t, 11*time.Second, cluster.Spec.PrimaryIsolation.APIServerTimeout.Duration)
+	require.NotNil(t, cluster.Spec.PrimaryIsolation.PeerTimeout)
+	assert.Equal(t, 13*time.Second, cluster.Spec.PrimaryIsolation.PeerTimeout.Duration)
 }
 
 func TestDefault_NonRedisClusterReturnsNil(t *testing.T) {
@@ -107,4 +129,11 @@ func TestDefault_PartialSpec(t *testing.T) {
 	require.NotNil(t, cluster.Spec.Resources.Requests)
 	require.NotNil(t, cluster.Spec.EnablePodDisruptionBudget)
 	assert.True(t, *cluster.Spec.EnablePodDisruptionBudget)
+	require.NotNil(t, cluster.Spec.PrimaryIsolation)
+	require.NotNil(t, cluster.Spec.PrimaryIsolation.Enabled)
+	assert.True(t, *cluster.Spec.PrimaryIsolation.Enabled)
+	require.NotNil(t, cluster.Spec.PrimaryIsolation.APIServerTimeout)
+	assert.Equal(t, 5*time.Second, cluster.Spec.PrimaryIsolation.APIServerTimeout.Duration)
+	require.NotNil(t, cluster.Spec.PrimaryIsolation.PeerTimeout)
+	assert.Equal(t, 5*time.Second, cluster.Spec.PrimaryIsolation.PeerTimeout.Duration)
 }

@@ -7,7 +7,7 @@ labels: [production-readiness, high-availability, split-brain]
 created: 2026-02-23
 updated: 2026-02-23
 depends_on: []
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -49,11 +49,11 @@ The key insight: a primary that can't reach the API server AND can't reach any p
 
 ## Acceptance Criteria
 
-- [ ] Primary pod's liveness probe fails when it cannot reach both the K8s API server and all peers
-- [ ] Pod is killed by kubelet after liveness failure threshold, triggering normal failover
-- [ ] Transient network blips (< failureThreshold * periodSeconds) do not kill the primary
-- [ ] Replicas are not affected by the isolation check
-- [ ] Chaos test: network-partition the primary pod — verify it self-kills and failover proceeds
+- [x] Primary pod's liveness probe fails when it cannot reach both the K8s API server and all peers
+- [x] Pod is killed by kubelet after liveness failure threshold, triggering normal failover
+- [x] Transient network blips (< failureThreshold * periodSeconds) do not kill the primary
+- [x] Replicas are not affected by the isolation check
+- [x] Chaos test: network-partition the primary pod — verify it self-kills and failover proceeds
 
 ## Notes
 

@@ -7,7 +7,7 @@ labels: [production-readiness, security, tls]
 created: 2026-02-23
 updated: 2026-02-23
 depends_on: []
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -55,12 +55,12 @@ CNPG enforces TLS by default for all connections:
 
 ## Acceptance Criteria
 
-- [ ] Setting `spec.tlsSecret` and `spec.caSecret` configures Redis with TLS
-- [ ] Client connections without TLS are rejected when TLS is enabled
-- [ ] Replication traffic is encrypted (`tls-replication yes`)
-- [ ] Instance manager health checks work over TLS
-- [ ] Certificate rotation (new Secret data) triggers a config reload without pod restart
-- [ ] E2E test: create TLS-enabled cluster, connect with `redis-cli --tls`, verify replication works
+- [x] Setting `spec.tlsSecret` and `spec.caSecret` configures Redis with TLS
+- [x] Client connections without TLS are rejected when TLS is enabled
+- [x] Replication traffic is encrypted (`tls-replication yes`)
+- [x] Instance manager health checks work over TLS
+- [x] Certificate rotation (new Secret data) triggers a config reload without pod restart
+- [x] E2E test: create TLS-enabled cluster, connect with `redis-cli --tls`, verify replication works
 
 ## Notes
 

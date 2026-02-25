@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -34,6 +36,8 @@ const (
 	backupCredsVolumeName     = "backup-credentials"
 	backupCredsMountPath      = "/backup-credentials"
 	specHashAnnotation        = "redis.io/spec-hash"
+	defaultIsolationTimeout   = 5 * time.Second
+	livenessTimeoutBuffer     = 2 * time.Second
 )
 
 // reconcilePods ensures pods match the desired state: scale up, scale down, rolling updates.
@@ -319,6 +323,8 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 						},
 						InitialDelaySeconds: 10,
 						PeriodSeconds:       10,
+						FailureThreshold:    3,
+						TimeoutSeconds:      livenessTimeoutSeconds(cluster),
 					},
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
@@ -780,6 +786,27 @@ func isTLSEnabled(cluster *redisv1.RedisCluster) bool {
 
 func intOrString(port int) intstr.IntOrString {
 	return intstr.FromInt32(int32(port))
+}
+
+func livenessTimeoutSeconds(cluster *redisv1.RedisCluster) int32 {
+	apiServerTimeout := defaultIsolationTimeout
+	peerTimeout := defaultIsolationTimeout
+
+	if cluster.Spec.PrimaryIsolation != nil {
+		if cfg := cluster.Spec.PrimaryIsolation.APIServerTimeout; cfg != nil && cfg.Duration > 0 {
+			apiServerTimeout = cfg.Duration
+		}
+		if cfg := cluster.Spec.PrimaryIsolation.PeerTimeout; cfg != nil && cfg.Duration > 0 {
+			peerTimeout = cfg.Duration
+		}
+	}
+
+	total := apiServerTimeout + peerTimeout + livenessTimeoutBuffer
+	seconds := int32(math.Ceil(total.Seconds()))
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
 }
 
 func redisPodSecurityContext() *corev1.PodSecurityContext {

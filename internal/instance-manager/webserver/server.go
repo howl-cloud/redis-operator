@@ -4,19 +4,42 @@ package webserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 	"github.com/howl-cloud/redis-operator/internal/instance-manager/replication"
 )
+
+const (
+	defaultIsolationTimeout = 5 * time.Second
+	defaultPeerStatusPort   = 8080
+)
+
+var errNoPeerTargets = errors.New("no peer targets available")
+
+// PrimaryIsolationConfig contains runtime split-brain protection settings.
+type PrimaryIsolationConfig struct {
+	Enabled          bool
+	ClusterName      string
+	Namespace        string
+	PodName          string
+	APIServerTimeout time.Duration
+	PeerTimeout      time.Duration
+}
 
 // StatusResponse is the JSON response for GET /v1/status.
 type StatusResponse struct {
@@ -42,6 +65,17 @@ type Server struct {
 	exposeDataEndpoints  bool
 	backupCredentialsDir string
 	backupUploader       backupUploaderFunc
+
+	k8sClient               client.Client
+	primaryIsolationEnabled bool
+	clusterName             string
+	namespace               string
+	podName                 string
+	apiServerTimeout        time.Duration
+	peerTimeout             time.Duration
+	peerStatusPort          int
+	peerHTTPClient          *http.Client
+	cachedPeerTargets       []string
 }
 
 // NewServer creates a new HTTP server.
@@ -60,6 +94,7 @@ func NewServer(
 		dataDir:              defaultBackupDataDir,
 		backupCredentialsDir: defaultBackupCredsMountPath,
 		exposeDataEndpoints:  true,
+		peerStatusPort:       defaultPeerStatusPort,
 	}
 }
 
@@ -70,9 +105,31 @@ func NewSentinelServer(redisClient *redis.Client, listenAddr string, sentinelCmd
 		listenAddr:          listenAddr,
 		processName:         "redis-sentinel",
 		exposeDataEndpoints: false,
+		peerStatusPort:      defaultPeerStatusPort,
 	}
 	srv.SetRedisCmd(sentinelCmd)
 	return srv
+}
+
+// SetPrimaryIsolationConfig configures runtime primary-isolation checks for /healthz.
+func (s *Server) SetPrimaryIsolationConfig(k8sClient client.Client, cfg PrimaryIsolationConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if cfg.APIServerTimeout <= 0 {
+		cfg.APIServerTimeout = defaultIsolationTimeout
+	}
+	if cfg.PeerTimeout <= 0 {
+		cfg.PeerTimeout = defaultIsolationTimeout
+	}
+
+	s.k8sClient = k8sClient
+	s.primaryIsolationEnabled = cfg.Enabled
+	s.clusterName = cfg.ClusterName
+	s.namespace = cfg.Namespace
+	s.podName = cfg.PodName
+	s.apiServerTimeout = cfg.APIServerTimeout
+	s.peerTimeout = cfg.PeerTimeout
 }
 
 // SetRedisCmd sets the current supervised process for liveness checks.
@@ -118,8 +175,8 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// handleHealthz checks that the supervised redis process is alive.
-func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+// handleHealthz checks process liveness and runtime primary isolation.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	cmd := s.redisCmd
 	s.mu.RUnlock()
@@ -131,13 +188,240 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	if cmd != nil && cmd.Process != nil {
 		// Process is running if we can signal 0
 		if cmd.ProcessState == nil {
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprint(w, "ok")
+			if !s.shouldRunPrimaryIsolationCheck(r.Context()) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, "ok")
+				return
+			}
+
+			apiErr := s.checkAPIServerReachable(r.Context())
+			if apiErr == nil {
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, "ok")
+				return
+			}
+			peerErr := s.checkAnyPeerReachable(r.Context())
+			if peerErr == nil {
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, "ok")
+				return
+			}
+			if errors.Is(peerErr, errNoPeerTargets) {
+				// If peer targets are unknown (for example before cache warm-up), do not
+				// treat API-only outages as full primary isolation.
+				log.FromContext(r.Context()).Info(
+					"primary isolation check skipped peer validation: no cached peer targets",
+					"pod", s.podName,
+					"cluster", s.clusterName,
+					"apiError", apiErr,
+				)
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, "ok")
+				return
+			}
+
+			log.FromContext(r.Context()).Error(
+				apiErr,
+				"primary isolation check failed",
+				"peerError", peerErr,
+				"pod", s.podName,
+				"cluster", s.clusterName,
+			)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprint(w, "primary isolated: cannot reach API server or any peer")
 			return
 		}
 	}
 	w.WriteHeader(http.StatusServiceUnavailable)
 	_, _ = fmt.Fprintf(w, "%s not running", processName)
+}
+
+func (s *Server) shouldRunPrimaryIsolationCheck(ctx context.Context) bool {
+	s.mu.RLock()
+	enabled := s.primaryIsolationEnabled
+	exposeDataEndpoints := s.exposeDataEndpoints
+	k8sClient := s.k8sClient
+	s.mu.RUnlock()
+
+	if !enabled || !exposeDataEndpoints || k8sClient == nil || s.redisClient == nil {
+		return false
+	}
+
+	info, err := replication.GetInfo(ctx, s.redisClient)
+	if err != nil {
+		return false
+	}
+	return info.Role == "master"
+}
+
+func (s *Server) checkAPIServerReachable(ctx context.Context) error {
+	s.mu.RLock()
+	k8sClient := s.k8sClient
+	clusterName := s.clusterName
+	namespace := s.namespace
+	podName := s.podName
+	timeout := s.apiServerTimeout
+	s.mu.RUnlock()
+
+	if k8sClient == nil {
+		return errors.New("kubernetes client not configured")
+	}
+	if clusterName == "" || namespace == "" {
+		return errors.New("primary isolation cluster identity not configured")
+	}
+	if timeout <= 0 {
+		timeout = defaultIsolationTimeout
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var cluster redisv1.RedisCluster
+	if err := k8sClient.Get(checkCtx, types.NamespacedName{
+		Name:      clusterName,
+		Namespace: namespace,
+	}, &cluster); err != nil {
+		return err
+	}
+
+	peerTargets, err := listPeerTargetsFromAPI(checkCtx, k8sClient, clusterName, namespace, podName)
+	s.mu.Lock()
+	if err == nil {
+		s.cachedPeerTargets = peerTargets
+	}
+	s.mu.Unlock()
+
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed to refresh peer cache from API")
+	}
+	return nil
+}
+
+func listPeerTargetsFromAPI(
+	ctx context.Context,
+	k8sClient client.Client,
+	clusterName, namespace, podName string,
+) ([]string, error) {
+	var pods corev1.PodList
+	if err := k8sClient.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels{
+		redisv1.LabelCluster:  clusterName,
+		redisv1.LabelWorkload: redisv1.LabelWorkloadData,
+	}); err != nil {
+		return nil, err
+	}
+
+	targets := make([]string, 0, len(pods.Items))
+	for _, pod := range pods.Items {
+		if pod.Name == podName || pod.Status.PodIP == "" {
+			continue
+		}
+		targets = append(targets, pod.Status.PodIP)
+	}
+
+	sort.Strings(targets)
+	return dedupeStrings(targets), nil
+}
+
+func dedupeStrings(values []string) []string {
+	if len(values) <= 1 {
+		return values
+	}
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if len(out) == 0 || out[len(out)-1] != v {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func (s *Server) checkAnyPeerReachable(ctx context.Context) error {
+	targets := s.peerTargetsForIsolation()
+	if len(targets) == 0 {
+		return errNoPeerTargets
+	}
+
+	s.mu.RLock()
+	timeout := s.peerTimeout
+	statusPort := s.peerStatusPort
+	httpClient := s.peerHTTPClient
+	s.mu.RUnlock()
+
+	if timeout <= 0 {
+		timeout = defaultIsolationTimeout
+	}
+	if statusPort <= 0 {
+		statusPort = defaultPeerStatusPort
+	}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: timeout}
+	}
+
+	peerCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	type peerCheckResult struct {
+		err error
+	}
+	results := make(chan peerCheckResult, len(targets))
+
+	for _, target := range targets {
+		target := target
+		go func() {
+			req, err := http.NewRequestWithContext(
+				peerCtx,
+				http.MethodGet,
+				fmt.Sprintf("http://%s:%d/v1/status", target, statusPort),
+				nil,
+			)
+			if err != nil {
+				results <- peerCheckResult{err: err}
+				return
+			}
+
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				results <- peerCheckResult{err: err}
+				return
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				results <- peerCheckResult{}
+				return
+			}
+
+			results <- peerCheckResult{err: fmt.Errorf("peer %s returned status %d", target, resp.StatusCode)}
+		}()
+	}
+
+	var lastErr error
+	for i := 0; i < len(targets); i++ {
+		select {
+		case <-peerCtx.Done():
+			if lastErr != nil {
+				return lastErr
+			}
+			return peerCtx.Err()
+		case result := <-results:
+			if result.err == nil {
+				cancel()
+				return nil
+			}
+			lastErr = result.err
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no peer targets responded")
+	}
+	return lastErr
+}
+
+func (s *Server) peerTargetsForIsolation() []string {
+	s.mu.RLock()
+	cachedTargets := append([]string(nil), s.cachedPeerTargets...)
+	s.mu.RUnlock()
+
+	return cachedTargets
 }
 
 // handleReadyz checks that Redis responds to PING and is reachable.

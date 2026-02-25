@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -896,6 +897,7 @@ func TestCreatePod_ContainerSpec(t *testing.T) {
 	require.NotNil(t, container.LivenessProbe)
 	require.NotNil(t, container.ReadinessProbe)
 	assert.Equal(t, "/healthz", container.LivenessProbe.HTTPGet.Path)
+	assert.Equal(t, int32(12), container.LivenessProbe.TimeoutSeconds)
 	assert.Equal(t, "/readyz", container.ReadinessProbe.HTTPGet.Path)
 
 	// Verify env vars.
@@ -936,6 +938,34 @@ func TestCreatePod_ContainerSpec(t *testing.T) {
 	assert.False(t, *pod.Spec.InitContainers[0].SecurityContext.ReadOnlyRootFilesystem)
 	require.NotNil(t, pod.Spec.InitContainers[0].SecurityContext.Capabilities)
 	assert.Contains(t, pod.Spec.InitContainers[0].SecurityContext.Capabilities.Drop, corev1.Capability("ALL"))
+}
+
+func TestCreatePod_LivenessTimeoutFollowsIsolationConfig(t *testing.T) {
+	cluster := newTestCluster("test", "default", 1)
+	apiTimeout := metav1.Duration{Duration: 7 * time.Second}
+	peerTimeout := metav1.Duration{Duration: 11 * time.Second}
+	cluster.Spec.PrimaryIsolation = &redisv1.PrimaryIsolationSpec{
+		APIServerTimeout: &apiTimeout,
+		PeerTimeout:      &peerTimeout,
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-data-0",
+			Namespace: "default",
+		},
+	}
+	r, c := newReconciler(cluster, pvc)
+	ctx := context.Background()
+
+	err := r.createPod(ctx, cluster, "test-0", 0, redisv1.LabelRolePrimary)
+	require.NoError(t, err)
+
+	var pod corev1.Pod
+	err = c.Get(ctx, types.NamespacedName{Name: "test-0", Namespace: "default"}, &pod)
+	require.NoError(t, err)
+	require.Len(t, pod.Spec.Containers, 1)
+	require.NotNil(t, pod.Spec.Containers[0].LivenessProbe)
+	assert.Equal(t, int32(20), pod.Spec.Containers[0].LivenessProbe.TimeoutSeconds)
 }
 
 func TestShouldRestoreFromBackup_OnlyFirstBootstrapPrimary(t *testing.T) {

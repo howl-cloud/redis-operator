@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,8 +36,9 @@ var (
 )
 
 const (
-	redisPort      = 6379
-	httpListenAddr = ":8080"
+	redisPort                      = 6379
+	httpListenAddr                 = ":8080"
+	defaultPrimaryIsolationTimeout = 5 * time.Second
 )
 
 // Run is the top-level entry point for the instance manager.
@@ -122,6 +124,14 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 			return replication.SetReplicaOf(demCtx, redisClient, primaryIP, port)
 		},
 	)
+	srv.SetPrimaryIsolationConfig(k8sClient, webserver.PrimaryIsolationConfig{
+		Enabled:          primaryIsolationEnabled(cluster.Spec.PrimaryIsolation),
+		ClusterName:      clusterName,
+		Namespace:        namespace,
+		PodName:          podName,
+		APIServerTimeout: primaryIsolationAPIServerTimeout(cluster.Spec.PrimaryIsolation),
+		PeerTimeout:      primaryIsolationPeerTimeout(cluster.Spec.PrimaryIsolation),
+	})
 	srv.SetRedisCmd(redisCmd)
 
 	go func() {
@@ -294,6 +304,27 @@ func loadRootCAsFromFile(path string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("parsing CA certificate %s", path)
 	}
 	return rootCAs, nil
+}
+
+func primaryIsolationEnabled(cfg *redisv1.PrimaryIsolationSpec) bool {
+	if cfg == nil || cfg.Enabled == nil {
+		return true
+	}
+	return *cfg.Enabled
+}
+
+func primaryIsolationAPIServerTimeout(cfg *redisv1.PrimaryIsolationSpec) time.Duration {
+	if cfg == nil || cfg.APIServerTimeout == nil || cfg.APIServerTimeout.Duration <= 0 {
+		return defaultPrimaryIsolationTimeout
+	}
+	return cfg.APIServerTimeout.Duration
+}
+
+func primaryIsolationPeerTimeout(cfg *redisv1.PrimaryIsolationSpec) time.Duration {
+	if cfg == nil || cfg.PeerTimeout == nil || cfg.PeerTimeout.Duration <= 0 {
+		return defaultPrimaryIsolationTimeout
+	}
+	return cfg.PeerTimeout.Duration
 }
 
 // resolvePodIP resolves a pod name to its cluster IP via DNS.

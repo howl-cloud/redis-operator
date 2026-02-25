@@ -1069,6 +1069,26 @@ spec:
                   type: string
                 description: NodeSelector constrains pods to nodes with matching labels.
                 type: object
+              primaryIsolation:
+                description: PrimaryIsolation configures runtime split-brain prevention
+                  for primary pods.
+                properties:
+                  apiServerTimeout:
+                    default: 5s
+                    description: APIServerTimeout is the timeout for Kubernetes API
+                      reachability checks.
+                    type: string
+                  enabled:
+                    default: true
+                    description: Enabled controls runtime primary-isolation checks
+                      in /healthz.
+                    type: boolean
+                  peerTimeout:
+                    default: 5s
+                    description: PeerTimeout is the timeout for peer instance-manager
+                      reachability checks.
+                    type: string
+                type: object
               redis:
                 additionalProperties:
                   type: string

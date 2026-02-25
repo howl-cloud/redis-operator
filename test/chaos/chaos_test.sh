@@ -407,6 +407,78 @@ YAML
   kubectl wait --for=condition=Ready "pod/${NETWORK_BLOCKER_POD}" -n "${TEST_NS}" --timeout=120s >/dev/null
 }
 
+apply_primary_isolation_blocker() {
+  local source_ip=$1
+  local host_node=$2
+  local api_server_ip=$3
+  shift 3
+  local peer_ips=("$@")
+  local peer_ips_flat=""
+  local peer
+  for peer in "${peer_ips[@]}"; do
+    [[ -z "${peer}" ]] && continue
+    peer_ips_flat+="${peer} "
+  done
+  peer_ips_flat="${peer_ips_flat% }"
+
+  NETWORK_BLOCK_SOURCE_IP=""
+  NETWORK_BLOCK_TARGET_IP=""
+  NETWORK_BLOCKER_POD="${REDIS_CLUSTER_NAME}-primary-isolation-netblock"
+
+  cat <<YAML | kubectl apply -n "${TEST_NS}" -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${NETWORK_BLOCKER_POD}
+  labels:
+    app.kubernetes.io/name: redis-chaos-netblock
+spec:
+  restartPolicy: Never
+  nodeName: ${host_node}
+  hostNetwork: true
+  hostPID: true
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: blocker
+      image: ${NETWORK_BLOCKER_IMAGE}
+      securityContext:
+        privileged: true
+      command:
+        - /bin/sh
+        - -ceu
+        - |
+          SOURCE_IP="${source_ip}"
+          API_SERVER_IP="${api_server_ip}"
+          PEER_IPS="${peer_ips_flat}"
+
+          for peer in ${peer_ips_flat}; do
+            iptables -I FORWARD 1 -s "${source_ip}" -d "${peer}" -p tcp --dport 8080 -j DROP
+            iptables -I OUTPUT 1 -s "${source_ip}" -d "${peer}" -p tcp --dport 8080 -j DROP
+          done
+
+          iptables -I FORWARD 1 -s "${source_ip}" -d "${api_server_ip}" -p tcp --dport 443 -j DROP
+          iptables -I OUTPUT 1 -s "${source_ip}" -d "${api_server_ip}" -p tcp --dport 443 -j DROP
+          iptables -I FORWARD 1 -s "${source_ip}" -d "${api_server_ip}" -p tcp --dport 6443 -j DROP
+          iptables -I OUTPUT 1 -s "${source_ip}" -d "${api_server_ip}" -p tcp --dport 6443 -j DROP
+
+          cleanup() {
+            for peer in ${PEER_IPS}; do
+              iptables -D FORWARD -s "${SOURCE_IP}" -d "${peer}" -p tcp --dport 8080 -j DROP || true
+              iptables -D OUTPUT -s "${SOURCE_IP}" -d "${peer}" -p tcp --dport 8080 -j DROP || true
+            done
+            iptables -D FORWARD -s "${SOURCE_IP}" -d "${API_SERVER_IP}" -p tcp --dport 443 -j DROP || true
+            iptables -D OUTPUT -s "${SOURCE_IP}" -d "${API_SERVER_IP}" -p tcp --dport 443 -j DROP || true
+            iptables -D FORWARD -s "${SOURCE_IP}" -d "${API_SERVER_IP}" -p tcp --dport 6443 -j DROP || true
+            iptables -D OUTPUT -s "${SOURCE_IP}" -d "${API_SERVER_IP}" -p tcp --dport 6443 -j DROP || true
+          }
+          trap cleanup EXIT
+          sleep 3600
+YAML
+
+  kubectl wait --for=condition=Ready "pod/${NETWORK_BLOCKER_POD}" -n "${TEST_NS}" --timeout=120s >/dev/null
+}
+
 get_operator_pod() {
   local pod
   pod=$(kubectl get pods -n "${OPERATOR_NS}" -l "app.kubernetes.io/name=redis-operator,app.kubernetes.io/instance=${RELEASE_NAME}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
@@ -566,6 +638,61 @@ test_network_partition() {
   remove_network_blocker
   wait_for_pod_ready "${old_primary}" 240
   wait_for_pod_role "${old_primary}" "slave" 180
+  assert_no_split_brain
+}
+
+test_primary_isolation() {
+  log "AC-primary-isolation: primary self-kills on full isolation"
+  wait_for_cluster_healthy 240
+  refresh_password
+  flush_cluster_data
+
+  local prefix="ac-primary-isolation"
+  write_keys "${prefix}" 1000
+
+  local old_primary
+  old_primary=$(get_primary_pod)
+  wait_for_replication "${old_primary}" 1 5000
+  local offset_before
+  offset_before=$(offset_of_pod "${old_primary}")
+  local restart_before
+  restart_before=$(pod_restart_count "${old_primary}")
+
+  local primary_ip
+  local primary_node
+  local api_server_ip
+  primary_ip=$(kubectl get pod "${old_primary}" -n "${TEST_NS}" -o jsonpath='{.status.podIP}')
+  primary_node=$(kubectl get pod "${old_primary}" -n "${TEST_NS}" -o jsonpath='{.spec.nodeName}')
+  api_server_ip=$(kubectl get svc kubernetes -n default -o jsonpath='{.spec.clusterIP}')
+  [[ -n "${api_server_ip}" ]] || fail "could not determine Kubernetes API service IP"
+
+  local peers_raw
+  peers_raw=$(get_cluster_pods | sed '/^$/d' | grep -v "^${old_primary}$" || true)
+  [[ -n "${peers_raw}" ]] || fail "expected at least one peer pod for isolation scenario"
+
+  local peer_ips=()
+  local peer
+  while IFS= read -r peer; do
+    [[ -z "${peer}" ]] && continue
+    peer_ips+=("$(kubectl get pod "${peer}" -n "${TEST_NS}" -o jsonpath='{.status.podIP}')")
+  done <<<"${peers_raw}"
+
+  apply_primary_isolation_blocker "${primary_ip}" "${primary_node}" "${api_server_ip}" "${peer_ips[@]}"
+
+  wait_for_restart_count_increase "${old_primary}" "${restart_before}" 240
+
+  local new_primary
+  new_primary=$(wait_for_primary_change "${old_primary}" 240)
+  wait_for_phase "Healthy" 240
+
+  remove_network_blocker
+  wait_for_pod_ready "${old_primary}" 240
+  wait_for_pod_role "${old_primary}" "slave" 180
+
+  assert_keys "${prefix}" 1000
+  local offset_after
+  offset_after=$(offset_of_pod "${new_primary}")
+  assert_offset_not_regressed "${offset_before}" "${offset_after}"
   assert_no_split_brain
 }
 
@@ -801,6 +928,7 @@ YAML
 
   run_scenario "AC1 primary kill" test_primary_kill
   run_scenario "AC2 network partition" test_network_partition
+  run_scenario "AC-primary-isolation runtime guard" test_primary_isolation
   run_scenario "AC3 operator restart mid-failover" test_operator_restart_mid_failover
   run_scenario "AC4 simultaneous replica failures" test_simultaneous_replica_failures
   run_scenario "AC5 OOM/liveness pressure" test_oom_injection

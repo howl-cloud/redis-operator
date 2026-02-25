@@ -109,12 +109,18 @@ func TestTLSReplicationAndCertRotation(t *testing.T) {
 	serialBefore := serverSerialNumber(t, ctx, primaryContainer, caPEM)
 
 	rotatedCertPEM, rotatedKeyPEM := generateServerCert(t, caKey, caCert, []string{"primary", "localhost"})
-	require.NoError(t, os.WriteFile(filepath.Join(primaryTLSDir, "tls.crt"), rotatedCertPEM, 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(primaryTLSDir, "tls.key"), rotatedKeyPEM, 0o600))
+	// Write rotated certs to new paths; Redis CONFIG SET may not reload when path is unchanged.
+	rotatedCertPath := filepath.Join(primaryTLSDir, "tls-rotated.crt")
+	rotatedKeyPath := filepath.Join(primaryTLSDir, "tls-rotated.key")
+	require.NoError(t, os.WriteFile(rotatedCertPath, rotatedCertPEM, 0o644))
+	require.NoError(t, os.WriteFile(rotatedKeyPath, rotatedKeyPEM, 0o644))
 
-	require.NoError(t, primaryTLSClient.ConfigSet(ctx, "tls-cert-file", "/tls/tls.crt").Err())
-	require.NoError(t, primaryTLSClient.ConfigSet(ctx, "tls-key-file", "/tls/tls.key").Err())
-	require.NoError(t, primaryTLSClient.ConfigSet(ctx, "tls-ca-cert-file", "/tls/ca.crt").Err())
+	// Set cert and key in one CONFIG SET so Redis applies both atomically; loading one without
+	// the matching pair causes "Unable to update TLS configuration".
+	require.NoError(t, primaryTLSClient.Do(ctx, "CONFIG", "SET",
+		"tls-cert-file", "/tls/tls-rotated.crt",
+		"tls-key-file", "/tls/tls-rotated.key",
+	).Err())
 
 	require.Equal(t, processIDBefore, redisProcessID(t, ctx, primaryTLSClient), "cert reload should not restart redis process")
 
@@ -133,13 +139,14 @@ func writeTLSFiles(t *testing.T, prefix string, certPEM, keyPEM, caPEM []byte) s
 	t.Helper()
 	dir, err := os.MkdirTemp("", prefix)
 	require.NoError(t, err)
+	require.NoError(t, os.Chmod(dir, 0o755))
 	t.Cleanup(func() {
 		_ = os.RemoveAll(dir)
 	})
 
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tls.crt"), certPEM, 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tls.key"), keyPEM, 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "ca.crt"), caPEM, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tls.crt"), certPEM, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tls.key"), keyPEM, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ca.crt"), caPEM, 0o644))
 
 	return dir
 }

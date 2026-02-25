@@ -2,9 +2,11 @@ package webhooks
 
 import (
 	"context"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -58,6 +60,20 @@ func (d *RedisClusterDefaulter) Default(_ context.Context, obj runtime.Object) e
 	if cluster.Spec.EnablePodDisruptionBudget == nil {
 		t := true
 		cluster.Spec.EnablePodDisruptionBudget = &t
+	}
+
+	if cluster.Spec.PrimaryIsolation == nil {
+		cluster.Spec.PrimaryIsolation = &redisv1.PrimaryIsolationSpec{}
+	}
+	if cluster.Spec.PrimaryIsolation.Enabled == nil {
+		t := true
+		cluster.Spec.PrimaryIsolation.Enabled = &t
+	}
+	if cluster.Spec.PrimaryIsolation.APIServerTimeout == nil {
+		cluster.Spec.PrimaryIsolation.APIServerTimeout = &metav1.Duration{Duration: 5 * time.Second}
+	}
+	if cluster.Spec.PrimaryIsolation.PeerTimeout == nil {
+		cluster.Spec.PrimaryIsolation.PeerTimeout = &metav1.Duration{Duration: 5 * time.Second}
 	}
 
 	return nil
