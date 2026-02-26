@@ -31,14 +31,14 @@ type NetworkBlockConfig struct {
 
 // PrimaryIsolationConfig configures full primary isolation (API + peer web endpoints).
 type PrimaryIsolationConfig struct {
-	Namespace   string
-	PodName     string
-	HostNode    string
-	SourceIP    string
-	APIServerIP string
-	PeerIPs     []string
-	Image       string
-	ReadyWait   time.Duration
+	Namespace    string
+	PodName      string
+	HostNode     string
+	SourceIP     string
+	APIServerIPs []string
+	PeerIPs      []string
+	Image        string
+	ReadyWait    time.Duration
 }
 
 // ApplyNetworkBlock creates a privileged hostNetwork pod that drops operator->primary status traffic.
@@ -102,17 +102,27 @@ func ApplyPrimaryIsolation(ctx context.Context, c client.Client, cfg PrimaryIsol
 		_, _ = fmt.Fprintf(&delRules, "iptables -D OUTPUT -s %s -d %s -p tcp --dport 8080 -j DROP 2>/dev/null || true\n", cfg.SourceIP, peerIP)
 	}
 
-	apiRules := fmt.Sprintf(`iptables -I FORWARD 1 -s %s -d %s -p tcp --dport 443 -j DROP
-iptables -I OUTPUT 1 -s %s -d %s -p tcp --dport 443 -j DROP
-iptables -I FORWARD 1 -s %s -d %s -p tcp --dport 6443 -j DROP
-iptables -I OUTPUT 1 -s %s -d %s -p tcp --dport 6443 -j DROP
-`, cfg.SourceIP, cfg.APIServerIP, cfg.SourceIP, cfg.APIServerIP, cfg.SourceIP, cfg.APIServerIP, cfg.SourceIP, cfg.APIServerIP)
+	var apiAddRules strings.Builder
+	var apiCleanupRules strings.Builder
+	for _, apiIP := range cfg.APIServerIPs {
+		apiIP = strings.TrimSpace(apiIP)
+		if apiIP == "" {
+			continue
+		}
+		_, _ = fmt.Fprintf(&apiAddRules, "iptables -I FORWARD 1 -s %s -d %s -p tcp --dport 443 -j DROP\n", cfg.SourceIP, apiIP)
+		_, _ = fmt.Fprintf(&apiAddRules, "iptables -I OUTPUT 1 -s %s -d %s -p tcp --dport 443 -j DROP\n", cfg.SourceIP, apiIP)
+		_, _ = fmt.Fprintf(&apiAddRules, "iptables -I INPUT 1 -s %s -d %s -p tcp --dport 443 -j DROP\n", cfg.SourceIP, apiIP)
+		_, _ = fmt.Fprintf(&apiAddRules, "iptables -I FORWARD 1 -s %s -d %s -p tcp --dport 6443 -j DROP\n", cfg.SourceIP, apiIP)
+		_, _ = fmt.Fprintf(&apiAddRules, "iptables -I OUTPUT 1 -s %s -d %s -p tcp --dport 6443 -j DROP\n", cfg.SourceIP, apiIP)
+		_, _ = fmt.Fprintf(&apiAddRules, "iptables -I INPUT 1 -s %s -d %s -p tcp --dport 6443 -j DROP\n", cfg.SourceIP, apiIP)
 
-	apiCleanup := fmt.Sprintf(`iptables -D FORWARD -s %s -d %s -p tcp --dport 443 -j DROP 2>/dev/null || true
-iptables -D OUTPUT -s %s -d %s -p tcp --dport 443 -j DROP 2>/dev/null || true
-iptables -D FORWARD -s %s -d %s -p tcp --dport 6443 -j DROP 2>/dev/null || true
-iptables -D OUTPUT -s %s -d %s -p tcp --dport 6443 -j DROP 2>/dev/null || true
-`, cfg.SourceIP, cfg.APIServerIP, cfg.SourceIP, cfg.APIServerIP, cfg.SourceIP, cfg.APIServerIP, cfg.SourceIP, cfg.APIServerIP)
+		_, _ = fmt.Fprintf(&apiCleanupRules, "iptables -D FORWARD -s %s -d %s -p tcp --dport 443 -j DROP 2>/dev/null || true\n", cfg.SourceIP, apiIP)
+		_, _ = fmt.Fprintf(&apiCleanupRules, "iptables -D OUTPUT -s %s -d %s -p tcp --dport 443 -j DROP 2>/dev/null || true\n", cfg.SourceIP, apiIP)
+		_, _ = fmt.Fprintf(&apiCleanupRules, "iptables -D INPUT -s %s -d %s -p tcp --dport 443 -j DROP 2>/dev/null || true\n", cfg.SourceIP, apiIP)
+		_, _ = fmt.Fprintf(&apiCleanupRules, "iptables -D FORWARD -s %s -d %s -p tcp --dport 6443 -j DROP 2>/dev/null || true\n", cfg.SourceIP, apiIP)
+		_, _ = fmt.Fprintf(&apiCleanupRules, "iptables -D OUTPUT -s %s -d %s -p tcp --dport 6443 -j DROP 2>/dev/null || true\n", cfg.SourceIP, apiIP)
+		_, _ = fmt.Fprintf(&apiCleanupRules, "iptables -D INPUT -s %s -d %s -p tcp --dport 6443 -j DROP 2>/dev/null || true\n", cfg.SourceIP, apiIP)
+	}
 
 	ruleScript := fmt.Sprintf(`cleanup() {
 %s
@@ -122,7 +132,7 @@ trap cleanup EXIT TERM INT
 %s
 %s
 while true; do sleep 60 & wait $! || break; done
-`, strings.TrimSpace(delRules.String()), strings.TrimSpace(apiCleanup), strings.TrimSpace(addRules.String()), strings.TrimSpace(apiRules))
+`, strings.TrimSpace(delRules.String()), strings.TrimSpace(apiCleanupRules.String()), strings.TrimSpace(addRules.String()), strings.TrimSpace(apiAddRules.String()))
 
 	pod := newNetworkBlockerPod(cfg.Namespace, podName, cfg.HostNode, image, ruleScript)
 	if err := createOrReplaceFaultPod(ctx, c, pod, readyWait(cfg.ReadyWait)); err != nil {
@@ -166,6 +176,14 @@ func (cfg NetworkBlockConfig) validate() error {
 }
 
 func (cfg PrimaryIsolationConfig) validate() error {
+	hasAPIServerIP := false
+	for _, ip := range cfg.APIServerIPs {
+		if strings.TrimSpace(ip) != "" {
+			hasAPIServerIP = true
+			break
+		}
+	}
+
 	switch {
 	case strings.TrimSpace(cfg.Namespace) == "":
 		return fmt.Errorf("primary isolation config: namespace is required")
@@ -173,8 +191,8 @@ func (cfg PrimaryIsolationConfig) validate() error {
 		return fmt.Errorf("primary isolation config: host node is required")
 	case strings.TrimSpace(cfg.SourceIP) == "":
 		return fmt.Errorf("primary isolation config: source IP is required")
-	case strings.TrimSpace(cfg.APIServerIP) == "":
-		return fmt.Errorf("primary isolation config: API server IP is required")
+	case !hasAPIServerIP:
+		return fmt.Errorf("primary isolation config: at least one API server IP is required")
 	default:
 		return nil
 	}

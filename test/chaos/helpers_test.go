@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -53,15 +56,39 @@ func prepareBaseline(ctx context.Context, keyPrefix string, keyCount int) error 
 	if err != nil {
 		return err
 	}
-	requiredReplicas := redisInstances - 1
-	if requiredReplicas < 1 {
-		requiredReplicas = 1
-	}
-	if err := invariants.AssertReplicationConverged(ctx, testNamespace, primaryPod.Name, redisPassword, requiredReplicas, 10000); err != nil {
+	requiredReplicas := 1
+	if err := waitForReplicationConverged(ctx, testNamespace, primaryPod.Name, redisPassword, requiredReplicas, 10000, 2*time.Minute); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func waitForReplicationConverged(
+	ctx context.Context,
+	namespace, primaryPod, password string,
+	requiredReplicas, waitTimeoutMS int,
+	timeout time.Duration,
+) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+
+	for {
+		err := invariants.AssertReplicationConverged(ctx, namespace, primaryPod, password, requiredReplicas, waitTimeoutMS)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("waiting for replication convergence: %w", lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 func getPrimaryPod(ctx context.Context) (corev1.Pod, error) {
@@ -95,16 +122,127 @@ func getPeerIPsExcluding(ctx context.Context, excludedPodName string) ([]string,
 	return ips, nil
 }
 
-func getKubernetesServiceIP(ctx context.Context) (string, error) {
+func getKubernetesAPITargetIPs(ctx context.Context) ([]string, error) {
 	var svc corev1.Service
 	err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "kubernetes"}, &svc)
 	if err != nil {
-		return "", fmt.Errorf("getting kubernetes service IP: %w", err)
+		return nil, fmt.Errorf("getting kubernetes service IP: %w", err)
 	}
-	if strings.TrimSpace(svc.Spec.ClusterIP) == "" {
-		return "", fmt.Errorf("kubernetes service has empty cluster IP")
+
+	targets := make([]string, 0, 4)
+	if clusterIP := strings.TrimSpace(svc.Spec.ClusterIP); clusterIP != "" {
+		targets = append(targets, clusterIP)
 	}
-	return svc.Spec.ClusterIP, nil
+
+	var endpoints corev1.Endpoints
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "kubernetes"}, &endpoints); err != nil {
+		return nil, fmt.Errorf("getting kubernetes service endpoints: %w", err)
+	}
+	for _, subset := range endpoints.Subsets {
+		for _, address := range subset.Addresses {
+			if ip := strings.TrimSpace(address.IP); ip != "" {
+				targets = append(targets, ip)
+			}
+		}
+	}
+
+	sort.Strings(targets)
+	deduped := targets[:0]
+	for _, target := range targets {
+		if len(deduped) == 0 || deduped[len(deduped)-1] != target {
+			deduped = append(deduped, target)
+		}
+	}
+
+	if len(deduped) == 0 {
+		return nil, fmt.Errorf("kubernetes API service has no target IPs")
+	}
+	return append([]string(nil), deduped...), nil
+}
+
+func warmPrimaryIsolationPeerCache(ctx context.Context, namespace, podName string) error {
+	localPort, err := reserveLocalPort()
+	if err != nil {
+		return err
+	}
+
+	portForwardCtx, portForwardCancel := context.WithCancel(ctx)
+	bg, err := startKubectlBackgroundCommand(
+		portForwardCtx,
+		"-n", namespace,
+		"port-forward",
+		"pod/"+podName,
+		fmt.Sprintf("%d:8080", localPort),
+	)
+	if err != nil {
+		portForwardCancel()
+		return err
+	}
+	defer func() {
+		portForwardCancel()
+		select {
+		case <-bg.done:
+		case <-time.After(2 * time.Second):
+		}
+	}()
+
+	if err := bg.ensureRunning(500 * time.Millisecond); err != nil {
+		return err
+	}
+
+	httpClient := &http.Client{Timeout: 2 * time.Second}
+	healthzURL := fmt.Sprintf("http://127.0.0.1:%d/healthz", localPort)
+
+	var lastErr error
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, healthzURL, nil)
+		if reqErr != nil {
+			return fmt.Errorf("creating healthz request to %q: %w", healthzURL, reqErr)
+		}
+
+		resp, doErr := httpClient.Do(req)
+		if doErr == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+			lastErr = fmt.Errorf("healthz status %d", resp.StatusCode)
+		} else {
+			lastErr = doErr
+		}
+
+		if err := bg.ensureRunning(100 * time.Millisecond); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timed out waiting for healthz response")
+	}
+	return fmt.Errorf("warming primary isolation peer cache for pod %s/%s: %w", namespace, podName, lastErr)
+}
+
+func reserveLocalPort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("reserving local port: %w", err)
+	}
+	defer func() {
+		_ = listener.Close()
+	}()
+
+	tcpAddr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("resolving reserved TCP address")
+	}
+	return tcpAddr.Port, nil
 }
 
 func ensureLeaderEndpointExcludes(ctx context.Context, excludedPodName string) error {

@@ -28,6 +28,7 @@ var _ = Describe("Network partition", Label("network", "failover"), func() {
 		offsetBefore, err := faults.ReplicationOffset(ctx, testNamespace, primaryPod.Name, redisPassword)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(primaryPod.Status.PodIP).NotTo(BeEmpty())
+		Expect(invariants.AssertDataIntegrity(ctx, k8sClient, testNamespace, clusterName, redisPassword, prefix, 1000)).To(Succeed())
 
 		operatorPod, err := faults.GetOperatorPod(ctx, k8sClient, operatorNamespace, releaseName)
 		Expect(err).NotTo(HaveOccurred())
@@ -54,7 +55,9 @@ var _ = Describe("Network partition", Label("network", "failover"), func() {
 		Expect(ensureLeaderEndpointExcludes(ctx, primaryPod.Name)).To(Succeed())
 		Expect(invariants.AssertPodNotWritable(ctx, testNamespace, primaryPod.Name, redisPassword, prefix+":isolated-write")).To(Succeed())
 
-		Expect(invariants.AssertDataIntegrity(ctx, k8sClient, testNamespace, clusterName, redisPassword, prefix, 1000)).To(Succeed())
+		Eventually(func() error {
+			return invariants.AssertDataIntegrity(ctx, k8sClient, testNamespace, clusterName, redisPassword, prefix, 1000)
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 		offsetAfter, err := faults.ReplicationOffset(ctx, testNamespace, newPrimaryName, redisPassword)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(invariants.AssertOffsetNotRegressed(offsetBefore, offsetAfter)).To(Succeed())

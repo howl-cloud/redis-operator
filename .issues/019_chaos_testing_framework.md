@@ -7,7 +7,7 @@ labels: [production-readiness, testing, reliability]
 created: 2026-02-23
 updated: 2026-02-26
 depends_on: [4]
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -71,7 +71,7 @@ CNPG has a `disruptive` feature type in its E2E test suite:
 - [x] Each test verifies invariants: no split-brain, data integrity, cluster convergence
 - [x] Tests run on Kind via `make test-chaos-kind`
 - [x] Tests are tagged/labeled for selective execution in CI
-- [ ] All tests pass on a clean Kind cluster
+- [x] All tests pass on a clean Kind cluster
 
 ## Notes
 
@@ -97,42 +97,86 @@ Implemented and verified:
 - Kind execution is wired through `make test-chaos-kind` -> `test/chaos/run.sh`.
 - Selective execution is implemented with Ginkgo labels and `CHAOS_LABEL_FILTER` (`--ginkgo.label-filter` in `test/chaos/run.sh`).
 
-Not yet passing:
+Resolved:
 
-- `make test-chaos-kind` on a clean Kind cluster still fails for network-labeled scenarios.
+- `make test-chaos-kind` on a clean Kind cluster now passes for network-labeled scenarios.
+- Verified with:
+  - `CHAOS_LABEL_FILTER=network make test-chaos-kind`
+  - Result: `2 Passed, 0 Failed` (`network_partition_test.go` and `primary_isolation_test.go`).
 
-## Lingering Issue Handoff
+## Post-mortem (2026-02-26)
 
-### Repro
+### What went wrong
 
-```bash
-CHAOS_LABEL_FILTER=network make test-chaos-kind
-```
+1. **Primary isolation fault did not consistently isolate the primary in Kind**
+   - The test injected API isolation rules only in `FORWARD` and `OUTPUT`.
+   - On Kind single-node networking, traffic from the isolated pod to the API endpoint also traversed `INPUT`; those packets were not blocked.
+   - Effect: runtime primary-isolation liveness check did not consistently fail, so restart/failover expectations timed out.
 
-### Current failing specs
+2. **Primary isolation test expected the wrong phase at the wrong time**
+   - The test waited for cluster `Healthy` while isolation fault was still active.
+   - Correct behavior under active isolation is `Degraded`; `Healthy` should be asserted only after removing the blocker and waiting for recovery.
 
-1. `test/chaos/primary_isolation_test.go`
-   - Fails at wait for restart:
-   - `waiting for restart count increase for pod default/chaos-redis-0: ... context deadline exceeded`
-2. `test/chaos/network_partition_test.go`
-   - Fails data integrity assertion:
-   - `expected 1000 keys with prefix "ac2", got 0`
+3. **Replication baseline precondition was too strict and flaky**
+   - Baseline setup required `WAIT 2 10000` (all replicas ack) before fault injection.
+   - In early startup windows this can transiently return 1 and fail setup, even though the scenario is otherwise valid.
 
-### Runtime evidence already captured
+4. **Failover data-integrity assertion was too immediate**
+   - Right after failover, leader endpoint churn can produce short connection-refused windows.
+   - One-shot integrity assertion created false negatives during endpoint transition.
 
-- Debug log file: `.cursor/debug-391a31.log`
-- The failover path is now observed during network partition:
-  - `primary changed` entries are present (old primary -> new primary).
-- The per-cluster Role now includes pod listing (`podsRoleVerbs: "get,list"`), removing the earlier `pods is forbidden` issue for primary isolation checks.
-- Primary-isolation scenario still does not observe a restart event within timeout in the failing runs.
+5. **Earlier key counting implementation masked real failures**
+   - `redis-cli --scan | wc -l` hid command-level errors and produced misleading `0` counts.
 
-### Likely next debugging focus
+### How we fixed it
 
-1. **Primary isolation restart detection**
-   - Verify whether the isolated primary is actually being restarted by kubelet (pod UID/start time/recreated pod name), not only container restart count.
-   - Verify liveness `/healthz` failure path under isolation in runtime logs.
-2. **Network partition data baseline**
-   - Validate baseline write durability before fault injection (keys exist before netblock is applied).
-   - Confirm the selected "primary pod" for baseline writes and for isolation are the same pod role at fault start.
-3. **Service routing and role transitions**
-   - Correlate `status.currentPrimary`, pod Redis role (`INFO replication`), and `-leader` service endpoint during the fault window.
+1. **Primary isolation iptables fix**
+   - Updated primary isolation injection to block API traffic in `INPUT` in addition to `FORWARD`/`OUTPUT`.
+   - Also expanded API targeting from single `APIServerIP` to `APIServerIPs` (service ClusterIP + endpoint IPs).
+   - File: `test/chaos/faults/network.go`.
+
+2. **Primary isolation scenario flow fix**
+   - Wait for primary change and restart under fault.
+   - Assert cluster `Degraded` while blocker is active.
+   - Remove blocker, then assert `Healthy`.
+   - Use recovered primary for post-recovery offset assertion.
+   - File: `test/chaos/primary_isolation_test.go`.
+
+3. **Baseline convergence hardening**
+   - Changed baseline replication requirement to at least one replica ACK (`requiredReplicas=1`) with retries.
+   - File: `test/chaos/helpers_test.go`.
+
+4. **Failover integrity check hardening**
+   - Wrapped post-failover `AssertDataIntegrity` in `Eventually(...)` to tolerate brief endpoint transition delays.
+   - File: `test/chaos/network_partition_test.go`.
+
+5. **Key counting robustness**
+   - Replaced shell pipeline counting with direct key scan counting in Go and explicit auth/no-auth scan path handling.
+   - File: `test/chaos/invariants/invariants.go`.
+
+### Validation
+
+- `go test ./test/chaos/... -run TestChaos -count=1` passed.
+- `make lint` passed (`0 issues`).
+- `CHAOS_LABEL_FILTER=network make test-chaos-kind` passed:
+  - `network_partition_test.go`: pass
+  - `primary_isolation_test.go`: pass
+
+### Lessons learned and forward actions
+
+1. **Fault model must match actual datapath**
+   - Validate injected network faults with packet counters (`iptables -L -v`) during test development.
+   - For host-network blockers, include all relevant chains for the expected path.
+
+2. **Assertions must align with fault lifecycle**
+   - During active disruptive fault, expect degraded/intermediate states.
+   - Reserve steady-state assertions (`Healthy`) for post-fault recovery phase.
+
+3. **Chaos preconditions should be resilient**
+   - Avoid over-constraining startup preconditions (e.g., require one replica ACK unless full sync quorum is the explicit behavior under test).
+
+4. **Treat control-plane/service transitions as eventually consistent**
+   - Use bounded retries around post-failover endpoint-dependent checks.
+
+5. **Avoid shell pipelines for correctness-sensitive test metrics**
+   - Count/parse results in Go and surface command failures directly.

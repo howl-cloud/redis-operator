@@ -52,17 +52,35 @@ func CountKeys(ctx context.Context, c client.Client, namespace, clusterName, pas
 		return 0, err
 	}
 
-	out, err := faults.ExecInPod(ctx, namespace, clientPod.Name, "env", "REDISCLI_AUTH="+password, "sh", "-ceu",
-		fmt.Sprintf("redis-cli --no-auth-warning -h %s-leader --scan --pattern '%s:*' | wc -l", clusterName, prefix))
+	leaderHost := clusterName + "-leader"
+	scanArgs := []string{"--scan", "--pattern", prefix + ":*"}
+	out, err := scanLeaderKeys(ctx, namespace, clientPod.Name, leaderHost, password, scanArgs...)
 	if err != nil {
 		return 0, fmt.Errorf("counting keys with prefix %q using pod %s/%s: %w", prefix, namespace, clientPod.Name, err)
 	}
 
-	parsed, err := strconv.Atoi(strings.TrimSpace(out))
-	if err != nil {
-		return 0, fmt.Errorf("parsing key count %q for prefix %q: %w", out, prefix, err)
+	count := 0
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
 	}
-	return parsed, nil
+	return count, nil
+}
+
+func scanLeaderKeys(
+	ctx context.Context,
+	namespace, podName, leaderHost, password string,
+	scanArgs ...string,
+) (string, error) {
+	pingArgs := []string{"redis-cli", "--no-auth-warning", "-h", leaderHost, "PING"}
+	if _, err := faults.ExecInPod(ctx, namespace, podName, pingArgs...); err == nil {
+		args := append([]string{"redis-cli", "--no-auth-warning", "-h", leaderHost}, scanArgs...)
+		return faults.ExecInPod(ctx, namespace, podName, args...)
+	}
+
+	args := append([]string{"-h", leaderHost}, scanArgs...)
+	return faults.ExecRedisCLI(ctx, namespace, podName, password, args...)
 }
 
 // AssertDataIntegrity verifies expected key count and sample values.
