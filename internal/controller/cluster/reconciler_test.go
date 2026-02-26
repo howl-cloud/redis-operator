@@ -848,6 +848,12 @@ func TestCreateSentinelPod_WithAuthSecretProjectsPassword(t *testing.T) {
 	require.NotNil(t, pod.Spec.SecurityContext)
 	require.NotNil(t, pod.Spec.SecurityContext.RunAsNonRoot)
 	assert.True(t, *pod.Spec.SecurityContext.RunAsNonRoot)
+	require.NotNil(t, pod.Spec.SecurityContext.RunAsUser)
+	assert.Equal(t, int64(999), *pod.Spec.SecurityContext.RunAsUser)
+	require.NotNil(t, pod.Spec.SecurityContext.RunAsGroup)
+	assert.Equal(t, int64(999), *pod.Spec.SecurityContext.RunAsGroup)
+	require.NotNil(t, pod.Spec.SecurityContext.FSGroup)
+	assert.Equal(t, int64(999), *pod.Spec.SecurityContext.FSGroup)
 	require.NotNil(t, pod.Spec.SecurityContext.SeccompProfile)
 	assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, pod.Spec.SecurityContext.SeccompProfile.Type)
 
@@ -912,6 +918,12 @@ func TestCreatePod_ContainerSpec(t *testing.T) {
 	require.NotNil(t, pod.Spec.SecurityContext)
 	require.NotNil(t, pod.Spec.SecurityContext.RunAsNonRoot)
 	assert.True(t, *pod.Spec.SecurityContext.RunAsNonRoot)
+	require.NotNil(t, pod.Spec.SecurityContext.RunAsUser)
+	assert.Equal(t, int64(999), *pod.Spec.SecurityContext.RunAsUser)
+	require.NotNil(t, pod.Spec.SecurityContext.RunAsGroup)
+	assert.Equal(t, int64(999), *pod.Spec.SecurityContext.RunAsGroup)
+	require.NotNil(t, pod.Spec.SecurityContext.FSGroup)
+	assert.Equal(t, int64(999), *pod.Spec.SecurityContext.FSGroup)
 	require.NotNil(t, pod.Spec.SecurityContext.SeccompProfile)
 	assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, pod.Spec.SecurityContext.SeccompProfile.Type)
 
@@ -1141,6 +1153,8 @@ func TestInstanceManagerRoleRules_IncludeRestorePermissions(t *testing.T) {
 	}
 
 	assert.True(t, hasPermission("redis.io", "redisbackups", "get"))
+	assert.True(t, hasPermission("", "pods", "get"))
+	assert.True(t, hasPermission("", "pods", "list"))
 	assert.True(t, hasPermission("", "secrets", "get"))
 }
 

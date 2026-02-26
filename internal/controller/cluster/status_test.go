@@ -234,6 +234,66 @@ func TestCheckReachability_FewerStatusesThanExpected(t *testing.T) {
 	assert.False(t, requeue)
 }
 
+func TestShouldTriggerFailover(t *testing.T) {
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			Instances: 3,
+			Mode:      redisv1.ClusterModeStandalone,
+		},
+		Status: redisv1.RedisClusterStatus{
+			CurrentPrimary: "test-0",
+		},
+	}
+
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Connected: false},
+		"test-1": {Connected: true},
+		"test-2": {Connected: true},
+	}
+
+	assert.True(t, shouldTriggerFailover(cluster, statuses))
+}
+
+func TestShouldTriggerFailover_FalseWhenPrimaryConnected(t *testing.T) {
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			Instances: 3,
+			Mode:      redisv1.ClusterModeStandalone,
+		},
+		Status: redisv1.RedisClusterStatus{
+			CurrentPrimary: "test-0",
+		},
+	}
+
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Connected: true},
+		"test-1": {Connected: true},
+		"test-2": {Connected: true},
+	}
+
+	assert.False(t, shouldTriggerFailover(cluster, statuses))
+}
+
+func TestShouldTriggerFailover_FalseInSentinelMode(t *testing.T) {
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			Instances: 3,
+			Mode:      redisv1.ClusterModeSentinel,
+		},
+		Status: redisv1.RedisClusterStatus{
+			CurrentPrimary: "test-0",
+		},
+	}
+
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Connected: false},
+		"test-1": {Connected: true},
+		"test-2": {Connected: true},
+	}
+
+	assert.False(t, shouldTriggerFailover(cluster, statuses))
+}
+
 func TestPollPodStatus_Success(t *testing.T) {
 	resp := podStatusResponse{
 		Role:              "master",

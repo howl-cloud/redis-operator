@@ -28,4 +28,4 @@ jobs:
           install_only: true
 
       - name: Run chaos and fault injection tests
-        run: ./test/chaos/chaos_test.sh
+        run: ./test/chaos/run.sh

@@ -18,7 +18,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 )
@@ -557,14 +559,43 @@ func TestSplitBrainGuardLogic(t *testing.T) {
 }
 
 func TestResolvePodIP(t *testing.T) {
-	// resolvePodIP returns a DNS-style name for the pod.
-	ip, err := resolvePodIP(context.Background(), nil, "cluster-0", "default")
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-0", Namespace: "default"},
+		Status:     corev1.PodStatus{PodIP: "10.244.0.5"},
+	}
+	c := fake.NewClientBuilder().WithObjects(pod).Build()
+
+	ip, err := resolvePodIP(context.Background(), c, "cluster-0", "default")
 	require.NoError(t, err)
-	assert.Equal(t, "cluster-0.default.svc.cluster.local", ip)
+	assert.Equal(t, "10.244.0.5", ip)
 }
 
 func TestResolvePodIP_DifferentNamespace(t *testing.T) {
-	ip, err := resolvePodIP(context.Background(), nil, "myredis-2", "production")
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "myredis-2", Namespace: "production"},
+		Status:     corev1.PodStatus{PodIP: "10.244.1.9"},
+	}
+	c := fake.NewClientBuilder().WithObjects(pod).Build()
+
+	ip, err := resolvePodIP(context.Background(), c, "myredis-2", "production")
 	require.NoError(t, err)
-	assert.Equal(t, "myredis-2.production.svc.cluster.local", ip)
+	assert.Equal(t, "10.244.1.9", ip)
+}
+
+func TestResolvePodIP_PodNotFound(t *testing.T) {
+	c := fake.NewClientBuilder().Build()
+
+	_, err := resolvePodIP(context.Background(), c, "nonexistent", "default")
+	require.Error(t, err)
+}
+
+func TestResolvePodIP_NoIPAssigned(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-0", Namespace: "default"},
+	}
+	c := fake.NewClientBuilder().WithObjects(pod).Build()
+
+	_, err := resolvePodIP(context.Background(), c, "cluster-0", "default")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no IP assigned")
 }

@@ -5,7 +5,7 @@ priority: p2
 type: testing
 labels: [production-readiness, testing, reliability]
 created: 2026-02-23
-updated: 2026-02-23
+updated: 2026-02-26
 depends_on: [4]
 completed: false
 ---
@@ -67,12 +67,72 @@ CNPG has a `disruptive` feature type in its E2E test suite:
 
 ## Acceptance Criteria
 
-- [ ] `test/chaos/` contains at least 6 structured chaos test scenarios
-- [ ] Each test verifies invariants: no split-brain, data integrity, cluster convergence
-- [ ] Tests run on Kind via `make test-chaos-kind`
-- [ ] Tests are tagged/labeled for selective execution in CI
+- [x] `test/chaos/` contains at least 6 structured chaos test scenarios
+- [x] Each test verifies invariants: no split-brain, data integrity, cluster convergence
+- [x] Tests run on Kind via `make test-chaos-kind`
+- [x] Tests are tagged/labeled for selective execution in CI
 - [ ] All tests pass on a clean Kind cluster
 
 ## Notes
 
 Start simple — `kubectl delete pod` and NetworkPolicy-based partitions cover the most important scenarios without requiring Chaos Mesh or Litmus. Add external chaos tooling later for more sophisticated faults (clock skew, partial packet loss, etc.). The existing `test/smoke/` scenarios from issue #4 can be migrated into this framework.
+
+## Current Status (2026-02-26)
+
+Implemented and verified:
+
+- 7 structured chaos scenarios exist under `test/chaos/`:
+  - `primary_kill_test.go`
+  - `replica_failure_test.go`
+  - `network_partition_test.go`
+  - `primary_isolation_test.go`
+  - `operator_restart_test.go`
+  - `process_kill_test.go`
+  - `rolling_update_test.go`
+- Common invariant checks are implemented and used across scenarios:
+  - `AssertNoSplitBrain`
+  - `AssertDataIntegrity`
+  - `AssertReplicationConverged`
+  - `AssertOffsetNotRegressed`
+- Kind execution is wired through `make test-chaos-kind` -> `test/chaos/run.sh`.
+- Selective execution is implemented with Ginkgo labels and `CHAOS_LABEL_FILTER` (`--ginkgo.label-filter` in `test/chaos/run.sh`).
+
+Not yet passing:
+
+- `make test-chaos-kind` on a clean Kind cluster still fails for network-labeled scenarios.
+
+## Lingering Issue Handoff
+
+### Repro
+
+```bash
+CHAOS_LABEL_FILTER=network make test-chaos-kind
+```
+
+### Current failing specs
+
+1. `test/chaos/primary_isolation_test.go`
+   - Fails at wait for restart:
+   - `waiting for restart count increase for pod default/chaos-redis-0: ... context deadline exceeded`
+2. `test/chaos/network_partition_test.go`
+   - Fails data integrity assertion:
+   - `expected 1000 keys with prefix "ac2", got 0`
+
+### Runtime evidence already captured
+
+- Debug log file: `.cursor/debug-391a31.log`
+- The failover path is now observed during network partition:
+  - `primary changed` entries are present (old primary -> new primary).
+- The per-cluster Role now includes pod listing (`podsRoleVerbs: "get,list"`), removing the earlier `pods is forbidden` issue for primary isolation checks.
+- Primary-isolation scenario still does not observe a restart event within timeout in the failing runs.
+
+### Likely next debugging focus
+
+1. **Primary isolation restart detection**
+   - Verify whether the isolated primary is actually being restarted by kubelet (pod UID/start time/recreated pod name), not only container restart count.
+   - Verify liveness `/healthz` failure path under isolation in runtime logs.
+2. **Network partition data baseline**
+   - Validate baseline write durability before fault injection (keys exist before netblock is applied).
+   - Confirm the selected "primary pod" for baseline writes and for isolation are the same pod role at fault start.
+3. **Service routing and role transitions**
+   - Correlate `status.currentPrimary`, pod Redis role (`INFO replication`), and `-leader` service endpoint during the fault window.

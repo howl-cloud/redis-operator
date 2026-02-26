@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -568,7 +569,15 @@ func TestReconcileRole_ShouldBeReplicaButIsMaster(t *testing.T) {
 	srv.role = "master"
 	srv.mu.Unlock()
 
+	primaryPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-0", Namespace: "default"},
+		Status:     corev1.PodStatus{PodIP: "10.244.0.5"},
+	}
+	scheme := testScheme()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(primaryPod).Build()
+
 	rec := &InstanceReconciler{
+		client:      fakeClient,
 		redisClient: redisClient,
 		recorder:    record.NewFakeRecorder(100),
 		podName:     "test-1",
@@ -585,6 +594,7 @@ func TestReconcileRole_ShouldBeReplicaButIsMaster(t *testing.T) {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	assert.True(t, srv.slaveOfCalled, "should call SLAVEOF to demote to replica")
+	assert.Equal(t, "10.244.0.5", srv.slaveOfHost)
 	assert.Equal(t, "6379", srv.slaveOfPort)
 }
 

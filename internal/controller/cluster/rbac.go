@@ -184,6 +184,11 @@ func instanceManagerRoleRules() []rbacv1.PolicyRule {
 		},
 		{
 			APIGroups: []string{""},
+			Resources: []string{"pods"},
+			Verbs:     []string{"get", "list"},
+		},
+		{
+			APIGroups: []string{""},
 			Resources: []string{"secrets"},
 			Verbs:     []string{"get"},
 		},

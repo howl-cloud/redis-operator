@@ -129,6 +129,14 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 	setClusterInstancesMetrics(cluster, len(instanceStatuses))
 	setClusterPhaseMetric(cluster)
 
+	// Step 5.5: Automatic failover (standalone mode) when current primary is unreachable.
+	if shouldTriggerFailover(cluster, instanceStatuses) {
+		if err := r.failover(ctx, cluster); err != nil {
+			return reconcile.Result{}, fmt.Errorf("automatic failover: %w", err)
+		}
+		return reconcile.Result{RequeueAfter: requeueInterval}, nil
+	}
+
 	// Step 6: Reachability check.
 	if requeue := r.checkReachability(ctx, cluster, instanceStatuses); requeue {
 		return reconcile.Result{RequeueAfter: requeueInterval}, nil

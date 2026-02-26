@@ -311,9 +311,16 @@ func (r *InstanceReconciler) reportStatus(ctx context.Context, cluster *redisv1.
 	return r.client.Status().Patch(ctx, cluster, patch)
 }
 
-// getPodIP resolves a pod name to its IP address via DNS.
-func (r *InstanceReconciler) getPodIP(_ context.Context, podName, namespace string) (string, error) {
-	return fmt.Sprintf("%s.%s.svc.cluster.local", podName, namespace), nil
+// getPodIP resolves a pod name to its IP address from the Kubernetes API.
+func (r *InstanceReconciler) getPodIP(ctx context.Context, podName, namespace string) (string, error) {
+	var pod corev1.Pod
+	if err := r.client.Get(ctx, types.NamespacedName{Name: podName, Namespace: namespace}, &pod); err != nil {
+		return "", fmt.Errorf("getting pod %s/%s for IP resolution: %w", namespace, podName, err)
+	}
+	if pod.Status.PodIP == "" {
+		return "", fmt.Errorf("pod %s/%s has no IP assigned yet", namespace, podName)
+	}
+	return pod.Status.PodIP, nil
 }
 
 // readSecretKey reads a specific key from a Kubernetes Secret.

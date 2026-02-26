@@ -42,7 +42,7 @@ rules:
     verbs: [get, list, watch, patch]
   - apiGroups: [redis.io]
     resources: [redisclusters/status]
-    verbs: [get, patch]
+    verbs: [get, patch, update]
   - apiGroups: [redis.io]
     resources: [redisbackups]
     verbs: [get, list, watch, create, delete]

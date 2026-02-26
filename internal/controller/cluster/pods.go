@@ -811,8 +811,13 @@ func livenessTimeoutSeconds(cluster *redisv1.RedisCluster) int32 {
 
 func redisPodSecurityContext() *corev1.PodSecurityContext {
 	runAsNonRoot := true
+	redisUID := int64(999)
+	redisGID := int64(999)
 	return &corev1.PodSecurityContext{
 		RunAsNonRoot: &runAsNonRoot,
+		RunAsUser:    &redisUID,
+		RunAsGroup:   &redisGID,
+		FSGroup:      &redisGID,
 		SeccompProfile: &corev1.SeccompProfile{
 			Type: corev1.SeccompProfileTypeRuntimeDefault,
 		},

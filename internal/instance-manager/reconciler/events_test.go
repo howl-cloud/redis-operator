@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -233,8 +234,16 @@ func TestReconcileRole_DemotedToReplica_EmitsEvent(t *testing.T) {
 	srv.role = "master" // Currently master, should be replica.
 	srv.mu.Unlock()
 
+	primaryPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-0", Namespace: "default"},
+		Status:     corev1.PodStatus{PodIP: "10.244.0.5"},
+	}
+	scheme := testScheme()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(primaryPod).Build()
+
 	rec := record.NewFakeRecorder(100)
 	r := &InstanceReconciler{
+		client:      fakeClient,
 		redisClient: redisClient,
 		recorder:    rec,
 		podName:     "test-1", // Not the primary.

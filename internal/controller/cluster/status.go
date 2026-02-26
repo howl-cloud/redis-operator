@@ -199,6 +199,34 @@ func (r *ClusterReconciler) checkReachability(_ context.Context, cluster *redisv
 	return reachable < expected
 }
 
+func shouldTriggerFailover(cluster *redisv1.RedisCluster, statuses map[string]redisv1.InstanceStatus) bool {
+	if cluster == nil {
+		return false
+	}
+	if cluster.Spec.Mode == redisv1.ClusterModeSentinel {
+		return false
+	}
+	currentPrimary := cluster.Status.CurrentPrimary
+	if currentPrimary == "" {
+		return false
+	}
+
+	primaryStatus, ok := statuses[currentPrimary]
+	if ok && primaryStatus.Connected {
+		return false
+	}
+
+	for podName, status := range statuses {
+		if podName == currentPrimary {
+			continue
+		}
+		if status.Connected {
+			return true
+		}
+	}
+	return false
+}
+
 // determinePhase computes the cluster phase from instance statuses.
 func determinePhase(cluster *redisv1.RedisCluster, statuses map[string]redisv1.InstanceStatus) redisv1.ClusterPhase {
 	if len(statuses) == 0 {

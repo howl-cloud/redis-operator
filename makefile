@@ -109,7 +109,7 @@ test-smoke-kind: ## Run the real-cluster smoke test using kind + Helm
 
 .PHONY: test-chaos-kind
 test-chaos-kind: ## Run chaos and fault injection tests using kind + Helm
-	./test/chaos/chaos_test.sh
+	./test/chaos/run.sh
 
 .PHONY: test-integration
 test-integration: ## Run real Redis integration tests (requires Docker)

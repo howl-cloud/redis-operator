@@ -13,13 +13,16 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 	"github.com/howl-cloud/redis-operator/internal/instance-manager/reconciler"
@@ -143,7 +146,14 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 
 	// Step 8: Start the InstanceReconciler watch loop (goroutine).
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme: scheme,
+		Scheme:                 scheme,
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "0",
+		Cache: cache.Options{
+			DefaultNamespaces: map[string]cache.Config{
+				namespace: {},
+			},
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("creating controller manager for instance reconciler: %w", err)
@@ -328,7 +338,14 @@ func primaryIsolationPeerTimeout(cfg *redisv1.PrimaryIsolationSpec) time.Duratio
 	return cfg.PeerTimeout.Duration
 }
 
-// resolvePodIP resolves a pod name to its cluster IP via DNS.
-func resolvePodIP(_ context.Context, _ client.Client, podName, namespace string) (string, error) {
-	return fmt.Sprintf("%s.%s.svc.cluster.local", podName, namespace), nil
+// resolvePodIP looks up a pod's IP address from the Kubernetes API.
+func resolvePodIP(ctx context.Context, c client.Client, podName, namespace string) (string, error) {
+	var pod corev1.Pod
+	if err := c.Get(ctx, types.NamespacedName{Name: podName, Namespace: namespace}, &pod); err != nil {
+		return "", fmt.Errorf("getting pod %s/%s for IP resolution: %w", namespace, podName, err)
+	}
+	if pod.Status.PodIP == "" {
+		return "", fmt.Errorf("pod %s/%s has no IP assigned yet", namespace, podName)
+	}
+	return pod.Status.PodIP, nil
 }
