@@ -80,5 +80,10 @@ func (d *RedisClusterDefaulter) Default(_ context.Context, obj runtime.Object) e
 		cluster.Spec.PrimaryIsolation.PeerTimeout = &metav1.Duration{Duration: 5 * time.Second}
 	}
 
+	if cluster.Spec.NodeMaintenanceWindow != nil && cluster.Spec.NodeMaintenanceWindow.ReusePVC == nil {
+		t := true
+		cluster.Spec.NodeMaintenanceWindow.ReusePVC = &t
+	}
+
 	return nil
 }

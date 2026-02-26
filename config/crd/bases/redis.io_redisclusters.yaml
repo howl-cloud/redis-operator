@@ -1064,6 +1064,22 @@ spec:
                 - standalone
                 - sentinel
                 type: string
+              nodeMaintenanceWindow:
+                description: NodeMaintenanceWindow controls planned node maintenance
+                  behavior.
+                properties:
+                  inProgress:
+                    description: InProgress indicates planned node maintenance is
+                      currently in progress.
+                    type: boolean
+                  reusePVC:
+                    default: true
+                    description: ReusePVC controls whether PVCs are reused during
+                      maintenance.
+                    type: boolean
+                required:
+                - inProgress
+                type: object
               nodeSelector:
                 additionalProperties:
                   type: string

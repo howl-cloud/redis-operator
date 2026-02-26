@@ -24,12 +24,13 @@ type RedisClusterValidator struct {
 var _ webhook.CustomValidator = &RedisClusterValidator{}
 
 const (
-	unsupportedModeMessage      = "cluster mode is not yet supported; use standalone or sentinel"
-	sentinelInstancesMinMessage = "sentinel mode requires at least 3 redis instances"
-	sentinelTLSUnsupported      = "TLS is not supported in sentinel mode yet"
-	tlsSecretRequiredMessage    = "tlsSecret is required when caSecret is set"
-	caSecretRequiredMessage     = "caSecret is required when tlsSecret is set"
-	primaryUpdateApprovalValue  = `must be "true" when present`
+	unsupportedModeMessage           = "cluster mode is not yet supported; use standalone or sentinel"
+	sentinelInstancesMinMessage      = "sentinel mode requires at least 3 redis instances"
+	sentinelTLSUnsupported           = "TLS is not supported in sentinel mode yet"
+	tlsSecretRequiredMessage         = "tlsSecret is required when caSecret is set"
+	caSecretRequiredMessage          = "caSecret is required when tlsSecret is set"
+	primaryUpdateApprovalValue       = `must be "true" when present`
+	maintenanceSingleInstanceMessage = "nodeMaintenanceWindow.reusePVC=false is not allowed for single-instance clusters; set reusePVC=true or scale up first"
 )
 
 // SetupValidatingWebhookWithManager registers the validating webhook with the manager.
@@ -158,6 +159,18 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 			specPath.Child("maxSyncReplicas"),
 			cluster.Spec.MaxSyncReplicas,
 			"must be greater than or equal to minSyncReplicas",
+		))
+	}
+
+	if cluster.Spec.NodeMaintenanceWindow != nil &&
+		cluster.Spec.NodeMaintenanceWindow.InProgress &&
+		cluster.Spec.NodeMaintenanceWindow.ReusePVC != nil &&
+		!*cluster.Spec.NodeMaintenanceWindow.ReusePVC &&
+		cluster.Spec.Instances == 1 {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("nodeMaintenanceWindow", "reusePVC"),
+			*cluster.Spec.NodeMaintenanceWindow.ReusePVC,
+			maintenanceSingleInstanceMessage,
 		))
 	}
 

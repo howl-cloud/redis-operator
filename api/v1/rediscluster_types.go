@@ -43,12 +43,13 @@ const (
 
 // Condition types for RedisCluster.
 const (
-	ConditionReady                = "Ready"
-	ConditionPrimaryAvailable     = "PrimaryAvailable"
-	ConditionReplicationHealthy   = "ReplicationHealthy"
-	ConditionPrimaryUpdateWaiting = "PrimaryUpdateWaiting"
-	ConditionLastBackupSucceeded  = "LastBackupSucceeded"
-	ConditionHibernated           = "Hibernated"
+	ConditionReady                 = "Ready"
+	ConditionPrimaryAvailable      = "PrimaryAvailable"
+	ConditionReplicationHealthy    = "ReplicationHealthy"
+	ConditionPrimaryUpdateWaiting  = "PrimaryUpdateWaiting"
+	ConditionLastBackupSucceeded   = "LastBackupSucceeded"
+	ConditionHibernated            = "Hibernated"
+	ConditionMaintenanceInProgress = "MaintenanceInProgress"
 )
 
 // Fencing annotation key. The annotation value is a JSON list of fenced pod names.
@@ -173,6 +174,10 @@ type RedisClusterSpec struct {
 	// Bootstrap defines how to initialize the cluster from a backup.
 	// +optional
 	Bootstrap *BootstrapSpec `json:"bootstrap,omitempty"`
+
+	// NodeMaintenanceWindow controls planned node maintenance behavior.
+	// +optional
+	NodeMaintenanceWindow *NodeMaintenanceWindow `json:"nodeMaintenanceWindow,omitempty"`
 }
 
 // StorageSpec defines PVC storage for Redis data.
@@ -196,6 +201,17 @@ type LocalObjectReference struct {
 type BootstrapSpec struct {
 	// BackupName references a RedisBackup to restore from.
 	BackupName string `json:"backupName"`
+}
+
+// NodeMaintenanceWindow defines planned node maintenance behavior.
+type NodeMaintenanceWindow struct {
+	// InProgress indicates planned node maintenance is currently in progress.
+	InProgress bool `json:"inProgress"`
+
+	// ReusePVC controls whether PVCs are reused during maintenance.
+	// +kubebuilder:default=true
+	// +optional
+	ReusePVC *bool `json:"reusePVC,omitempty"`
 }
 
 // PrimaryIsolationSpec defines runtime primary-isolation detection settings.

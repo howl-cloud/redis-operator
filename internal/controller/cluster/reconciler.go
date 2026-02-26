@@ -105,6 +105,12 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 		return reconcile.Result{RequeueAfter: requeueInterval}, nil
 	}
 
+	// Step 1.6: Maintenance check (after hibernation, before normal reconciliation steps).
+	maintenance, err := r.reconcileMaintenance(ctx, cluster)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("reconciling maintenance: %w", err)
+	}
+
 	// Step 2: Secret resolution.
 	if err := r.reconcileSecrets(ctx, cluster); err != nil {
 		return reconcile.Result{}, fmt.Errorf("reconciling secrets: %w", err)
@@ -130,7 +136,7 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 	setClusterPhaseMetric(cluster)
 
 	// Step 5.5: Automatic failover (standalone mode) when current primary is unreachable.
-	if shouldTriggerFailover(cluster, instanceStatuses) {
+	if !maintenance && shouldTriggerFailover(cluster, instanceStatuses) {
 		if err := r.failover(ctx, cluster); err != nil {
 			return reconcile.Result{}, fmt.Errorf("automatic failover: %w", err)
 		}
@@ -142,24 +148,38 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 		return reconcile.Result{RequeueAfter: requeueInterval}, nil
 	}
 
+	maintenanceReplace := maintenance && !maintenanceReusePVC(cluster)
+	if maintenanceReplace {
+		if err := r.recyclePVCsForMissingPods(ctx, cluster); err != nil {
+			return reconcile.Result{}, fmt.Errorf("recycling PVCs during maintenance replacement: %w", err)
+		}
+	}
+
 	// Step 7: PVC reconciliation.
 	if err := r.reconcilePVCs(ctx, cluster); err != nil {
 		return reconcile.Result{}, fmt.Errorf("reconciling PVCs: %w", err)
 	}
 
-	// Step 8: Pod reconciliation (scale up/down, rolling updates).
-	if err := r.reconcilePods(ctx, cluster); err != nil {
-		return reconcile.Result{}, fmt.Errorf("reconciling pods: %w", err)
-	}
+	stop := false
 
-	desiredHash := r.computeSpecHash(cluster)
-	stop, err := r.rollingUpdate(ctx, cluster, desiredHash)
-	if err != nil {
-		return reconcile.Result{}, fmt.Errorf("rolling update: %w", err)
+	// Step 8: Pod reconciliation (scale up/down, rolling updates).
+	// During maintenance, only run pod replacement when reusePVC=false.
+	if !maintenance || maintenanceReplace {
+		if err := r.reconcilePods(ctx, cluster); err != nil {
+			return reconcile.Result{}, fmt.Errorf("reconciling pods: %w", err)
+		}
+
+		if !maintenance {
+			desiredHash := r.computeSpecHash(cluster)
+			stop, err = r.rollingUpdate(ctx, cluster, desiredHash)
+			if err != nil {
+				return reconcile.Result{}, fmt.Errorf("rolling update: %w", err)
+			}
+		}
 	}
 
 	// Step 9: Sentinel reconciliation (sentinel mode only).
-	if cluster.Spec.Mode == redisv1.ClusterModeSentinel {
+	if !maintenance && cluster.Spec.Mode == redisv1.ClusterModeSentinel {
 		if err := r.reconcileSentinelPods(ctx, cluster); err != nil {
 			return reconcile.Result{}, fmt.Errorf("reconciling sentinel pods: %w", err)
 		}

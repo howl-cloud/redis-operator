@@ -7,7 +7,7 @@ labels: [operations, availability]
 created: 2026-02-23
 updated: 2026-02-23
 depends_on: []
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -54,12 +54,12 @@ For single-instance clusters with `reusePVC: false`, draining is still prevented
 
 ## Acceptance Criteria
 
-- [ ] Setting `spec.nodeMaintenanceWindow.inProgress: true` disables pod recreation and PDB enforcement
-- [ ] Node drain proceeds without operator interference
-- [ ] After maintenance (`inProgress: false`), pods are recreated and cluster returns to `Healthy`
-- [ ] `reusePVC: true` preserves PVCs across the drain
-- [ ] Condition `MaintenanceInProgress` visible in cluster status
-- [ ] E2E test: enable maintenance → drain node → disable maintenance → verify cluster recovery
+- [x] Setting `spec.nodeMaintenanceWindow.inProgress: true` disables pod recreation and PDB enforcement
+- [x] Node drain proceeds without operator interference
+- [x] After maintenance (`inProgress: false`), pods are recreated and cluster returns to `Healthy`
+- [x] `reusePVC: true` preserves PVCs across the drain
+- [x] Condition `MaintenanceInProgress` visible in cluster status
+- [x] E2E test: enable maintenance → drain node → disable maintenance → verify cluster recovery
 
 ## Notes
 

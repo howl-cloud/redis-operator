@@ -16,6 +16,10 @@ import (
 
 // reconcilePDB creates or updates the PodDisruptionBudget.
 func (r *ClusterReconciler) reconcilePDB(ctx context.Context, cluster *redisv1.RedisCluster) error {
+	if isMaintenanceInProgress(cluster) {
+		return r.deletePDB(ctx, cluster)
+	}
+
 	if cluster.Spec.EnablePodDisruptionBudget != nil && !*cluster.Spec.EnablePodDisruptionBudget {
 		return r.deletePDB(ctx, cluster)
 	}

@@ -66,6 +66,10 @@ func validatorWithReader(t *testing.T, objects ...client.Object) *RedisClusterVa
 	return &RedisClusterValidator{Reader: fakeClient}
 }
 
+func boolPtr(v bool) *bool {
+	return &v
+}
+
 func TestValidateCreate_ValidCluster(t *testing.T) {
 	v := &RedisClusterValidator{}
 	cluster := validCluster()
@@ -229,6 +233,34 @@ func TestValidateCreate_SingleInstance(t *testing.T) {
 	cluster.Spec.Instances = 1
 	cluster.Spec.MinSyncReplicas = 0
 	cluster.Spec.MaxSyncReplicas = 0
+
+	warnings, err := v.ValidateCreate(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
+func TestValidateCreate_MaintenanceSingleInstanceReusePVCFalseRejected(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.Instances = 1
+	cluster.Spec.NodeMaintenanceWindow = &redisv1.NodeMaintenanceWindow{
+		InProgress: true,
+		ReusePVC:   boolPtr(false),
+	}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), maintenanceSingleInstanceMessage)
+}
+
+func TestValidateCreate_MaintenanceSingleInstanceReusePVCTrueAllowed(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.Instances = 1
+	cluster.Spec.NodeMaintenanceWindow = &redisv1.NodeMaintenanceWindow{
+		InProgress: true,
+		ReusePVC:   boolPtr(true),
+	}
 
 	warnings, err := v.ValidateCreate(context.Background(), cluster)
 	assert.NoError(t, err)

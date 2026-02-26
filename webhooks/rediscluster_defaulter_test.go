@@ -141,3 +141,28 @@ func TestDefault_PartialSpec(t *testing.T) {
 	require.NotNil(t, cluster.Spec.PrimaryIsolation.PeerTimeout)
 	assert.Equal(t, 5*time.Second, cluster.Spec.PrimaryIsolation.PeerTimeout.Duration)
 }
+
+func TestDefault_MaintenanceReusePVCDefaultsToTrue(t *testing.T) {
+	d := &RedisClusterDefaulter{}
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test",
+			Namespace: "default",
+		},
+		Spec: redisv1.RedisClusterSpec{
+			Instances: 1,
+			Storage: redisv1.StorageSpec{
+				Size: resource.MustParse("1Gi"),
+			},
+			NodeMaintenanceWindow: &redisv1.NodeMaintenanceWindow{
+				InProgress: true,
+			},
+		},
+	}
+
+	err := d.Default(context.Background(), cluster)
+	require.NoError(t, err)
+	require.NotNil(t, cluster.Spec.NodeMaintenanceWindow)
+	require.NotNil(t, cluster.Spec.NodeMaintenanceWindow.ReusePVC)
+	assert.True(t, *cluster.Spec.NodeMaintenanceWindow.ReusePVC)
+}
