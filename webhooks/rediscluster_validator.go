@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -62,7 +65,7 @@ func (v *RedisClusterValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 	}
 
 	allErrs := v.validate(ctx, newCluster)
-	allErrs = append(allErrs, v.validateUpdate(oldCluster, newCluster)...)
+	allErrs = append(allErrs, v.validateUpdate(ctx, oldCluster, newCluster)...)
 	return nil, allErrs.ToAggregate()
 }
 
@@ -179,17 +182,52 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 	return allErrs
 }
 
-// validateUpdate checks immutable fields on update.
-func (v *RedisClusterValidator) validateUpdate(oldCluster, newCluster *redisv1.RedisCluster) field.ErrorList {
+// validateUpdate checks immutable fields and storage resize constraints on update.
+func (v *RedisClusterValidator) validateUpdate(ctx context.Context, oldCluster, newCluster *redisv1.RedisCluster) field.ErrorList {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
+	storageSizePath := specPath.Child("storage", "size")
 
-	// Storage is immutable after creation.
-	if oldCluster.Spec.Storage.Size.Cmp(newCluster.Spec.Storage.Size) != 0 {
-		allErrs = append(allErrs, field.Forbidden(
-			specPath.Child("storage", "size"),
-			"storage size is immutable after creation; use the resize flow instead",
-		))
+	switch oldCluster.Spec.Storage.Size.Cmp(newCluster.Spec.Storage.Size) {
+	case 1:
+		// Allow rollbacks only when they do not shrink any already-requested PVC.
+		if v.Reader == nil {
+			allErrs = append(allErrs, field.Forbidden(
+				storageSizePath,
+				"storage size cannot be decreased after creation; only increases are allowed",
+			))
+			break
+		}
+		pvcs, err := v.listClusterPVCs(ctx, newCluster)
+		if err != nil {
+			allErrs = append(allErrs, field.InternalError(storageSizePath, fmt.Errorf("listing cluster PVCs: %w", err)))
+			break
+		}
+		maxRequestedStorage := resource.Quantity{}
+		for i := range pvcs {
+			requested := pvcs[i].Spec.Resources.Requests[corev1.ResourceStorage]
+			if requested.Cmp(maxRequestedStorage) > 0 {
+				maxRequestedStorage = requested
+			}
+		}
+		if maxRequestedStorage.Cmp(newCluster.Spec.Storage.Size) > 0 {
+			allErrs = append(allErrs, field.Forbidden(
+				storageSizePath,
+				fmt.Sprintf(
+					"storage size cannot be decreased below currently requested PVC size %q",
+					maxRequestedStorage.String(),
+				),
+			))
+		}
+	case -1:
+		expandable, reason, err := v.validateStorageClassExpansion(ctx, newCluster)
+		if err != nil {
+			allErrs = append(allErrs, field.InternalError(storageSizePath, err))
+			break
+		}
+		if !expandable {
+			allErrs = append(allErrs, field.Forbidden(storageSizePath, reason))
+		}
 	}
 
 	// Mode is immutable after creation.
@@ -208,6 +246,58 @@ func (v *RedisClusterValidator) validateUpdate(oldCluster, newCluster *redisv1.R
 	}
 
 	return allErrs
+}
+
+func (v *RedisClusterValidator) validateStorageClassExpansion(
+	ctx context.Context,
+	cluster *redisv1.RedisCluster,
+) (bool, string, error) {
+	if v.Reader == nil {
+		return true, "", nil
+	}
+
+	storageClasses := make(map[string]struct{})
+	if cluster.Spec.Storage.StorageClassName != nil && *cluster.Spec.Storage.StorageClassName != "" {
+		storageClasses[*cluster.Spec.Storage.StorageClassName] = struct{}{}
+	}
+
+	pvcs, err := v.listClusterPVCs(ctx, cluster)
+	if err != nil {
+		return false, "", fmt.Errorf("listing cluster PVCs: %w", err)
+	}
+	for i := range pvcs {
+		if pvcs[i].Spec.StorageClassName != nil && *pvcs[i].Spec.StorageClassName != "" {
+			storageClasses[*pvcs[i].Spec.StorageClassName] = struct{}{}
+		}
+	}
+
+	for storageClassName := range storageClasses {
+		var storageClass storagev1.StorageClass
+		if err := v.Reader.Get(ctx, types.NamespacedName{Name: storageClassName}, &storageClass); err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, fmt.Sprintf("storageClass %q was not found", storageClassName), nil
+			}
+			return false, "", fmt.Errorf("getting storageClass %q: %w", storageClassName, err)
+		}
+		if storageClass.AllowVolumeExpansion == nil || !*storageClass.AllowVolumeExpansion {
+			return false, fmt.Sprintf("storageClass %q does not allow volume expansion", storageClassName), nil
+		}
+	}
+
+	return true, "", nil
+}
+
+func (v *RedisClusterValidator) listClusterPVCs(ctx context.Context, cluster *redisv1.RedisCluster) ([]corev1.PersistentVolumeClaim, error) {
+	var pvcList corev1.PersistentVolumeClaimList
+	if err := v.Reader.List(
+		ctx,
+		&pvcList,
+		client.InNamespace(cluster.Namespace),
+		client.MatchingLabels{redisv1.LabelCluster: cluster.Name},
+	); err != nil {
+		return nil, err
+	}
+	return pvcList.Items, nil
 }
 
 func (v *RedisClusterValidator) validateBootstrapReference(ctx context.Context, cluster *redisv1.RedisCluster) field.ErrorList {

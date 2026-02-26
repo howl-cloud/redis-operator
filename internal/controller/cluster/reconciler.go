@@ -156,7 +156,8 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 	}
 
 	// Step 7: PVC reconciliation.
-	if err := r.reconcilePVCs(ctx, cluster); err != nil {
+	pendingResizePVCs, err := r.reconcilePVCs(ctx, cluster)
+	if err != nil {
 		return reconcile.Result{}, fmt.Errorf("reconciling PVCs: %w", err)
 	}
 
@@ -170,6 +171,16 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 		}
 
 		if !maintenance {
+			if len(pendingResizePVCs) > 0 {
+				stop, err = r.restartPodsForPendingResize(ctx, cluster, pendingResizePVCs)
+				if err != nil {
+					return reconcile.Result{}, fmt.Errorf("rolling restart for PVC resize: %w", err)
+				}
+				if stop {
+					return reconcile.Result{}, nil
+				}
+			}
+
 			desiredHash := r.computeSpecHash(cluster)
 			stop, err = r.rollingUpdate(ctx, cluster, desiredHash)
 			if err != nil {

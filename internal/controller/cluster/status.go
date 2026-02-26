@@ -127,6 +127,7 @@ func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.R
 		redisv1.ConditionHibernated,
 		redisv1.ConditionMaintenanceInProgress,
 		redisv1.ConditionPrimaryUpdateWaiting,
+		redisv1.ConditionPVCResizeInProgress,
 	)
 
 	return r.Status().Patch(ctx, cluster, patch)

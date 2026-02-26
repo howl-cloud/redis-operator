@@ -102,6 +102,146 @@ func (r *ClusterReconciler) rollingUpdate(ctx context.Context, cluster *redisv1.
 	return false, nil
 }
 
+// restartPodsForPendingResize performs a controlled restart sequence when PVCs
+// report FileSystemResizePending. Replicas restart first (highest ordinal),
+// then the primary is switched over before restart when replicas exist.
+func (r *ClusterReconciler) restartPodsForPendingResize(ctx context.Context, cluster *redisv1.RedisCluster, pendingPVCs map[string]struct{}) (bool, error) {
+	logger := log.FromContext(ctx)
+
+	pods, err := r.listDataPods(ctx, cluster)
+	if err != nil {
+		return false, fmt.Errorf("listing pods for PVC resize restart: %w", err)
+	}
+
+	var allReplicas []corev1.Pod
+	var pendingReplicas []corev1.Pod
+	var pendingPrimary *corev1.Pod
+
+	for i := range pods {
+		pod := pods[i]
+		if pod.Name == cluster.Status.CurrentPrimary {
+			if podHasPendingResizePVC(&pod, pendingPVCs) {
+				pendingPrimary = &pods[i]
+			}
+			continue
+		}
+
+		allReplicas = append(allReplicas, pod)
+		if podHasPendingResizePVC(&pod, pendingPVCs) {
+			pendingReplicas = append(pendingReplicas, pod)
+		}
+	}
+
+	// Restart replicas first, highest ordinal first.
+	sort.Slice(pendingReplicas, func(i, j int) bool {
+		return podIndex(cluster.Name, pendingReplicas[i].Name) > podIndex(cluster.Name, pendingReplicas[j].Name)
+	})
+	for i := range pendingReplicas {
+		target := pendingReplicas[i]
+		if !isPodRunningAndReady(&target) {
+			logger.Info(
+				"PVC resize restart: waiting for replica to become ready before restart",
+				"pod",
+				target.Name,
+			)
+			continue
+		}
+		logger.Info("PVC resize restart: deleting replica for filesystem expansion", "pod", target.Name)
+		r.Recorder.Eventf(
+			cluster,
+			corev1.EventTypeNormal,
+			"PVCResizeRestart",
+			"Restarting replica %s to complete filesystem expansion",
+			target.Name,
+		)
+		if err := r.Delete(ctx, &target); err != nil && !errors.IsNotFound(err) {
+			return false, fmt.Errorf("deleting replica %s for PVC resize restart: %w", target.Name, err)
+		}
+		return true, nil
+	}
+	if len(pendingReplicas) > 0 {
+		// Wait for pending replicas to become ready before issuing another restart.
+		return true, nil
+	}
+
+	if pendingPrimary == nil {
+		return false, nil
+	}
+	if !isPodRunningAndReady(pendingPrimary) {
+		logger.Info(
+			"PVC resize restart: waiting for primary to become ready before restart",
+			"pod",
+			pendingPrimary.Name,
+		)
+		return true, nil
+	}
+
+	if len(allReplicas) == 0 {
+		logger.Info("PVC resize restart: deleting single primary for filesystem expansion", "pod", pendingPrimary.Name)
+		r.Recorder.Eventf(
+			cluster,
+			corev1.EventTypeNormal,
+			"PVCResizeRestart",
+			"Restarting primary %s to complete filesystem expansion",
+			pendingPrimary.Name,
+		)
+		if err := r.Delete(ctx, pendingPrimary); err != nil && !errors.IsNotFound(err) {
+			return false, fmt.Errorf("deleting primary %s for PVC resize restart: %w", pendingPrimary.Name, err)
+		}
+		return true, nil
+	}
+	readyReplicaAvailable := false
+	for i := range allReplicas {
+		if isPodRunningAndReady(&allReplicas[i]) {
+			readyReplicaAvailable = true
+			break
+		}
+	}
+	if !readyReplicaAvailable {
+		logger.Info("PVC resize restart: waiting for at least one ready replica before primary switchover")
+		return true, nil
+	}
+
+	logger.Info("PVC resize restart: primary requires restart, performing switchover", "pod", pendingPrimary.Name)
+	r.Recorder.Eventf(
+		cluster,
+		corev1.EventTypeNormal,
+		"PVCResizeRestart",
+		"Primary %s requires filesystem resize; performing switchover before restart",
+		pendingPrimary.Name,
+	)
+	if err := r.switchover(ctx, cluster); err != nil {
+		return false, fmt.Errorf("switchover for PVC resize restart: %w", err)
+	}
+	return true, nil
+}
+
+func podHasPendingResizePVC(pod *corev1.Pod, pendingPVCs map[string]struct{}) bool {
+	for i := range pod.Spec.Volumes {
+		volume := pod.Spec.Volumes[i]
+		if volume.PersistentVolumeClaim == nil {
+			continue
+		}
+		if _, ok := pendingPVCs[volume.PersistentVolumeClaim.ClaimName]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func isPodRunningAndReady(pod *corev1.Pod) bool {
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
+	}
+	for i := range pod.Status.Conditions {
+		condition := pod.Status.Conditions[i]
+		if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
 // switchover promotes a replica and demotes the current primary.
 func (r *ClusterReconciler) switchover(ctx context.Context, cluster *redisv1.RedisCluster) error {
 	logger := log.FromContext(ctx)

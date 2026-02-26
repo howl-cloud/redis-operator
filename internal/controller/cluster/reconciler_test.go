@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -263,7 +264,7 @@ func TestReconcilePVCs_CreatesRequired(t *testing.T) {
 	r, c := newReconciler(cluster)
 	ctx := context.Background()
 
-	err := r.reconcilePVCs(ctx, cluster)
+	_, err := r.reconcilePVCs(ctx, cluster)
 	require.NoError(t, err)
 
 	// Verify PVCs were created.
@@ -274,6 +275,324 @@ func TestReconcilePVCs_CreatesRequired(t *testing.T) {
 
 	var pvc1 corev1.PersistentVolumeClaim
 	err = c.Get(ctx, types.NamespacedName{Name: "test-data-1", Namespace: "default"}, &pvc1)
+	require.NoError(t, err)
+}
+
+func TestReconcilePVCs_ResizesExistingClaims(t *testing.T) {
+	cluster := newTestCluster("test", "default", 2)
+	cluster.Spec.Storage.Size = resource.MustParse("2Gi")
+	storageClassName := "expandable"
+	cluster.Spec.Storage.StorageClassName = &storageClassName
+
+	allowExpansion := true
+	storageClass := &storagev1.StorageClass{
+		ObjectMeta:           metav1.ObjectMeta{Name: storageClassName},
+		AllowVolumeExpansion: &allowExpansion,
+	}
+
+	pvc0 := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-data-0",
+			Namespace: "default",
+			Labels:    map[string]string{redisv1.LabelCluster: "test"},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			StorageClassName: &storageClassName,
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Gi"),
+				},
+			},
+		},
+	}
+	pvc1 := pvc0.DeepCopy()
+	pvc1.Name = "test-data-1"
+
+	r, c := newReconciler(cluster, storageClass, pvc0, pvc1)
+	ctx := context.Background()
+
+	pendingResizePVCs, err := r.reconcilePVCs(ctx, cluster)
+	require.NoError(t, err)
+	assert.Empty(t, pendingResizePVCs)
+
+	var updatedPVC corev1.PersistentVolumeClaim
+	err = c.Get(ctx, types.NamespacedName{Name: "test-data-0", Namespace: "default"}, &updatedPVC)
+	require.NoError(t, err)
+	updatedStorage := updatedPVC.Spec.Resources.Requests[corev1.ResourceStorage]
+	assert.Equal(t, 0, updatedStorage.Cmp(resource.MustParse("2Gi")))
+
+	var updatedCluster redisv1.RedisCluster
+	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updatedCluster)
+	require.NoError(t, err)
+	foundResizeCondition := false
+	for i := range updatedCluster.Status.Conditions {
+		condition := updatedCluster.Status.Conditions[i]
+		if condition.Type == redisv1.ConditionPVCResizeInProgress && condition.Status == metav1.ConditionTrue {
+			foundResizeCondition = true
+			break
+		}
+	}
+	assert.True(t, foundResizeCondition, "expected PVCResizeInProgress=true condition")
+}
+
+func TestReconcilePVCs_ResizeBlockedWhenStorageClassDisallowsExpansion(t *testing.T) {
+	cluster := newTestCluster("test", "default", 1)
+	cluster.Spec.Storage.Size = resource.MustParse("2Gi")
+	storageClassName := "no-expand"
+	cluster.Spec.Storage.StorageClassName = &storageClassName
+
+	allowExpansion := false
+	storageClass := &storagev1.StorageClass{
+		ObjectMeta:           metav1.ObjectMeta{Name: storageClassName},
+		AllowVolumeExpansion: &allowExpansion,
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-data-0",
+			Namespace: "default",
+			Labels:    map[string]string{redisv1.LabelCluster: "test"},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			StorageClassName: &storageClassName,
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Gi"),
+				},
+			},
+		},
+	}
+
+	r, c, recorder := newReconcilerWithRecorder(cluster, storageClass, pvc)
+	ctx := context.Background()
+
+	pendingResizePVCs, err := r.reconcilePVCs(ctx, cluster)
+	require.NoError(t, err)
+	assert.Empty(t, pendingResizePVCs)
+
+	var updatedPVC corev1.PersistentVolumeClaim
+	err = c.Get(ctx, types.NamespacedName{Name: "test-data-0", Namespace: "default"}, &updatedPVC)
+	require.NoError(t, err)
+	updatedStorage := updatedPVC.Spec.Resources.Requests[corev1.ResourceStorage]
+	assert.Equal(t, 0, updatedStorage.Cmp(resource.MustParse("1Gi")))
+
+	events := drainEvents(recorder)
+	assertContainsEvent(t, events, "Warning", "PVCResizeFailed", "does not allow volume expansion")
+}
+
+func TestReconcilePVCs_ReturnsPendingFilesystemResizePVCs(t *testing.T) {
+	cluster := newTestCluster("test", "default", 1)
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-data-0",
+			Namespace: "default",
+			Labels:    map[string]string{redisv1.LabelCluster: "test"},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Gi"),
+				},
+			},
+		},
+		Status: corev1.PersistentVolumeClaimStatus{
+			Conditions: []corev1.PersistentVolumeClaimCondition{
+				{
+					Type:   corev1.PersistentVolumeClaimFileSystemResizePending,
+					Status: corev1.ConditionTrue,
+				},
+			},
+		},
+	}
+
+	r, c := newReconciler(cluster, pvc)
+	ctx := context.Background()
+
+	pendingResizePVCs, err := r.reconcilePVCs(ctx, cluster)
+	require.NoError(t, err)
+	_, found := pendingResizePVCs["test-data-0"]
+	assert.True(t, found, "expected test-data-0 to require restart")
+
+	var updatedCluster redisv1.RedisCluster
+	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updatedCluster)
+	require.NoError(t, err)
+	foundResizeCondition := false
+	for i := range updatedCluster.Status.Conditions {
+		condition := updatedCluster.Status.Conditions[i]
+		if condition.Type == redisv1.ConditionPVCResizeInProgress && condition.Status == metav1.ConditionTrue {
+			foundResizeCondition = true
+			break
+		}
+	}
+	assert.True(t, foundResizeCondition, "expected PVCResizeInProgress=true condition")
+}
+
+func TestRestartPodsForPendingResize_DeletesHighestOrdinalReplica(t *testing.T) {
+	cluster := newTestCluster("test", "default", 3)
+	cluster.Status.CurrentPrimary = "test-0"
+
+	pod0 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-0",
+			Namespace: "default",
+			Labels:    map[string]string{redisv1.LabelCluster: "test"},
+		},
+		Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{
+				{
+					Name: "data",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "test-data-0",
+						},
+					},
+				},
+			},
+			Containers: []corev1.Container{{Name: "redis", Image: "redis:7.2"}},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+	pod1 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-1",
+			Namespace: "default",
+			Labels:    map[string]string{redisv1.LabelCluster: "test"},
+		},
+		Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{
+				{
+					Name: "data",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "test-data-1",
+						},
+					},
+				},
+			},
+			Containers: []corev1.Container{{Name: "redis", Image: "redis:7.2"}},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+	pod2 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-2",
+			Namespace: "default",
+			Labels:    map[string]string{redisv1.LabelCluster: "test"},
+		},
+		Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{
+				{
+					Name: "data",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "test-data-2",
+						},
+					},
+				},
+			},
+			Containers: []corev1.Container{{Name: "redis", Image: "redis:7.2"}},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+
+	r, c := newReconciler(cluster, pod0, pod1, pod2)
+	ctx := context.Background()
+
+	stop, err := r.restartPodsForPendingResize(ctx, cluster, map[string]struct{}{
+		"test-data-1": {},
+		"test-data-2": {},
+	})
+	require.NoError(t, err)
+	assert.True(t, stop, "expected one restart action")
+
+	var deleted corev1.Pod
+	err = c.Get(ctx, types.NamespacedName{Name: "test-2", Namespace: "default"}, &deleted)
+	assert.True(t, apierrors.IsNotFound(err), "expected highest ordinal pending replica to be deleted first")
+
+	var remaining corev1.Pod
+	err = c.Get(ctx, types.NamespacedName{Name: "test-1", Namespace: "default"}, &remaining)
+	require.NoError(t, err)
+}
+
+func TestRestartPodsForPendingResize_WaitsWhenReplicaNotReady(t *testing.T) {
+	cluster := newTestCluster("test", "default", 2)
+	cluster.Status.CurrentPrimary = "test-0"
+
+	primary := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-0",
+			Namespace: "default",
+			Labels:    map[string]string{redisv1.LabelCluster: "test"},
+		},
+		Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{
+				{
+					Name: "data",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "test-data-0",
+						},
+					},
+				},
+			},
+			Containers: []corev1.Container{{Name: "redis", Image: "redis:7.2"}},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+	replicaNotReady := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-1",
+			Namespace: "default",
+			Labels:    map[string]string{redisv1.LabelCluster: "test"},
+		},
+		Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{
+				{
+					Name: "data",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "test-data-1",
+						},
+					},
+				},
+			},
+			Containers: []corev1.Container{{Name: "redis", Image: "redis:7.2"}},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodPending,
+		},
+	}
+
+	r, c := newReconciler(cluster, primary, replicaNotReady)
+	ctx := context.Background()
+
+	stop, err := r.restartPodsForPendingResize(ctx, cluster, map[string]struct{}{
+		"test-data-1": {},
+	})
+	require.NoError(t, err)
+	assert.True(t, stop, "expected reconcile to pause while waiting for readiness")
+
+	var stillThere corev1.Pod
+	err = c.Get(ctx, types.NamespacedName{Name: "test-1", Namespace: "default"}, &stillThere)
 	require.NoError(t, err)
 }
 
@@ -684,7 +1003,7 @@ func TestReconcilePVCs_DetectsDangling(t *testing.T) {
 	r, c := newReconciler(cluster, pod, danglingPVC)
 	ctx := context.Background()
 
-	err := r.reconcilePVCs(ctx, cluster)
+	_, err := r.reconcilePVCs(ctx, cluster)
 	require.NoError(t, err)
 
 	// Re-fetch cluster status.

@@ -50,6 +50,7 @@ const (
 	ConditionLastBackupSucceeded   = "LastBackupSucceeded"
 	ConditionHibernated            = "Hibernated"
 	ConditionMaintenanceInProgress = "MaintenanceInProgress"
+	ConditionPVCResizeInProgress   = "PVCResizeInProgress"
 )
 
 // Fencing annotation key. The annotation value is a JSON list of fenced pod names.

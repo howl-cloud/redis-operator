@@ -6,9 +6,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -60,6 +63,7 @@ func completedBackup(name, namespace string) *redisv1.RedisBackup {
 func validatorWithReader(t *testing.T, objects ...client.Object) *RedisClusterValidator {
 	t.Helper()
 	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, redisv1.AddToScheme(scheme))
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
@@ -286,16 +290,105 @@ func TestValidateUpdate_Valid(t *testing.T) {
 	assert.Nil(t, warnings)
 }
 
-func TestValidateUpdate_StorageSizeImmutable(t *testing.T) {
+func TestValidateUpdate_StorageSizeIncreaseAllowed(t *testing.T) {
 	v := &RedisClusterValidator{}
 	old := validCluster()
 	new := validCluster()
 	new.Spec.Storage.Size = resource.MustParse("10Gi")
 
+	warnings, err := v.ValidateUpdate(context.Background(), old, new)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
+func TestValidateUpdate_StorageSizeDecreaseRejected(t *testing.T) {
+	v := &RedisClusterValidator{}
+	old := validCluster()
+	old.Spec.Storage.Size = resource.MustParse("10Gi")
+	new := validCluster()
+
 	_, err := v.ValidateUpdate(context.Background(), old, new)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "storage")
-	assert.Contains(t, err.Error(), "immutable")
+	assert.Contains(t, err.Error(), "decreased")
+}
+
+func TestValidateUpdate_StorageSizeIncreaseRejectedForNonExpandableStorageClass(t *testing.T) {
+	storageClassName := "no-expand"
+	allowVolumeExpansion := false
+	storageClass := &storagev1.StorageClass{
+		ObjectMeta:           metav1.ObjectMeta{Name: storageClassName},
+		AllowVolumeExpansion: &allowVolumeExpansion,
+	}
+
+	v := validatorWithReader(t, storageClass)
+	old := validCluster()
+	old.Spec.Storage.StorageClassName = &storageClassName
+	new := validCluster()
+	new.Spec.Storage.StorageClassName = &storageClassName
+	new.Spec.Storage.Size = resource.MustParse("2Gi")
+
+	_, err := v.ValidateUpdate(context.Background(), old, new)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not allow volume expansion")
+}
+
+func TestValidateUpdate_StorageSizeDecreaseAllowsRollbackWhenPVCRequestsNotIncreased(t *testing.T) {
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster-data-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				redisv1.LabelCluster: "test-cluster",
+			},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Gi"),
+				},
+			},
+		},
+	}
+
+	v := validatorWithReader(t, pvc)
+	old := validCluster()
+	old.Spec.Storage.Size = resource.MustParse("2Gi")
+	new := validCluster()
+	new.Spec.Storage.Size = resource.MustParse("1Gi")
+
+	warnings, err := v.ValidateUpdate(context.Background(), old, new)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
+func TestValidateUpdate_StorageSizeDecreaseRejectedWhenBelowCurrentPVCRequest(t *testing.T) {
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster-data-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				redisv1.LabelCluster: "test-cluster",
+			},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("2Gi"),
+				},
+			},
+		},
+	}
+
+	v := validatorWithReader(t, pvc)
+	old := validCluster()
+	old.Spec.Storage.Size = resource.MustParse("3Gi")
+	new := validCluster()
+	new.Spec.Storage.Size = resource.MustParse("1Gi")
+
+	_, err := v.ValidateUpdate(context.Background(), old, new)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "currently requested PVC size")
 }
 
 func TestValidateUpdate_ModeImmutable(t *testing.T) {

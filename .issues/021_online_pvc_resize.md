@@ -7,7 +7,7 @@ labels: [operations, storage]
 created: 2026-02-23
 updated: 2026-02-23
 depends_on: []
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -51,12 +51,12 @@ CNPG supports PVC resize:
 
 ## Acceptance Criteria
 
-- [ ] Increasing `spec.storage.size` patches PVCs to the new size
-- [ ] Decreasing `spec.storage.size` is rejected by the webhook
-- [ ] PVC resize works on StorageClasses with `allowVolumeExpansion: true`
-- [ ] Clear error event if StorageClass does not support expansion
-- [ ] Rolling update triggered if filesystem resize requires pod restart
-- [ ] E2E test: create cluster with 1Gi → resize to 2Gi → verify PVC capacity updated
+- [x] Increasing `spec.storage.size` patches PVCs to the new size
+- [x] Decreasing `spec.storage.size` is rejected by the webhook
+- [x] PVC resize works on StorageClasses with `allowVolumeExpansion: true`
+- [x] Clear error event if StorageClass does not support expansion
+- [x] Rolling update triggered if filesystem resize requires pod restart
+- [x] E2E test: create cluster with 1Gi → resize to 2Gi → verify PVC capacity updated
 
 ## Notes
 

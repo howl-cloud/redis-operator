@@ -12,7 +12,7 @@ rules:
     verbs: [get, list, watch, create, patch, delete]
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
-    verbs: [get, list, watch, create]
+    verbs: [get, list, watch, create, patch]
   - apiGroups: [""]
     resources: [services]
     verbs: [get, list, watch, create, patch]
@@ -28,6 +28,9 @@ rules:
   - apiGroups: [""]
     resources: [events]
     verbs: [create, patch]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get, list, watch]
   # PodDisruptionBudgets.
   - apiGroups: [policy]
     resources: [poddisruptionbudgets]
