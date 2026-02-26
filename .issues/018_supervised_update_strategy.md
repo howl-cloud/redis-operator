@@ -5,7 +5,7 @@ priority: p2
 type: feature
 labels: [production-readiness, operations, rolling-update]
 created: 2026-02-23
-updated: 2026-02-23
+updated: 2026-02-25
 depends_on: []
 completed: true
 ---

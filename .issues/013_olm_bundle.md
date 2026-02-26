@@ -5,7 +5,7 @@ priority: p3
 type: feature
 labels: [distribution, feature]
 created: 2026-02-19
-updated: 2026-02-19
+updated: 2026-02-22
 depends_on: [1, 6]
 completed: false
 ---

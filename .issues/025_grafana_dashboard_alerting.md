@@ -5,7 +5,7 @@ priority: p2
 type: feature
 labels: [production-readiness, observability, monitoring]
 created: 2026-02-23
-updated: 2026-02-23
+updated: 2026-02-24
 depends_on: [17]
 completed: false
 ---

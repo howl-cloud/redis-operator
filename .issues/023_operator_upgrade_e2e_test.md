@@ -5,7 +5,7 @@ priority: p1
 type: testing
 labels: [production-readiness, testing, operations, upgrades]
 created: 2026-02-23
-updated: 2026-02-23
+updated: 2026-02-24
 depends_on: [7]
 completed: false
 ---

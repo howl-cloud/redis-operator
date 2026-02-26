@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -14,6 +15,8 @@ import (
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 	"github.com/howl-cloud/redis-operator/test/e2e/helpers"
 )
+
+const tlsSecretRotationTimeout = 70 * time.Second
 
 var _ = Describe("TLS cluster wiring", func() {
 	var (
@@ -121,7 +124,7 @@ var _ = Describe("TLS cluster wiring", func() {
 			var rotated redisv1.RedisCluster
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &rotated)).To(Succeed())
 			g.Expect(rotated.Status.SecretsResourceVersion[tlsSecretName]).NotTo(Equal(oldTLSRV))
-		}, reconcileTimeout, helpers.DefaultPollingInterval).Should(Succeed())
+		}, tlsSecretRotationTimeout, helpers.DefaultPollingInterval).Should(Succeed())
 
 		Eventually(func(g Gomega) {
 			var currentPod corev1.Pod

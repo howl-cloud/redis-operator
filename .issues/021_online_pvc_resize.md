@@ -5,7 +5,7 @@ priority: p3
 type: feature
 labels: [operations, storage]
 created: 2026-02-23
-updated: 2026-02-23
+updated: 2026-02-26
 depends_on: []
 completed: true
 ---

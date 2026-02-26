@@ -5,7 +5,7 @@ priority: p1
 type: feature
 labels: [production-readiness, high-availability, disaster-recovery, replication]
 created: 2026-02-23
-updated: 2026-02-23
+updated: 2026-02-24
 depends_on: [14, 15]
 completed: false
 ---
@@ -59,9 +59,9 @@ CNPG calls this **Distributed Topology** or **Replica Clusters**:
    - Updates the cluster to operate as an independent primary
    - Records a `ReplicaClusterPromoted` event
 
-### Phase 2: Async replication via shared object storage (higher durability)
+### Phase 2: Async replication via shared object storage (Garage-backed S3 API, higher durability)
 
-Requires issue #14 (backup) to be complete. Uses periodic backups + continuous AOF shipping to object storage as the replication medium, eliminating the need for direct network connectivity between clusters.
+Requires issue #14 (backup) to be complete. Uses periodic backups + continuous AOF shipping to object storage as the replication medium, eliminating the need for direct network connectivity between clusters. For local/CI environments, use Garage as the S3-compatible object store instead of MinIO.
 
 ### Topology example
 
@@ -70,6 +70,7 @@ Region A (primary K8s cluster)
   RedisCluster "prod-primary"
     mode: sentinel, instances: 3
     backup: S3 bucket s3://redis-backups/prod
+    backup endpoint (local/CI): http://garage.storage.svc:3900
 
 Region B (DR K8s cluster)
   RedisCluster "prod-dr"
@@ -97,3 +98,5 @@ Phase 1 (streaming replication) is straightforward to implement since Redis supp
 Phase 2 (object storage shipping) is significantly more complex and should be a separate issue. Phase 1 alone covers the core DR use case for clusters with network connectivity between regions (VPC peering, VPN, etc.).
 
 TLS (issue #15) should be completed before this issue, since cross-cluster replication over the public internet requires encrypted connections.
+
+For any DR tests that exercise object-storage shipping, standardize on Garage as the S3-compatible backend and document the required provisioning sequence (layout apply, bucket/key creation, and bucket permissions).

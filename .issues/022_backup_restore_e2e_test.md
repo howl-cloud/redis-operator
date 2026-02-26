@@ -5,9 +5,9 @@ priority: p0
 type: testing
 labels: [production-readiness, testing, backup, data-safety]
 created: 2026-02-23
-updated: 2026-02-23
+updated: 2026-02-24
 depends_on: [14]
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -31,13 +31,19 @@ CNPG has a comprehensive backup/restore E2E test suite covering:
 - Scheduled backup → PITR recovery to a specific timestamp → data verification
 - Backup from standby → restore on new cluster → verify data matches primary
 - Volume snapshot backup → restore → verify
-- These tests run in CI on every PR against MinIO (S3-compatible) spun up in the Kind cluster
+- These tests run in CI on every PR against an S3-compatible object store spun up in the Kind cluster
 
-CNPG's `hack/setup-cluster.sh` deploys MinIO as a dependency specifically to support backup/restore testing. The E2E tests reference this MinIO instance for all backup object storage operations.
+CNPG's `hack/setup-cluster.sh` deploys MinIO as that dependency. For this Redis operator, standardize on **Garage** as the local S3-compatible dependency for backup/restore testing.
 
 ## How to implement in the Redis operator
 
-1. **MinIO in Kind setup**: Update `test/e2e/suite_test.go` to deploy a MinIO instance (or use testcontainers) as part of the test suite setup. MinIO provides S3-compatible object storage locally, no AWS credentials needed.
+1. **Garage in Kind setup**: Update `test/e2e/suite_test.go` (or the Kind-based backup test harness) to deploy a single-node Garage instance for object storage. Provision it during setup:
+   - apply layout (`garage layout assign` + `garage layout apply`)
+   - create bucket and API key (`garage bucket create`, `garage key create`)
+   - grant bucket permissions (`garage bucket allow --read --write --owner ...`)
+   - create `backupCredentialsSecret` with `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+   - set backup destination endpoint to Garage (`spec.destination.s3.endpoint`)
+   - ensure region matches Garage config (`spec.destination.s3.region` vs Garage `s3_region`)
 
 2. **Test scenario: full cycle** (`test/e2e/backup_restore_test.go`):
    ```
@@ -73,14 +79,14 @@ CNPG's `hack/setup-cluster.sh` deploys MinIO as a dependency specifically to sup
 
 ## Acceptance Criteria
 
-- [ ] Full backup→delete→restore→verify cycle passes in CI
-- [ ] Backup from replica produces a restorable backup
-- [ ] Scheduled backup auto-creates a backup that can be restored
-- [ ] Restore into two clusters from the same backup produces identical data
-- [ ] Invalid `backupName` produces a clear error, not a silent hang
-- [ ] Tests run against local MinIO (no external cloud credentials required in CI)
-- [ ] Added to `make test-e2e` and/or a dedicated `make test-backup` target
+- [x] Full backup→delete→restore→verify cycle passes in CI
+- [x] Backup from replica produces a restorable backup
+- [x] Scheduled backup auto-creates a backup that can be restored
+- [x] Restore into two clusters from the same backup produces identical data
+- [x] Invalid `backupName` produces a clear error, not a silent hang
+- [x] Tests run against local Garage (no external cloud credentials required in CI)
+- [x] Added to `make test-e2e` and/or a dedicated `make test-backup` target
 
 ## Notes
 
-MinIO is the standard tool for local S3-compatible testing in Kubernetes operator CI. It runs as a single-pod deployment with no persistence requirements in test environments. CNPG, Velero, and most other operators use it for exactly this purpose. The MinIO setup in the test suite can be shared with any future DR/replica-cluster tests (issue #24).
+Garage is the standard local S3-compatible backend for this repository's backup/restore testing. It can run as a single-node deployment in Kind without persistent storage for CI. Garage requires explicit post-install provisioning (layout + bucket/key/permissions), but once bootstrapped it provides the same S3 API surface needed by this operator's backup/restore paths. The Garage setup in the test suite can be shared with future DR/replica-cluster tests (issue #24).
