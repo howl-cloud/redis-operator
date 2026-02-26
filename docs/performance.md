@@ -40,7 +40,9 @@ go tool pprof -top /tmp/issue9-cpu.out
 go tool pprof -top -alloc_space /tmp/issue9-mem.out
 ```
 
-## Results (Apple M4 Max, Go test benchmark harness)
+## Results
+
+### Apple M4 Max (Go test benchmark harness)
 
 From `go test -run='^$' -bench='BenchmarkReconcileLoop' -benchmem -benchtime=3s ./internal/controller/cluster`:
 
@@ -54,6 +56,45 @@ Supporting status microbenchmark baseline (`go test -run='^$' -bench='BenchmarkP
 
 - `BenchmarkPollPodStatus`: `35.8 us/op`, `6813 B/op`, `75 allocs/op`
 - `BenchmarkPollInstanceStatuses/clusters=100`: `139.47 ms/op`, `717 reconciles/s`, `2151 status_polls/s`
+
+### Linux amd64 VM (2026-02-26)
+
+This run was executed on the machine used for this benchmark session:
+
+- OS: Linux `6.8.0-1048-gcp` (Ubuntu)
+- CPU: `AMD EPYC 7B13` (`4` vCPUs)
+- Memory: `15 GiB`
+- Go: `go1.25.1`
+- kind: `v0.29.0`
+
+Environment/setup steps executed before benchmarking:
+
+- Created a dedicated kind cluster: `kind create cluster --name redis-operator-perf --wait 180s`
+- Installed CRDs: `make install`
+- Verified controller startup in-cluster context: `timeout 45s go run ./cmd/manager controller --leader-elect=false --webhook-enabled=false --metrics-bind-address=:9090`
+
+From `go test -run='^$' -bench='BenchmarkReconcileLoop' -benchmem -benchtime=3s ./internal/controller/cluster`:
+
+| Benchmark | Latency | Reconciles/s | Status polls/s | API calls/s | Allocations |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `BenchmarkReconcileLoop/clusters=10` | `55.40 ms/op` | `180.5` | `541.6` | `5055` | `17.96 MB/op`, `152608 allocs/op` |
+| `BenchmarkReconcileLoop/clusters=50` | `751.13 ms/op` | `66.57` | `199.7` | `1864` | `360.89 MB/op`, `1985928 allocs/op` |
+| `BenchmarkReconcileLoop/clusters=100` | `2659.08 ms/op` | `37.61` | `112.8` | `1053` | `1.36 GB/op`, `6959267 allocs/op` |
+
+Supporting status microbenchmark baseline (`go test -run='^$' -bench='BenchmarkPoll' -benchmem -benchtime=2s ./internal/controller/cluster`):
+
+- `BenchmarkPollPodStatus`: `144.7 us/op`, `6734 B/op`, `75 allocs/op`
+- `BenchmarkPollInstanceStatuses/clusters=10`: `5.56 ms/op`, `1800 reconciles/s`, `5400 status_polls/s`
+- `BenchmarkPollInstanceStatuses/clusters=50`: `114.39 ms/op`, `437.1 reconciles/s`, `1311 status_polls/s`
+- `BenchmarkPollInstanceStatuses/clusters=100`: `456.61 ms/op`, `219.0 reconciles/s`, `657.0 status_polls/s`
+
+Profiles captured for `BenchmarkReconcileLoop/clusters=100` (`-cpuprofile`, `-memprofile`) on this host show:
+
+- CPU hot spots are primarily GC/runtime scan work (`runtime.scanobject`, `runtime.findObject`) and JSON encode/decode paths.
+- Allocation hot spots are dominated by reflection growth (`reflect.growslice`) and Kubernetes deep-copy operations (`PodList.DeepCopyInto`, `PersistentVolumeClaimList.DeepCopyInto`), plus JSON marshal/decode paths.
+- No unbounded goroutine growth signatures were observed in this benchmark path.
+
+> Note: This VM has significantly fewer CPU resources than the Apple M4 Max baseline above, so throughput is expectedly lower; treat this section as a machine-local baseline.
 
 ### API Server Request Rate
 
