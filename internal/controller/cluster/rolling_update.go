@@ -245,6 +245,15 @@ func isPodRunningAndReady(pod *corev1.Pod) bool {
 // switchover promotes a replica and demotes the current primary.
 func (r *ClusterReconciler) switchover(ctx context.Context, cluster *redisv1.RedisCluster) error {
 	logger := log.FromContext(ctx)
+	formerPrimary := cluster.Status.CurrentPrimary
+	if formerPrimary == "" {
+		return fmt.Errorf("current primary is empty")
+	}
+
+	// Fence former primary before promotion to avoid split brain.
+	if err := r.setFence(ctx, cluster, formerPrimary); err != nil {
+		return fmt.Errorf("fencing former primary %s: %w", formerPrimary, err)
+	}
 
 	// Select the best replica (lowest replication lag).
 	candidate, err := r.selectFailoverCandidate(ctx, cluster)
@@ -263,13 +272,33 @@ func (r *ClusterReconciler) switchover(ctx context.Context, cluster *redisv1.Red
 		return fmt.Errorf("listing pods for switchover: %w", err)
 	}
 
+	promoted := false
 	for _, pod := range pods {
 		if pod.Name == candidate && pod.Status.PodIP != "" {
 			if err := r.promoteInstance(ctx, pod.Status.PodIP); err != nil {
 				return fmt.Errorf("promoting %s: %w", candidate, err)
 			}
+			promoted = true
 			break
 		}
+	}
+	if !promoted {
+		return fmt.Errorf("candidate %s has no reachable pod IP", candidate)
+	}
+
+	// Persist new primary selection and update leader Service routing.
+	statusPatch := client.MergeFrom(cluster.DeepCopy())
+	cluster.Status.CurrentPrimary = candidate
+	if err := r.Status().Patch(ctx, cluster, statusPatch); err != nil {
+		return fmt.Errorf("updating status after switchover: %w", err)
+	}
+
+	if err := r.updateLeaderServiceSelector(ctx, cluster); err != nil {
+		return fmt.Errorf("updating leader service after switchover: %w", err)
+	}
+
+	if err := r.clearFence(ctx, cluster, formerPrimary); err != nil {
+		return fmt.Errorf("clearing fence on %s after switchover: %w", formerPrimary, err)
 	}
 
 	return nil

@@ -1,0 +1,88 @@
+name: Operator Upgrade E2E Test
+
+on:
+  push:
+    tags: ["v*-rc*"]
+  workflow_dispatch:
+    inputs:
+      before_tag:
+        description: "Optional override for BEFORE_IMAGE release tag"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  upgrade-test:
+    name: kind + helm operator upgrade
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.1"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Set up kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve before image tag
+        id: before
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${{ inputs.before_tag }}" ]]; then
+            echo "tag=${{ inputs.before_tag }}" >> "${GITHUB_OUTPUT}"
+          else
+            stable_tags="$(git tag --list 'v*' | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/' | sort -V)"
+            if [[ -z "${stable_tags}" ]]; then
+              echo "no stable release tags found to use as BEFORE_IMAGE baseline" >&2
+              exit 1
+            fi
+
+            resolved_tag=""
+            current_tag="${GITHUB_REF_NAME:-}"
+            target_base="${current_tag%%-*}"
+
+            if [[ "${GITHUB_EVENT_NAME}" == "push" && "${current_tag}" == *"-rc"* ]]; then
+              while IFS= read -r tag; do
+                first_sorted="$(printf '%s\n%s\n' "${tag}" "${target_base}" | sort -V | head -n 1)"
+                if [[ "${first_sorted}" == "${tag}" && "${tag}" != "${target_base}" ]]; then
+                  resolved_tag="${tag}"
+                fi
+              done <<< "${stable_tags}"
+
+              if [[ -z "${resolved_tag}" ]]; then
+                echo "could not resolve previous stable release tag before ${target_base}" >&2
+                exit 1
+              fi
+            else
+              resolved_tag="$(printf '%s\n' "${stable_tags}" | tail -n 1)"
+            fi
+
+            echo "tag=${resolved_tag}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Run operator upgrade E2E test
+        env:
+          BEFORE_IMAGE: ghcr.io/${{ github.repository }}:${{ steps.before.outputs.tag }}
+          AFTER_IMAGE: redis-operator:upgrade-${{ github.sha }}
+          CLUSTER_NAME: redis-operator-upgrade-${{ github.run_id }}
+        run: make test-upgrade

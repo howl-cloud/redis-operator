@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -556,7 +557,7 @@ func TestSwitchover_CandidateFound(t *testing.T) {
 		},
 	}
 
-	r, _ := newReconciler(append([]client.Object{cluster}, pods...)...)
+	r, c := newReconciler(append([]client.Object{cluster}, pods...)...)
 	ctx := context.Background()
 
 	// switchover will try to promote test-1 via HTTP.
@@ -565,4 +566,17 @@ func TestSwitchover_CandidateFound(t *testing.T) {
 	err := r.switchover(ctx, cluster)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "promoting test-1")
+
+	// Switchover must fence the former primary before attempting promotion.
+	var updated redisv1.RedisCluster
+	getErr := c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updated)
+	require.NoError(t, getErr)
+
+	rawFenced, ok := updated.Annotations[redisv1.FencingAnnotationKey]
+	require.True(t, ok, "former primary should be fenced before promotion attempt")
+
+	var fencedPods []string
+	unmarshalErr := json.Unmarshal([]byte(rawFenced), &fencedPods)
+	require.NoError(t, unmarshalErr)
+	assert.Contains(t, fencedPods, "test-0")
 }

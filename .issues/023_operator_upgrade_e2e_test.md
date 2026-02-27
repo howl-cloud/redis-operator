@@ -5,9 +5,9 @@ priority: p1
 type: testing
 labels: [production-readiness, testing, operations, upgrades]
 created: 2026-02-23
-updated: 2026-02-24
+updated: 2026-02-26
 depends_on: [7]
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -40,7 +40,7 @@ CNPG also tests in-place instance manager updates (the binary hot-swap feature) 
 
 ## How to implement in the Redis operator
 
-1. **Test structure** (`test/e2e/operator_upgrade_test.go`):
+1. **Test structure** (`test/upgrade/operator_upgrade_test.sh`):
    ```
    Given operator v<N-1> is installed (previous release image)
    And a RedisCluster "upgrade-test" is Healthy with 3 instances
@@ -64,16 +64,17 @@ CNPG also tests in-place instance manager updates (the binary hot-swap feature) 
 
 5. **Rolling update regression**: After upgrade, deliberately trigger a rolling update (change image tag on the cluster) and verify it completes cleanly under the new operator.
 
-6. **Makefile target**: `make test-upgrade` — runs upgrade scenario specifically. Requires two image tags to be available.
+6. **Makefile target**: `make test-upgrade` — runs the upgrade scenario specifically.
+7. **CI workflow**: `.github/workflows/upgrade-test.yml` runs the upgrade scenario on `v*-rc*` tags and via `workflow_dispatch`.
 
 ## Acceptance Criteria
 
-- [ ] Operator upgrade (image replace) does not restart any Redis pods
-- [ ] Clusters remain Healthy throughout the operator upgrade window
-- [ ] Webhooks are functional within 30s of new operator readiness
-- [ ] Data written before upgrade is readable after upgrade
-- [ ] Rolling updates triggered post-upgrade complete successfully
-- [ ] Test runs in CI on every release candidate tag
+- [x] Operator upgrade (image replace) does not restart any Redis pods
+- [x] Clusters remain Healthy throughout the operator upgrade window
+- [x] Webhooks are functional within 30s of new operator readiness
+- [x] Data written before upgrade is readable after upgrade
+- [x] Rolling updates triggered post-upgrade complete successfully
+- [x] Test runs in CI on every release candidate tag
 
 ## Notes
 

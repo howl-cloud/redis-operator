@@ -111,6 +111,10 @@ test-smoke-kind: ## Run the real-cluster smoke test using kind + Helm
 test-chaos-kind: ## Run chaos and fault injection tests using kind + Helm
 	./test/chaos/run.sh
 
+.PHONY: test-upgrade
+test-upgrade: ## Run operator upgrade E2E test using kind + Helm
+	bash ./test/upgrade/operator_upgrade_test.sh
+
 .PHONY: test-integration
 test-integration: ## Run real Redis integration tests (requires Docker)
 	KUBEBUILDER_ASSETS="$(shell setup-envtest use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path 2>/dev/null || echo '')" \
