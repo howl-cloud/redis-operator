@@ -1,40 +1,34 @@
-# config/monitoring
+# Monitoring Assets
 
-Observability manifests for redis-operator managed clusters.
+Pre-built monitoring assets are shipped with the Helm chart:
 
-## Files
+| Asset | Path |
+|------|------|
+| Grafana dashboard JSON | `charts/redis-operator/dashboards/redis-overview.json` |
+| PrometheusRule template | `charts/redis-operator/templates/prometheusrule.yaml` |
+| Grafana ConfigMap template | `charts/redis-operator/templates/grafana-configmap.yaml` |
+| Instance-manager PodMonitor | `charts/redis-operator/templates/podmonitor.yaml` |
+| Operator ServiceMonitor | `charts/redis-operator/templates/servicemonitor.yaml` |
 
-| File | Description |
-|------|-------------|
-| `pod-monitor.yaml` | `PodMonitor` (Prometheus Operator) — scrapes `/metrics` on port `9090` from all Redis pods |
-| `grafana-dashboard.json` | Pre-built Grafana dashboard covering replication lag, memory, keyspace hit rate, connected clients |
+## Metrics scrape endpoints
 
-## Metrics Scrape
+- **Operator controller metrics**: `:9090/metrics` (via Service + ServiceMonitor)
+- **Redis instance-manager metrics**: `:8080/metrics` on each Redis data pod (via PodMonitor)
 
-Each Redis pod exposes `/metrics` on `:9090` (served by the instance manager's HTTP server). The `PodMonitor` targets pods with the label `redis.io/cluster: <name>`.
+The PodMonitor targets pods with:
 
-If Prometheus Operator is not available, scrape config can be added manually:
+- `redis.io/workload=data`
+- `redis.io/cluster` label present
 
-```yaml
-scrape_configs:
-  - job_name: redis-operator
-    kubernetes_sd_configs:
-      - role: pod
-    relabel_configs:
-      - source_labels: [__meta_kubernetes_pod_label_redis_io_cluster]
-        action: keep
-        regex: .+
-      - source_labels: [__meta_kubernetes_pod_ip]
-        target_label: __address__
-        replacement: $1:9090
-```
+## Helm toggles
 
-## Key Dashboard Panels
+Key values in `charts/redis-operator/values.yaml`:
 
-- Replication lag per replica (seconds behind primary)
-- Memory used vs. peak vs. limit
-- Keyspace hit rate (`hits / (hits + misses)`)
-- Connected clients
-- Commands processed per second
-- Primary availability (up/down)
-- Last successful RDB save age
+- `monitoring.alertingRules.enabled` (default `true`)
+- `monitoring.grafanaDashboard.enabled` (default `true`)
+- `monitoring.podMonitor.enabled` (default `true`)
+- `metrics.serviceMonitor.enabled` (default `false`)
+
+## Documentation
+
+See `docs/monitoring.md` for setup, dashboard import, alert threshold customization, and custom query patterns.

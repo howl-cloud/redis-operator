@@ -49,6 +49,19 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 
+	if backup.Spec.ClusterName != "" {
+		defer func() {
+			if err := r.refreshClusterBackupMetrics(ctx, backup.Namespace, backup.Spec.ClusterName); err != nil {
+				logger.Error(
+					err,
+					"failed to refresh backup metrics",
+					"namespace", backup.Namespace,
+					"cluster", backup.Spec.ClusterName,
+				)
+			}
+		}()
+	}
+
 	// Skip if already completed or failed.
 	if backup.Status.Phase == redisv1.BackupPhaseCompleted || backup.Status.Phase == redisv1.BackupPhaseFailed {
 		return reconcile.Result{}, nil

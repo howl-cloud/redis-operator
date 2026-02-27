@@ -124,6 +124,10 @@ test-integration: ## Run real Redis integration tests (requires Docker)
 test-backup: ## Run backup/restore integration tests with Garage (requires Docker)
 	KUBEBUILDER_ASSETS="$(shell setup-envtest use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path 2>/dev/null || echo '')" \
 	INTEGRATION_TESTS=1 go test -tags integration -v -count=1 -timeout 900s -run 'Test.*Backup|Test.*Restore' ./test/integration/...
+
+.PHONY: validate-monitoring
+validate-monitoring: ## Validate monitoring rules, dashboard JSON, and Helm toggles
+	bash ./hack/validate-monitoring.sh
 	
 .PHONY: test-e2e
 test-e2e: ## Run e2e tests using envtest (requires: make setup-envtest first)

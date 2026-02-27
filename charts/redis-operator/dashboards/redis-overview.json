@@ -61,20 +61,20 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "Redis Up (Pods)",
+      "title": "Healthy Instances",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
+        "h": 6,
         "w": 6,
         "x": 0,
         "y": 0
       },
       "targets": [
         {
-          "expr": "sum(redis_up{namespace=~\"$namespace\",cluster=~\"$cluster\"})",
+          "expr": "sum(redis_up{namespace=~\"$namespace\",cluster=~\"$cluster\"} == 1)",
           "refId": "A"
         }
       ],
@@ -93,35 +93,129 @@
     },
     {
       "id": 2,
+      "type": "stat",
+      "title": "Unhealthy Instances",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(redis_up{namespace=~\"$namespace\",cluster=~\"$cluster\"} == 0)",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Desired Instances",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(redis_cluster_instances_total{namespace=~\"$namespace\",cluster=~\"$cluster\",type=\"desired\"})",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Current Primaries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(redis_up{namespace=~\"$namespace\",cluster=~\"$cluster\",role=\"master\"})",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 5,
       "type": "timeseries",
-      "title": "Memory Used vs Max",
+      "title": "Cluster Phase",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
         "h": 8,
-        "w": 18,
-        "x": 6,
-        "y": 0
+        "w": 24,
+        "x": 0,
+        "y": 6
       },
       "targets": [
         {
-          "expr": "redis_used_memory_bytes{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\"}",
-          "legendFormat": "{{pod}} used",
+          "expr": "redis_cluster_phase{namespace=~\"$namespace\",cluster=~\"$cluster\"}",
+          "legendFormat": "{{phase}}",
           "refId": "A"
-        },
-        {
-          "expr": "redis_maxmemory_bytes{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\"}",
-          "legendFormat": "{{pod}} max",
-          "refId": "B"
         }
       ]
     },
     {
-      "id": 3,
+      "id": 6,
       "type": "timeseries",
-      "title": "Ops/sec",
+      "title": "Replication Lag (Bytes)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -130,18 +224,134 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 8
+        "y": 14
       },
       "targets": [
         {
-          "expr": "redis_instantaneous_ops_per_sec{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\"}",
+          "expr": "redis_replication_lag_bytes{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\",role=\"slave\"}",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 4,
+      "id": 7,
+      "type": "timeseries",
+      "title": "Connected Replicas",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 14
+      },
+      "targets": [
+        {
+          "expr": "redis_connected_replicas{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\",role=\"master\"}",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Master Link Up",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 14
+      },
+      "targets": [
+        {
+          "expr": "redis_master_link_up{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\",role=\"slave\"}",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Memory Usage Ratio",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 22
+      },
+      "targets": [
+        {
+          "expr": "redis_used_memory_bytes{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\"} / clamp_min(redis_maxmemory_bytes{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\"}, 1)",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Evictions / sec",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 22
+      },
+      "targets": [
+        {
+          "expr": "rate(redis_evicted_keys_total{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\"}[5m])",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Memory Fragmentation Ratio",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 22
+      },
+      "targets": [
+        {
+          "expr": "redis_mem_fragmentation_ratio{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\"}",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
       "type": "timeseries",
       "title": "Connected Clients",
       "datasource": {
@@ -151,8 +361,8 @@
       "gridPos": {
         "h": 8,
         "w": 8,
-        "x": 8,
-        "y": 8
+        "x": 0,
+        "y": 30
       },
       "targets": [
         {
@@ -163,9 +373,31 @@
       ]
     },
     {
-      "id": 5,
+      "id": 13,
       "type": "timeseries",
-      "title": "Replication Lag (Bytes)",
+      "title": "Blocked Clients",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 30
+      },
+      "targets": [
+        {
+          "expr": "redis_blocked_clients{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\"}",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Rejected Connections / sec",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -174,18 +406,40 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 8
+        "y": 30
       },
       "targets": [
         {
-          "expr": "redis_replication_lag_bytes{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\"}",
+          "expr": "rate(redis_rejected_connections_total{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\"}[5m])",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 6,
+      "id": 15,
+      "type": "timeseries",
+      "title": "Ops / sec by Command (GET/SET/DEL)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 38
+      },
+      "targets": [
+        {
+          "expr": "sum by (command) (rate(redis_command_calls_total{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\",command=~\"get|set|del\"}[5m]))",
+          "legendFormat": "{{command}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 16,
       "type": "timeseries",
       "title": "Keyspace Hit Ratio",
       "datasource": {
@@ -194,13 +448,13 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 16
+        "w": 12,
+        "x": 12,
+        "y": 38
       },
       "targets": [
         {
-          "expr": "sum(rate(redis_keyspace_hits_total{namespace=~\"$namespace\",cluster=~\"$cluster\"}[5m])) / (sum(rate(redis_keyspace_hits_total{namespace=~\"$namespace\",cluster=~\"$cluster\"}[5m])) + sum(rate(redis_keyspace_misses_total{namespace=~\"$namespace\",cluster=~\"$cluster\"}[5m])))",
+          "expr": "sum(rate(redis_keyspace_hits_total{namespace=~\"$namespace\",cluster=~\"$cluster\"}[5m])) / clamp_min(sum(rate(redis_keyspace_hits_total{namespace=~\"$namespace\",cluster=~\"$cluster\"}[5m])) + sum(rate(redis_keyspace_misses_total{namespace=~\"$namespace\",cluster=~\"$cluster\"}[5m])), 1)",
           "legendFormat": "hit_ratio",
           "refId": "A"
         }
@@ -213,9 +467,31 @@
       }
     },
     {
-      "id": 7,
+      "id": 17,
       "type": "timeseries",
-      "title": "Cluster Phase",
+      "title": "RDB Last Save Duration (s)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 46
+      },
+      "targets": [
+        {
+          "expr": "redis_rdb_last_bgsave_duration_seconds{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\"}",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "AOF Last Rewrite Duration (s)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -224,20 +500,20 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 16
+        "y": 46
       },
       "targets": [
         {
-          "expr": "redis_cluster_phase{namespace=~\"$namespace\",cluster=~\"$cluster\"}",
-          "legendFormat": "{{phase}}",
+          "expr": "redis_aof_last_rewrite_duration_seconds{namespace=~\"$namespace\",cluster=~\"$cluster\",pod=~\"$pod\"}",
+          "legendFormat": "{{pod}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 8,
-      "type": "timeseries",
-      "title": "Failover Events",
+      "id": 19,
+      "type": "stat",
+      "title": "Last Successful Backup Time",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -246,15 +522,82 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 16
+        "y": 46
       },
       "targets": [
         {
-          "expr": "increase(redis_failover_total{namespace=~\"$namespace\",cluster=~\"$cluster\"}[1h])",
-          "legendFormat": "{{cluster}}",
+          "expr": "max(redis_last_successful_backup_timestamp{namespace=~\"$namespace\",cluster=~\"$cluster\"})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Backup Phase Counts",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 54
+      },
+      "targets": [
+        {
+          "expr": "redis_backup_phase_count{namespace=~\"$namespace\",cluster=~\"$cluster\"}",
+          "legendFormat": "{{phase}}",
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Last Successful Backup Age (s)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 54
+      },
+      "targets": [
+        {
+          "expr": "time() - max(redis_last_successful_backup_timestamp{namespace=~\"$namespace\",cluster=~\"$cluster\"})",
+          "legendFormat": "age_seconds",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
     }
   ],
   "refresh": "30s",
@@ -313,6 +656,6 @@
   "timezone": "",
   "title": "Redis Operator Overview",
   "uid": "redis-operator-overview",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

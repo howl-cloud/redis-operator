@@ -38,12 +38,15 @@ type RedisCollector struct {
 	instanceInfoDesc            *prometheus.Desc
 	connectedClientsDesc        *prometheus.Desc
 	blockedClientsDesc          *prometheus.Desc
+	rejectedConnectionsDesc     *prometheus.Desc
 	usedMemoryDesc              *prometheus.Desc
 	usedMemoryRSSDesc           *prometheus.Desc
 	usedMemoryPeakDesc          *prometheus.Desc
 	maxMemoryDesc               *prometheus.Desc
 	memFragmentationRatioDesc   *prometheus.Desc
+	evictedKeysDesc             *prometheus.Desc
 	totalCommandsProcessedDesc  *prometheus.Desc
+	commandCallsDesc            *prometheus.Desc
 	instantaneousOpsPerSecDesc  *prometheus.Desc
 	keyspaceHitsDesc            *prometheus.Desc
 	keyspaceMissesDesc          *prometheus.Desc
@@ -53,6 +56,8 @@ type RedisCollector struct {
 	replicationLagBytesDesc     *prometheus.Desc
 	masterLinkUpDesc            *prometheus.Desc
 	rdbLastSaveTimestampDesc    *prometheus.Desc
+	rdbLastBgsaveDurationDesc   *prometheus.Desc
+	aofLastRewriteDurationDesc  *prometheus.Desc
 	rdbChangesSinceLastSaveDesc *prometheus.Desc
 	loadingDesc                 *prometheus.Desc
 	fencedDesc                  *prometheus.Desc
@@ -95,6 +100,12 @@ func NewRedisCollector(
 			metricLabels,
 			nil,
 		),
+		rejectedConnectionsDesc: prometheus.NewDesc(
+			prometheus.BuildFQName(metricNamespace, "", "rejected_connections_total"),
+			"Total number of connections rejected due to maxclients or other limits.",
+			metricLabels,
+			nil,
+		),
 		usedMemoryDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(metricNamespace, "", "used_memory_bytes"),
 			"Total memory used by Redis in bytes.",
@@ -125,10 +136,22 @@ func NewRedisCollector(
 			metricLabels,
 			nil,
 		),
+		evictedKeysDesc: prometheus.NewDesc(
+			prometheus.BuildFQName(metricNamespace, "", "evicted_keys_total"),
+			"Total number of evicted keys.",
+			metricLabels,
+			nil,
+		),
 		totalCommandsProcessedDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(metricNamespace, "", "total_commands_processed"),
 			"Total number of commands processed by the server.",
 			metricLabels,
+			nil,
+		),
+		commandCallsDesc: prometheus.NewDesc(
+			prometheus.BuildFQName(metricNamespace, "", "command_calls_total"),
+			"Total number of calls for a specific Redis command.",
+			append(metricLabels, "command"),
 			nil,
 		),
 		instantaneousOpsPerSecDesc: prometheus.NewDesc(
@@ -185,6 +208,18 @@ func NewRedisCollector(
 			metricLabels,
 			nil,
 		),
+		rdbLastBgsaveDurationDesc: prometheus.NewDesc(
+			prometheus.BuildFQName(metricNamespace, "", "rdb_last_bgsave_duration_seconds"),
+			"Duration of the last RDB background save in seconds.",
+			metricLabels,
+			nil,
+		),
+		aofLastRewriteDurationDesc: prometheus.NewDesc(
+			prometheus.BuildFQName(metricNamespace, "", "aof_last_rewrite_duration_seconds"),
+			"Duration of the last AOF rewrite in seconds.",
+			metricLabels,
+			nil,
+		),
 		rdbChangesSinceLastSaveDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(metricNamespace, "", "rdb_changes_since_last_save"),
 			"Number of changes since the last RDB save.",
@@ -218,12 +253,15 @@ func (c *RedisCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.instanceInfoDesc
 	ch <- c.connectedClientsDesc
 	ch <- c.blockedClientsDesc
+	ch <- c.rejectedConnectionsDesc
 	ch <- c.usedMemoryDesc
 	ch <- c.usedMemoryRSSDesc
 	ch <- c.usedMemoryPeakDesc
 	ch <- c.maxMemoryDesc
 	ch <- c.memFragmentationRatioDesc
+	ch <- c.evictedKeysDesc
 	ch <- c.totalCommandsProcessedDesc
+	ch <- c.commandCallsDesc
 	ch <- c.instantaneousOpsPerSecDesc
 	ch <- c.keyspaceHitsDesc
 	ch <- c.keyspaceMissesDesc
@@ -233,6 +271,8 @@ func (c *RedisCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.replicationLagBytesDesc
 	ch <- c.masterLinkUpDesc
 	ch <- c.rdbLastSaveTimestampDesc
+	ch <- c.rdbLastBgsaveDurationDesc
+	ch <- c.aofLastRewriteDurationDesc
 	ch <- c.rdbChangesSinceLastSaveDesc
 	ch <- c.loadingDesc
 	ch <- c.fencedDesc
@@ -283,12 +323,15 @@ func (c *RedisCollector) Collect(ch chan<- prometheus.Metric) {
 
 	c.emitFromKey(ch, c.connectedClientsDesc, prometheus.GaugeValue, info, "connected_clients", labels)
 	c.emitFromKey(ch, c.blockedClientsDesc, prometheus.GaugeValue, info, "blocked_clients", labels)
+	c.emitFromKey(ch, c.rejectedConnectionsDesc, prometheus.CounterValue, info, "rejected_connections", labels)
 	c.emitFromKey(ch, c.usedMemoryDesc, prometheus.GaugeValue, info, "used_memory", labels)
 	c.emitFromKey(ch, c.usedMemoryRSSDesc, prometheus.GaugeValue, info, "used_memory_rss", labels)
 	c.emitFromKey(ch, c.usedMemoryPeakDesc, prometheus.GaugeValue, info, "used_memory_peak", labels)
 	c.emitFromKey(ch, c.maxMemoryDesc, prometheus.GaugeValue, info, "maxmemory", labels)
 	c.emitFromKey(ch, c.memFragmentationRatioDesc, prometheus.GaugeValue, info, "mem_fragmentation_ratio", labels)
+	c.emitFromKey(ch, c.evictedKeysDesc, prometheus.CounterValue, info, "evicted_keys", labels)
 	c.emitFromKey(ch, c.totalCommandsProcessedDesc, prometheus.CounterValue, info, "total_commands_processed", labels)
+	c.emitCommandCalls(ch, info, labels)
 	c.emitFromKey(ch, c.instantaneousOpsPerSecDesc, prometheus.GaugeValue, info, "instantaneous_ops_per_sec", labels)
 	c.emitFromKey(ch, c.keyspaceHitsDesc, prometheus.CounterValue, info, "keyspace_hits", labels)
 	c.emitFromKey(ch, c.keyspaceMissesDesc, prometheus.CounterValue, info, "keyspace_misses", labels)
@@ -296,6 +339,8 @@ func (c *RedisCollector) Collect(ch chan<- prometheus.Metric) {
 	c.emitFromKey(ch, c.replicationOffsetDesc, prometheus.GaugeValue, info, "master_repl_offset", labels)
 	c.emitFromKey(ch, c.replicaReplOffsetDesc, prometheus.GaugeValue, info, "slave_repl_offset", labels)
 	c.emitFromKey(ch, c.rdbLastSaveTimestampDesc, prometheus.GaugeValue, info, "rdb_last_save_time", labels)
+	c.emitFromKey(ch, c.rdbLastBgsaveDurationDesc, prometheus.GaugeValue, info, "rdb_last_bgsave_time_sec", labels)
+	c.emitFromKey(ch, c.aofLastRewriteDurationDesc, prometheus.GaugeValue, info, "aof_last_rewrite_time_sec", labels)
 	c.emitFromKey(ch, c.rdbChangesSinceLastSaveDesc, prometheus.GaugeValue, info, "rdb_changes_since_last_save", labels)
 	c.emitFromKey(ch, c.loadingDesc, prometheus.GaugeValue, info, "loading", labels)
 	c.emitFromKey(ch, c.uptimeDesc, prometheus.GaugeValue, info, "uptime_in_seconds", labels)
@@ -341,6 +386,30 @@ func (c *RedisCollector) emitFromKey(
 	ch <- prometheus.MustNewConstMetric(desc, valueType, value, labels...)
 }
 
+func (c *RedisCollector) emitCommandCalls(
+	ch chan<- prometheus.Metric,
+	info map[string]string,
+	labels []string,
+) {
+	commands := []string{"get", "set", "del"}
+	for _, command := range commands {
+		raw, ok := info["cmdstat_"+command]
+		if !ok {
+			continue
+		}
+		calls, ok := parseCommandCalls(raw)
+		if !ok {
+			continue
+		}
+		ch <- prometheus.MustNewConstMetric(
+			c.commandCallsDesc,
+			prometheus.CounterValue,
+			calls,
+			append(labels, command)...,
+		)
+	}
+}
+
 func parseInfo(infoRaw string) map[string]string {
 	values := make(map[string]string)
 	for _, line := range strings.Split(infoRaw, "\r\n") {
@@ -366,6 +435,27 @@ func parseFloatKey(values map[string]string, key string) (float64, bool) {
 		return 0, false
 	}
 	return parsed, true
+}
+
+func parseCommandCalls(raw string) (float64, bool) {
+	if strings.TrimSpace(raw) == "" {
+		return 0, false
+	}
+
+	entries := strings.Split(raw, ",")
+	for _, entry := range entries {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 || parts[0] != "calls" {
+			continue
+		}
+		calls, err := strconv.ParseFloat(parts[1], 64)
+		if err != nil {
+			return 0, false
+		}
+		return calls, true
+	}
+
+	return 0, false
 }
 
 func normalizeRole(role string) string {

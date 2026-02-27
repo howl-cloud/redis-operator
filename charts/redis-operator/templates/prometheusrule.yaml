@@ -1,0 +1,66 @@
+{{- if and .Values.monitoring.alertingRules.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule") }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "redis-operator.fullname" . }}-alerts
+  namespace: {{ default .Release.Namespace .Values.monitoring.alertingRules.namespace }}
+  labels:
+    {{- include "redis-operator.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.alertingRules.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: redis-operator
+      rules:
+        - alert: RedisPrimaryUnavailable
+          expr: |
+            sum by (namespace, cluster) (redis_cluster_instances_total{type="desired"}) > 0
+            and on (namespace, cluster)
+            max by (namespace, cluster) (redis_cluster_phase{phase="Hibernating"}) == 0
+            unless on (namespace, cluster)
+            sum by (namespace, cluster) (redis_up{role="master"}) > 0
+          for: 30s
+          labels:
+            severity: critical
+          annotations:
+            summary: "Redis cluster {{ `{{ $labels.namespace }}` }}/{{ `{{ $labels.cluster }}` }} has no primary"
+
+        - alert: RedisReplicationLagHigh
+          expr: max by (namespace, cluster, pod) (redis_replication_lag_bytes{role="slave"}) > {{ .Values.monitoring.alertingRules.replicationLagThresholdBytes }}
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Redis replica {{ `{{ $labels.pod }}` }} is {{ `{{ $value }}` }} bytes behind"
+
+        - alert: RedisMemoryUsageHigh
+          expr: |
+            redis_maxmemory_bytes > 0
+            and
+            (redis_used_memory_bytes / redis_maxmemory_bytes) > {{ .Values.monitoring.alertingRules.memoryUsageThresholdRatio }}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Redis pod {{ `{{ $labels.pod }}` }} memory usage above {{ .Values.monitoring.alertingRules.memoryUsageThresholdRatio }}"
+
+        - alert: RedisBackupMissing
+          expr: |
+            redis_last_successful_backup_timestamp == 0
+            or
+            time() - redis_last_successful_backup_timestamp > {{ .Values.monitoring.alertingRules.backupMissingSeconds }}
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Redis cluster {{ `{{ $labels.namespace }}` }}/{{ `{{ $labels.cluster }}` }} has no recent successful backup"
+
+        - alert: RedisInstanceDown
+          expr: redis_up == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Redis instance {{ `{{ $labels.pod }}` }} is unreachable"
+{{- end }}

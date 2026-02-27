@@ -50,3 +50,5 @@ kubeconfig
 .kubeconfig
 .env
 .env.*
+
+.issues/*

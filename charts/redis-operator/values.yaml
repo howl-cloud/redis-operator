@@ -81,10 +81,42 @@ metrics:
   enabled: true
   # -- Port on which metrics are served.
   port: 9090
-  # -- Create a ServiceMonitor for Prometheus Operator (requires prometheus-operator CRD).
+  # -- Create a ServiceMonitor for operator controller metrics (requires Prometheus Operator CRDs).
   serviceMonitor:
     enabled: false
     # -- Namespace where the ServiceMonitor is created. Defaults to the release namespace.
+    namespace: ""
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+monitoring:
+  alertingRules:
+    # -- Create a PrometheusRule with default Redis alerts.
+    enabled: true
+    # -- Namespace where the PrometheusRule is created. Defaults to the release namespace.
+    namespace: ""
+    # -- Additional labels on the PrometheusRule resource.
+    labels: {}
+    # -- Replication lag threshold in bytes for RedisReplicationLagHigh.
+    replicationLagThresholdBytes: 10485760
+    # -- Memory usage ratio threshold for RedisMemoryUsageHigh.
+    memoryUsageThresholdRatio: 0.85
+    # -- Max seconds since last successful backup before RedisBackupMissing fires.
+    backupMissingSeconds: 86400
+
+  grafanaDashboard:
+    # -- Create a ConfigMap containing the Redis Grafana dashboard JSON.
+    enabled: true
+    # -- Namespace where the dashboard ConfigMap is created. Defaults to the release namespace.
+    namespace: ""
+    # -- Additional labels on the dashboard ConfigMap.
+    labels: {}
+
+  podMonitor:
+    # -- Create a PodMonitor for Redis instance-manager pod metrics (requires Prometheus Operator CRDs).
+    enabled: true
+    # -- Namespace where the PodMonitor is created. Defaults to the release namespace.
     namespace: ""
     interval: 30s
     scrapeTimeout: 10s

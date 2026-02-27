@@ -37,10 +37,15 @@ func TestRedisCollector_Collect(t *testing.T) {
 		"rdb_changes_since_last_save:7\r\n" +
 		"loading:0\r\n" +
 		"# Stats\r\n" +
+		"rejected_connections:3\r\n" +
+		"evicted_keys:4\r\n" +
 		"total_commands_processed:42\r\n" +
 		"instantaneous_ops_per_sec:88\r\n" +
 		"keyspace_hits:100\r\n" +
-		"keyspace_misses:5\r\n"
+		"keyspace_misses:5\r\n" +
+		"cmdstat_get:calls=20,usec=500,usec_per_call=25.00,rejected_calls=0,failed_calls=0\r\n" +
+		"cmdstat_set:calls=10,usec=400,usec_per_call=40.00,rejected_calls=0,failed_calls=0\r\n" +
+		"cmdstat_del:calls=2,usec=40,usec_per_call=20.00,rejected_calls=0,failed_calls=0\r\n"
 
 	const replicaInfo = "# Server\r\n" +
 		"redis_version:7.2.0\r\n" +
@@ -55,10 +60,15 @@ func TestRedisCollector_Collect(t *testing.T) {
 		"master_repl_offset:3000\r\n" +
 		"slave_repl_offset:2500\r\n" +
 		"# Stats\r\n" +
+		"rejected_connections:1\r\n" +
+		"evicted_keys:0\r\n" +
 		"total_commands_processed:5\r\n" +
 		"instantaneous_ops_per_sec:11\r\n" +
 		"keyspace_hits:6\r\n" +
-		"keyspace_misses:1\r\n"
+		"keyspace_misses:1\r\n" +
+		"cmdstat_get:calls=4,usec=100,usec_per_call=25.00,rejected_calls=0,failed_calls=0\r\n" +
+		"cmdstat_set:calls=1,usec=50,usec_per_call=50.00,rejected_calls=0,failed_calls=0\r\n" +
+		"cmdstat_del:calls=0,usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=0\r\n"
 
 	tests := []struct {
 		name            string
@@ -69,17 +79,21 @@ func TestRedisCollector_Collect(t *testing.T) {
 		expectedUp      float64
 		expectedFenced  float64
 		expectedCmds    float64
+		expectedGetCmds float64
+		expectedRejects float64
 		expectedLag     float64
 		expectLagMetric bool
 	}{
 		{
-			name:           "master exports counters and gauges",
-			client:         stubRedisClient{info: masterInfo},
-			fenced:         true,
-			expectedRole:   "master",
-			expectedUp:     1,
-			expectedFenced: 1,
-			expectedCmds:   42,
+			name:            "master exports counters and gauges",
+			client:          stubRedisClient{info: masterInfo},
+			fenced:          true,
+			expectedRole:    "master",
+			expectedUp:      1,
+			expectedFenced:  1,
+			expectedCmds:    42,
+			expectedGetCmds: 20,
+			expectedRejects: 3,
 		},
 		{
 			name:            "replica exports role and lag",
@@ -88,6 +102,8 @@ func TestRedisCollector_Collect(t *testing.T) {
 			expectedUp:      1,
 			expectedFenced:  0,
 			expectedCmds:    5,
+			expectedGetCmds: 4,
+			expectedRejects: 1,
 			expectedLag:     500,
 			expectLagMetric: true,
 		},
@@ -135,6 +151,21 @@ func TestRedisCollector_Collect(t *testing.T) {
 				cmdMetric := metricForLabels(t, families["redis_total_commands_processed"], baseLabels)
 				require.NotNil(t, cmdMetric.GetCounter())
 				assert.Equal(t, tt.expectedCmds, cmdMetric.GetCounter().GetValue())
+
+				rejectedMetric := metricForLabels(t, families["redis_rejected_connections_total"], baseLabels)
+				require.NotNil(t, rejectedMetric.GetCounter())
+				assert.Equal(t, tt.expectedRejects, rejectedMetric.GetCounter().GetValue())
+
+				getCommandLabels := map[string]string{
+					"namespace": "default",
+					"cluster":   "redis-sample",
+					"pod":       "redis-sample-0",
+					"role":      tt.expectedRole,
+					"command":   "get",
+				}
+				getCommandMetric := metricForLabels(t, families["redis_command_calls_total"], getCommandLabels)
+				require.NotNil(t, getCommandMetric.GetCounter())
+				assert.Equal(t, tt.expectedGetCmds, getCommandMetric.GetCounter().GetValue())
 
 				infoLabels := map[string]string{
 					"namespace":     "default",
