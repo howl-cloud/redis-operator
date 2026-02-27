@@ -119,12 +119,25 @@ func (s *fakeRedisServer) handleConn(conn net.Conn) {
 			s.mu.Lock()
 			role := s.role
 			offset := s.replOffset
+			masterHost := s.slaveOfHost
+			masterPort := s.slaveOfPort
 			s.mu.Unlock()
 			var info string
 			if role == "master" {
 				info = fmt.Sprintf("# Replication\r\nrole:master\r\nconnected_slaves:2\r\nmaster_repl_offset:%d\r\n", offset)
 			} else {
-				info = fmt.Sprintf("# Replication\r\nrole:slave\r\nmaster_link_status:up\r\nslave_repl_offset:%d\r\n", offset)
+				if masterHost == "" {
+					masterHost = "unknown"
+				}
+				if masterPort == "" {
+					masterPort = "0"
+				}
+				info = fmt.Sprintf(
+					"# Replication\r\nrole:slave\r\nmaster_host:%s\r\nmaster_port:%s\r\nmaster_link_status:up\r\nslave_repl_offset:%d\r\n",
+					masterHost,
+					masterPort,
+					offset,
+				)
 			}
 			_, _ = fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(info), info)
 		case "CONFIG":
@@ -629,9 +642,19 @@ func TestReconcileRole_AlreadyCorrectReplica(t *testing.T) {
 	srv, redisClient := newFakeRedisServer(t)
 	srv.mu.Lock()
 	srv.role = "slave"
+	srv.slaveOfHost = "10.244.0.5"
+	srv.slaveOfPort = "6379"
 	srv.mu.Unlock()
 
+	primaryPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-0", Namespace: "default"},
+		Status:     corev1.PodStatus{PodIP: "10.244.0.5"},
+	}
+	scheme := testScheme()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(primaryPod).Build()
+
 	rec := &InstanceReconciler{
+		client:      fakeClient,
 		redisClient: redisClient,
 		podName:     "test-1",
 		namespace:   "default",
@@ -647,6 +670,75 @@ func TestReconcileRole_AlreadyCorrectReplica(t *testing.T) {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	assert.False(t, srv.slaveOfCalled, "should not call SLAVEOF when already a replica")
+}
+
+func TestReconcileRole_ReplicaMode_EnsuresExternalReplication(t *testing.T) {
+	srv, redisClient := newFakeRedisServer(t)
+	srv.mu.Lock()
+	srv.role = "master"
+	srv.mu.Unlock()
+
+	rec := &InstanceReconciler{
+		redisClient: redisClient,
+		podName:     "test-0",
+		namespace:   "default",
+		recorder:    record.NewFakeRecorder(100),
+	}
+
+	cluster := newTestCluster("test", "default")
+	cluster.Status.CurrentPrimary = "test-0"
+	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: 6380,
+		},
+	}
+
+	err := rec.reconcileRole(context.Background(), cluster)
+	require.NoError(t, err)
+
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	assert.True(t, srv.slaveOfCalled)
+	assert.Equal(t, "external-primary", srv.slaveOfHost)
+	assert.Equal(t, "6380", srv.slaveOfPort)
+}
+
+func TestReconcileRole_ReplicaModePromote_PromotesCurrentPrimary(t *testing.T) {
+	srv, redisClient := newFakeRedisServer(t)
+	srv.mu.Lock()
+	srv.role = "slave"
+	srv.slaveOfHost = "external-primary"
+	srv.slaveOfPort = "6379"
+	srv.mu.Unlock()
+
+	rec := &InstanceReconciler{
+		redisClient: redisClient,
+		podName:     "test-0",
+		namespace:   "default",
+		recorder:    record.NewFakeRecorder(100),
+	}
+
+	cluster := newTestCluster("test", "default")
+	cluster.Status.CurrentPrimary = "test-0"
+	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+		Promote: true,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: 6379,
+		},
+	}
+
+	err := rec.reconcileRole(context.Background(), cluster)
+	require.NoError(t, err)
+
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	assert.True(t, srv.slaveOfCalled)
+	assert.Equal(t, "NO", srv.slaveOfHost)
+	assert.Equal(t, "ONE", srv.slaveOfPort)
 }
 
 func TestReconcileSecrets_NoSecretRefs(t *testing.T) {
@@ -666,6 +758,48 @@ func TestReconcileSecrets_NoSecretRefs(t *testing.T) {
 
 	err := rec.reconcileSecrets(context.Background(), cluster)
 	require.NoError(t, err)
+}
+
+func TestReconcileSecrets_ReplicaModeAuthOverridesMasterAuth(t *testing.T) {
+	srv, redisClient := newFakeRedisServer(t)
+	projectedDir := t.TempDir()
+	t.Setenv(envProjectedSecretsDir, projectedDir)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(projectedDir, "local-auth"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(projectedDir, "external-auth"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(projectedDir, "local-auth", "password"), []byte("local-pass"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(projectedDir, "external-auth", "password"), []byte("external-pass"), 0o600))
+
+	rec := &InstanceReconciler{
+		redisClient: redisClient,
+		podName:     "test-0",
+		namespace:   "default",
+	}
+
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+		},
+		Spec: redisv1.RedisClusterSpec{
+			AuthSecret: &redisv1.LocalObjectReference{Name: "local-auth"},
+			ReplicaMode: &redisv1.ReplicaModeSpec{
+				Enabled: true,
+				Source: &redisv1.ReplicaSourceSpec{
+					Host:           "external-primary",
+					Port:           6379,
+					AuthSecretName: "external-auth",
+				},
+			},
+		},
+	}
+
+	err := rec.reconcileSecrets(context.Background(), cluster)
+	require.NoError(t, err)
+
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	assert.Equal(t, "local-pass", srv.configValues["requirepass"])
+	assert.Equal(t, "external-pass", srv.configValues["masterauth"])
 }
 
 func TestReconcileSecrets_AuthSecretMissing(t *testing.T) {

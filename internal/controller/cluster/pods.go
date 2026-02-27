@@ -187,15 +187,29 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 	}
 
 	var projectedSources []corev1.VolumeProjection
+	projectedSecretNames := map[string]struct{}{}
 	secretRefs := []*redisv1.LocalObjectReference{
 		cluster.Spec.AuthSecret,
 		cluster.Spec.ACLConfigSecret,
 	}
 	for _, ref := range secretRefs {
-		if ref != nil {
+		if ref != nil && ref.Name != "" {
+			projectedSecretNames[ref.Name] = struct{}{}
+		}
+	}
+	if sourceAuthSecretName := replicaModeSourceAuthSecretName(cluster); sourceAuthSecretName != "" {
+		projectedSecretNames[sourceAuthSecretName] = struct{}{}
+	}
+	if len(projectedSecretNames) > 0 {
+		secretNames := make([]string, 0, len(projectedSecretNames))
+		for name := range projectedSecretNames {
+			secretNames = append(secretNames, name)
+		}
+		sort.Strings(secretNames)
+		for _, name := range secretNames {
 			projectedSources = append(projectedSources, corev1.VolumeProjection{
 				Secret: &corev1.SecretProjection{
-					LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+					LocalObjectReference: corev1.LocalObjectReference{Name: name},
 				},
 			})
 		}

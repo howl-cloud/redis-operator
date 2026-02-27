@@ -36,6 +36,9 @@ func (r *ClusterReconciler) reconcileSecrets(ctx context.Context, cluster *redis
 		"caSecret":                cluster.Spec.CASecret,
 		"backupCredentialsSecret": cluster.Spec.BackupCredentialsSecret,
 	}
+	if sourceAuthSecret := replicaModeSourceAuthSecretName(cluster); sourceAuthSecret != "" {
+		secretRefs["replicaMode.source.authSecretName"] = &redisv1.LocalObjectReference{Name: sourceAuthSecret}
+	}
 
 	newVersions := make(map[string]string)
 	for refName, ref := range secretRefs {

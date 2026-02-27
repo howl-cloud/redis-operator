@@ -158,7 +158,7 @@ func TestWriteRedisConf_BasicConfig(t *testing.T) {
 	tmpDir := overrideDataDir(t)
 
 	cluster := &redisv1.RedisCluster{}
-	err := writeRedisConf(cluster, "")
+	err := writeRedisConf(cluster, "", "")
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(tmpDir, "redis.conf"))
@@ -181,7 +181,7 @@ func TestWriteRedisConf_WithReplicaOf(t *testing.T) {
 	overrideDataDir(t)
 
 	cluster := &redisv1.RedisCluster{}
-	err := writeRedisConf(cluster, "replicaof 10.0.0.1 6379")
+	err := writeRedisConf(cluster, "replicaof 10.0.0.1 6379", "")
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(redisConfPath)
@@ -189,6 +189,21 @@ func TestWriteRedisConf_WithReplicaOf(t *testing.T) {
 	content := string(data)
 
 	assert.Contains(t, content, "replicaof 10.0.0.1 6379")
+}
+
+func TestWriteRedisConf_WithMasterAuth(t *testing.T) {
+	overrideDataDir(t)
+
+	cluster := &redisv1.RedisCluster{}
+	err := writeRedisConf(cluster, "replicaof 10.0.0.1 6379", "external-password")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(redisConfPath)
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "replicaof 10.0.0.1 6379")
+	assert.Contains(t, content, "masterauth external-password")
 }
 
 func TestWriteRedisConf_WithRedisParams(t *testing.T) {
@@ -202,7 +217,7 @@ func TestWriteRedisConf_WithRedisParams(t *testing.T) {
 			},
 		},
 	}
-	err := writeRedisConf(cluster, "")
+	err := writeRedisConf(cluster, "", "")
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(redisConfPath)
@@ -221,7 +236,7 @@ func TestWriteRedisConf_WithACLConfig(t *testing.T) {
 			ACLConfigSecret: &redisv1.LocalObjectReference{Name: "acl-secret"},
 		},
 	}
-	err := writeRedisConf(cluster, "")
+	err := writeRedisConf(cluster, "", "")
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(redisConfPath)
@@ -243,7 +258,7 @@ func TestWriteRedisConf_AllOptions(t *testing.T) {
 			ACLConfigSecret: &redisv1.LocalObjectReference{Name: "my-acl"},
 		},
 	}
-	err := writeRedisConf(cluster, "replicaof 10.0.0.5 6379")
+	err := writeRedisConf(cluster, "replicaof 10.0.0.5 6379", "")
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(redisConfPath)
@@ -266,7 +281,7 @@ func TestWriteRedisConf_WithTLS(t *testing.T) {
 		},
 	}
 
-	err := writeRedisConf(cluster, "")
+	err := writeRedisConf(cluster, "", "")
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(redisConfPath)
@@ -294,7 +309,7 @@ func TestWriteRedisConf_WithTLSInSentinelMode(t *testing.T) {
 		},
 	}
 
-	err := writeRedisConf(cluster, "")
+	err := writeRedisConf(cluster, "", "")
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(redisConfPath)
@@ -436,7 +451,7 @@ func TestWriteRedisConf_CreatesDirectory(t *testing.T) {
 	})
 
 	cluster := &redisv1.RedisCluster{}
-	err := writeRedisConf(cluster, "")
+	err := writeRedisConf(cluster, "", "")
 	require.NoError(t, err)
 
 	// Verify the nested directory was created.
@@ -454,7 +469,7 @@ func TestWriteRedisConf_EndsWithNewline(t *testing.T) {
 	overrideDataDir(t)
 
 	cluster := &redisv1.RedisCluster{}
-	err := writeRedisConf(cluster, "")
+	err := writeRedisConf(cluster, "", "")
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(redisConfPath)

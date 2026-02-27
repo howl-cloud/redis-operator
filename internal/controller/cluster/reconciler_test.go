@@ -1652,3 +1652,117 @@ func TestReconcile_SentinelModeContinuesWhenRollingUpdateStops(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, sentinelPods.Items, redisv1.SentinelInstances)
 }
+
+func TestReconcileReplicaModePromotion_FinalizesPromotion(t *testing.T) {
+	cluster := newTestCluster("test", "default", 2)
+	cluster.Status.CurrentPrimary = "test-0"
+	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+		Promote: true,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: 6379,
+		},
+	}
+
+	r, c := newReconciler(cluster)
+	ctx := context.Background()
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Role: "master", Connected: true},
+		"test-1": {Role: "slave", Connected: true, MasterLinkStatus: "up"},
+	}
+
+	promoted, err := r.reconcileReplicaModePromotion(ctx, cluster, statuses)
+	require.NoError(t, err)
+	assert.True(t, promoted)
+
+	var updated redisv1.RedisCluster
+	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updated)
+	require.NoError(t, err)
+	require.NotNil(t, updated.Spec.ReplicaMode)
+	assert.False(t, updated.Spec.ReplicaMode.Enabled)
+	assert.False(t, updated.Spec.ReplicaMode.Promote)
+
+	var promotedCondition *metav1.Condition
+	for i := range updated.Status.Conditions {
+		if updated.Status.Conditions[i].Type == redisv1.ConditionReplicaMode {
+			promotedCondition = &updated.Status.Conditions[i]
+			break
+		}
+	}
+	require.NotNil(t, promotedCondition)
+	assert.Equal(t, metav1.ConditionFalse, promotedCondition.Status)
+	assert.Equal(t, "ReplicaClusterPromoted", promotedCondition.Reason)
+}
+
+func TestReconcileReplicaModePromotion_WaitsForLocalLeaderPromotion(t *testing.T) {
+	cluster := newTestCluster("test", "default", 2)
+	cluster.Status.CurrentPrimary = "test-0"
+	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+		Promote: true,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: 6379,
+		},
+	}
+
+	r, c := newReconciler(cluster)
+	ctx := context.Background()
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Role: "slave", Connected: true, MasterLinkStatus: "up"},
+		"test-1": {Role: "slave", Connected: true, MasterLinkStatus: "up"},
+	}
+
+	promoted, err := r.reconcileReplicaModePromotion(ctx, cluster, statuses)
+	require.NoError(t, err)
+	assert.False(t, promoted)
+
+	var updated redisv1.RedisCluster
+	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updated)
+	require.NoError(t, err)
+	require.NotNil(t, updated.Spec.ReplicaMode)
+	assert.True(t, updated.Spec.ReplicaMode.Enabled)
+	assert.True(t, updated.Spec.ReplicaMode.Promote)
+}
+
+func TestReconcileReplicaModePromotion_FinalizesAfterSpecAlreadyDisabled(t *testing.T) {
+	cluster := newTestCluster("test", "default", 2)
+	cluster.Status.CurrentPrimary = "test-0"
+	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: false,
+		Promote: false,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: 6379,
+		},
+	}
+
+	r, c := newReconciler(cluster)
+	ctx := context.Background()
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Role: "master", Connected: true},
+	}
+
+	promoted, err := r.reconcileReplicaModePromotion(ctx, cluster, statuses)
+	require.NoError(t, err)
+	assert.True(t, promoted)
+
+	var updated redisv1.RedisCluster
+	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updated)
+	require.NoError(t, err)
+	require.NotNil(t, updated.Spec.ReplicaMode)
+	assert.False(t, updated.Spec.ReplicaMode.Enabled)
+	assert.False(t, updated.Spec.ReplicaMode.Promote)
+
+	var promotedCondition *metav1.Condition
+	for i := range updated.Status.Conditions {
+		if updated.Status.Conditions[i].Type == redisv1.ConditionReplicaMode {
+			promotedCondition = &updated.Status.Conditions[i]
+			break
+		}
+	}
+	require.NotNil(t, promotedCondition)
+	assert.Equal(t, metav1.ConditionFalse, promotedCondition.Status)
+	assert.Equal(t, "ReplicaClusterPromoted", promotedCondition.Reason)
+}

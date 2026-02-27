@@ -597,6 +597,58 @@ func TestUpdateStatus_StillDegraded_NoClusterReadyEvent(t *testing.T) {
 	}
 }
 
+func TestReconcileReplicaModePromotion_EmitsEvent(t *testing.T) {
+	cluster := newTestCluster("test", "default", 2)
+	cluster.Status.CurrentPrimary = "test-0"
+	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+		Promote: true,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: 6379,
+		},
+	}
+
+	r, _, recorder := newReconcilerWithRecorder(cluster)
+	ctx := context.Background()
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Role: "master", Connected: true},
+	}
+
+	promoted, err := r.reconcileReplicaModePromotion(ctx, cluster, statuses)
+	require.NoError(t, err)
+	assert.True(t, promoted)
+
+	events := drainEvents(recorder)
+	assertContainsEvent(t, events, "Normal", "ReplicaClusterPromoted", "Replica cluster promoted")
+}
+
+func TestReconcileReplicaModePromotion_EmitsEventWhenFinalizingPendingStatus(t *testing.T) {
+	cluster := newTestCluster("test", "default", 2)
+	cluster.Status.CurrentPrimary = "test-0"
+	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: false,
+		Promote: false,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: 6379,
+		},
+	}
+
+	r, _, recorder := newReconcilerWithRecorder(cluster)
+	ctx := context.Background()
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Role: "master", Connected: true},
+	}
+
+	promoted, err := r.reconcileReplicaModePromotion(ctx, cluster, statuses)
+	require.NoError(t, err)
+	assert.True(t, promoted)
+
+	events := drainEvents(recorder)
+	assertContainsEvent(t, events, "Normal", "ReplicaClusterPromoted", "Replica cluster promoted")
+}
+
 // --- rolling_update.go events ---
 
 func TestRollingUpdate_Started_EmitsEvent(t *testing.T) {

@@ -264,10 +264,20 @@ func TestReconcileRole_AlreadyReplica_NoEvent(t *testing.T) {
 	srv, redisClient := newFakeRedisServer(t)
 	srv.mu.Lock()
 	srv.role = "slave" // Already correct.
+	srv.slaveOfHost = "10.244.0.5"
+	srv.slaveOfPort = "6379"
 	srv.mu.Unlock()
+
+	primaryPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-0", Namespace: "default"},
+		Status:     corev1.PodStatus{PodIP: "10.244.0.5"},
+	}
+	scheme := testScheme()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(primaryPod).Build()
 
 	rec := record.NewFakeRecorder(100)
 	r := &InstanceReconciler{
+		client:      fakeClient,
 		redisClient: redisClient,
 		recorder:    rec,
 		podName:     "test-1",

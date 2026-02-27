@@ -135,6 +135,15 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 	setClusterInstancesMetrics(cluster, len(instanceStatuses))
 	setClusterPhaseMetric(cluster)
 
+	// Step 5.3: Finalize replica-mode promotion once the designated leader is primary.
+	promoted, err := r.reconcileReplicaModePromotion(ctx, cluster, instanceStatuses)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("reconciling replica mode promotion: %w", err)
+	}
+	if promoted {
+		return reconcile.Result{RequeueAfter: requeueInterval}, nil
+	}
+
 	// Step 5.5: Automatic failover (standalone mode) when current primary is unreachable.
 	if !maintenance && shouldTriggerFailover(cluster, instanceStatuses) {
 		if err := r.failover(ctx, cluster); err != nil {

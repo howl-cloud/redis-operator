@@ -76,6 +76,31 @@ func TestDeterminePhase_FewerInstancesThanDesired(t *testing.T) {
 	assert.Equal(t, redisv1.ClusterPhaseDegraded, phase)
 }
 
+func TestDeterminePhase_ReplicaModeReplicating(t *testing.T) {
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			Instances: 2,
+			ReplicaMode: &redisv1.ReplicaModeSpec{
+				Enabled: true,
+				Source: &redisv1.ReplicaSourceSpec{
+					Host: "external-primary",
+					Port: 6379,
+				},
+			},
+		},
+		Status: redisv1.RedisClusterStatus{
+			CurrentPrimary: "test-0",
+		},
+	}
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Role: "slave", Connected: true, MasterLinkStatus: "up"},
+		"test-1": {Role: "slave", Connected: true, MasterLinkStatus: "up"},
+	}
+
+	phase := determinePhase(cluster, statuses)
+	assert.Equal(t, redisv1.ClusterPhaseReplicating, phase)
+}
+
 func TestDetermineConditions_WithConnectedMaster(t *testing.T) {
 	cluster := &redisv1.RedisCluster{
 		Status: redisv1.RedisClusterStatus{
@@ -192,6 +217,41 @@ func TestDetermineConditions_SingleInstanceNoReplicas(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, replCond.Status)
 }
 
+func TestDetermineConditions_ReplicaModeIncludesReplicaCondition(t *testing.T) {
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			ReplicaMode: &redisv1.ReplicaModeSpec{
+				Enabled: true,
+				Source: &redisv1.ReplicaSourceSpec{
+					Host: "external-primary",
+					Port: 6379,
+				},
+			},
+		},
+		Status: redisv1.RedisClusterStatus{
+			CurrentPrimary: "test-0",
+		},
+	}
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Role: "slave", Connected: true, MasterLinkStatus: "up"},
+		"test-1": {Role: "slave", Connected: true, MasterLinkStatus: "up"},
+	}
+
+	conditions := determineConditions(cluster, statuses)
+
+	var replicaModeCond *metav1.Condition
+	for i := range conditions {
+		if conditions[i].Type == redisv1.ConditionReplicaMode {
+			replicaModeCond = &conditions[i]
+			break
+		}
+	}
+
+	assert.NotNil(t, replicaModeCond)
+	assert.Equal(t, metav1.ConditionTrue, replicaModeCond.Status)
+	assert.Equal(t, "ReplicatingFromExternal", replicaModeCond.Reason)
+}
+
 func TestCheckReachability_AllReachable(t *testing.T) {
 	r := &ClusterReconciler{}
 	cluster := &redisv1.RedisCluster{
@@ -279,6 +339,33 @@ func TestShouldTriggerFailover_FalseInSentinelMode(t *testing.T) {
 		Spec: redisv1.RedisClusterSpec{
 			Instances: 3,
 			Mode:      redisv1.ClusterModeSentinel,
+		},
+		Status: redisv1.RedisClusterStatus{
+			CurrentPrimary: "test-0",
+		},
+	}
+
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Connected: false},
+		"test-1": {Connected: true},
+		"test-2": {Connected: true},
+	}
+
+	assert.False(t, shouldTriggerFailover(cluster, statuses))
+}
+
+func TestShouldTriggerFailover_FalseInReplicaMode(t *testing.T) {
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			Instances: 3,
+			Mode:      redisv1.ClusterModeStandalone,
+			ReplicaMode: &redisv1.ReplicaModeSpec{
+				Enabled: true,
+				Source: &redisv1.ReplicaSourceSpec{
+					Host: "external-primary",
+					Port: 6379,
+				},
+			},
 		},
 		Status: redisv1.RedisClusterStatus{
 			CurrentPrimary: "test-0",

@@ -47,6 +47,10 @@ func (r *ClusterReconciler) reconcileServices(ctx context.Context, cluster *redi
 		}
 	}
 
+	if err := r.reconcileLeaderServiceAnnotations(ctx, cluster); err != nil {
+		return fmt.Errorf("leader service annotations: %w", err)
+	}
+
 	// Update leader service selector to point to current primary.
 	if cluster.Status.CurrentPrimary != "" {
 		return r.updateLeaderServiceSelector(ctx, cluster)
@@ -130,6 +134,47 @@ func (r *ClusterReconciler) updateLeaderServiceSelector(ctx context.Context, clu
 
 	patch := client.MergeFrom(svc.DeepCopy())
 	svc.Spec.Selector = desiredSelector
+	return r.Patch(ctx, &svc, patch)
+}
+
+func (r *ClusterReconciler) reconcileLeaderServiceAnnotations(ctx context.Context, cluster *redisv1.RedisCluster) error {
+	svcName := leaderServiceName(cluster.Name)
+	var svc corev1.Service
+	if err := r.Get(ctx, types.NamespacedName{
+		Name: svcName, Namespace: cluster.Namespace,
+	}, &svc); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("getting leader service: %w", err)
+	}
+
+	desiredValue := ""
+	if isReplicaModeEnabled(cluster) {
+		desiredValue = "true"
+	}
+
+	currentValue := ""
+	if svc.Annotations != nil {
+		currentValue = svc.Annotations[leaderServiceReplicaModeAnnotation]
+	}
+
+	if currentValue == desiredValue && (desiredValue != "" || svc.Annotations == nil || svc.Annotations[leaderServiceReplicaModeAnnotation] == "") {
+		return nil
+	}
+
+	patch := client.MergeFrom(svc.DeepCopy())
+	if svc.Annotations == nil {
+		svc.Annotations = map[string]string{}
+	}
+	if desiredValue == "" {
+		delete(svc.Annotations, leaderServiceReplicaModeAnnotation)
+		if len(svc.Annotations) == 0 {
+			svc.Annotations = nil
+		}
+	} else {
+		svc.Annotations[leaderServiceReplicaModeAnnotation] = desiredValue
+	}
 	return r.Patch(ctx, &svc, patch)
 }
 

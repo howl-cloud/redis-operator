@@ -1123,6 +1123,44 @@ spec:
                   type: string
                 description: Redis contains redis.conf configuration parameters.
                 type: object
+              replicaMode:
+                description: ReplicaMode configures a full-cluster external replication
+                  topology for DR.
+                properties:
+                  enabled:
+                    description: Enabled toggles external replication mode for all
+                      data pods.
+                    type: boolean
+                  promote:
+                    description: Promote requests promotion of the local designated
+                      leader to standalone primary.
+                    type: boolean
+                  source:
+                    description: Source identifies the external Redis primary to replicate
+                      from.
+                    properties:
+                      authSecretName:
+                        description: AuthSecretName references a Secret with key "password"
+                          for upstream auth.
+                        type: string
+                      clusterName:
+                        description: ClusterName is a human-readable source cluster
+                          identifier.
+                        type: string
+                      host:
+                        description: Host is the external Redis endpoint.
+                        type: string
+                      port:
+                        default: 6379
+                        description: Port is the external Redis port.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                    required:
+                    - host
+                    type: object
+                type: object
               resources:
                 description: Resources defines CPU/memory requests and limits for
                   Redis containers.

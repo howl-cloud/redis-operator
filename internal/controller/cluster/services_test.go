@@ -99,6 +99,57 @@ func TestReconcileServices_AnyServiceTargetsDataWorkload(t *testing.T) {
 	assert.Equal(t, redisv1.LabelWorkloadData, anySvc.Spec.Selector[redisv1.LabelWorkload])
 }
 
+func TestReconcileServices_LeaderServiceAnnotatedInReplicaMode(t *testing.T) {
+	cluster := newTestCluster("test", "default", 2)
+	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: 6379,
+		},
+	}
+	r, c := newReconciler(cluster)
+	ctx := context.Background()
+
+	err := r.reconcileServices(ctx, cluster)
+	require.NoError(t, err)
+
+	var leaderSvc corev1.Service
+	err = c.Get(ctx, types.NamespacedName{Name: "test-leader", Namespace: "default"}, &leaderSvc)
+	require.NoError(t, err)
+	require.NotNil(t, leaderSvc.Annotations)
+	assert.Equal(t, "true", leaderSvc.Annotations[leaderServiceReplicaModeAnnotation])
+}
+
+func TestReconcileServices_LeaderServiceReplicaModeAnnotationRemoved(t *testing.T) {
+	cluster := newTestCluster("test", "default", 2)
+	leaderSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-leader",
+			Namespace: "default",
+			Annotations: map[string]string{
+				leaderServiceReplicaModeAnnotation: "true",
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+				redisv1.LabelCluster: "test",
+			},
+		},
+	}
+
+	r, c := newReconciler(cluster, leaderSvc)
+	ctx := context.Background()
+
+	err := r.reconcileServices(ctx, cluster)
+	require.NoError(t, err)
+
+	var updated corev1.Service
+	err = c.Get(ctx, types.NamespacedName{Name: "test-leader", Namespace: "default"}, &updated)
+	require.NoError(t, err)
+	assert.NotContains(t, updated.Annotations, leaderServiceReplicaModeAnnotation)
+}
+
 func TestUpdateLeaderServiceSelector_Updates(t *testing.T) {
 	cluster := newTestCluster("test", "default", 2)
 	cluster.Status.CurrentPrimary = "test-1"

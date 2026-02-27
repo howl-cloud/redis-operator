@@ -17,6 +17,8 @@ type Info struct {
 	MasterReplOffset       int64
 	SlaveReplOffset        int64  // only set when Role == "slave"
 	MasterLinkStatus       string // "up" or "down"
+	MasterHost             string
+	MasterPort             int
 	MasterLastIOSecondsAgo int
 }
 
@@ -82,6 +84,10 @@ func parseInfo(raw string) *Info {
 			info.SlaveReplOffset, _ = strconv.ParseInt(val, 10, 64)
 		case "master_link_status":
 			info.MasterLinkStatus = val
+		case "master_host":
+			info.MasterHost = val
+		case "master_port":
+			info.MasterPort, _ = strconv.Atoi(val)
 		case "master_last_io_seconds_ago":
 			info.MasterLastIOSecondsAgo, _ = strconv.Atoi(val)
 		}

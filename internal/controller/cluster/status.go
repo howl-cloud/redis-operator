@@ -128,6 +128,7 @@ func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.R
 		redisv1.ConditionMaintenanceInProgress,
 		redisv1.ConditionPrimaryUpdateWaiting,
 		redisv1.ConditionPVCResizeInProgress,
+		redisv1.ConditionReplicaMode,
 	)
 
 	return r.Status().Patch(ctx, cluster, patch)
@@ -205,6 +206,9 @@ func shouldTriggerFailover(cluster *redisv1.RedisCluster, statuses map[string]re
 	if cluster == nil {
 		return false
 	}
+	if isReplicaModeEnabled(cluster) {
+		return false
+	}
 	if cluster.Spec.Mode == redisv1.ClusterModeSentinel {
 		return false
 	}
@@ -233,6 +237,25 @@ func shouldTriggerFailover(cluster *redisv1.RedisCluster, statuses map[string]re
 func determinePhase(cluster *redisv1.RedisCluster, statuses map[string]redisv1.InstanceStatus) redisv1.ClusterPhase {
 	if len(statuses) == 0 {
 		return redisv1.ClusterPhaseCreating
+	}
+
+	if isReplicaModeEnabled(cluster) {
+		allConnected := true
+		allReplicating := true
+		for _, s := range statuses {
+			if !s.Connected {
+				allConnected = false
+				allReplicating = false
+				continue
+			}
+			if s.Role != "slave" || s.MasterLinkStatus != "up" {
+				allReplicating = false
+			}
+		}
+		if allConnected && allReplicating && int32(len(statuses)) >= cluster.Spec.Instances {
+			return redisv1.ClusterPhaseReplicating
+		}
+		return redisv1.ClusterPhaseDegraded
 	}
 
 	allConnected := true
@@ -264,6 +287,80 @@ func determinePhase(cluster *redisv1.RedisCluster, statuses map[string]redisv1.I
 func determineConditions(cluster *redisv1.RedisCluster, statuses map[string]redisv1.InstanceStatus) []metav1.Condition {
 	now := metav1.Now()
 	var conditions []metav1.Condition
+
+	if isReplicaModeEnabled(cluster) {
+		leaderStatus, leaderFound := statuses[cluster.Status.CurrentPrimary]
+		leaderConnected := leaderFound && leaderStatus.Connected
+
+		readyCondition := metav1.Condition{
+			Type:               redisv1.ConditionReady,
+			LastTransitionTime: now,
+		}
+		if leaderConnected {
+			readyCondition.Status = metav1.ConditionTrue
+			readyCondition.Reason = "ReplicaModeReady"
+			readyCondition.Message = "Replica-mode leader is reachable"
+		} else {
+			readyCondition.Status = metav1.ConditionFalse
+			readyCondition.Reason = "ReplicaModeLeaderUnavailable"
+			readyCondition.Message = "Replica-mode leader is not reachable"
+		}
+		conditions = append(conditions, readyCondition)
+
+		primaryAvailable := metav1.Condition{
+			Type:               redisv1.ConditionPrimaryAvailable,
+			LastTransitionTime: now,
+		}
+		if leaderConnected {
+			primaryAvailable.Status = metav1.ConditionTrue
+			primaryAvailable.Reason = "ReplicaLeaderAvailable"
+			primaryAvailable.Message = fmt.Sprintf("Replica leader %s is connected", cluster.Status.CurrentPrimary)
+		} else {
+			primaryAvailable.Status = metav1.ConditionFalse
+			primaryAvailable.Reason = "ReplicaLeaderUnavailable"
+			primaryAvailable.Message = "Replica leader is not available"
+		}
+		conditions = append(conditions, primaryAvailable)
+
+		replicationHealthy := metav1.Condition{
+			Type:               redisv1.ConditionReplicationHealthy,
+			LastTransitionTime: now,
+		}
+		allReplicasConnected := true
+		for _, s := range statuses {
+			if !s.Connected || s.Role != "slave" || s.MasterLinkStatus != "up" {
+				allReplicasConnected = false
+				break
+			}
+		}
+		if allReplicasConnected && len(statuses) > 0 {
+			replicationHealthy.Status = metav1.ConditionTrue
+			replicationHealthy.Reason = "ExternalReplicationHealthy"
+			replicationHealthy.Message = "All instances are replicating from the external source"
+		} else {
+			replicationHealthy.Status = metav1.ConditionFalse
+			replicationHealthy.Reason = "ExternalReplicationDegraded"
+			replicationHealthy.Message = "One or more instances are not replicating from the external source"
+		}
+		conditions = append(conditions, replicationHealthy)
+
+		replicaModeCondition := metav1.Condition{
+			Type:               redisv1.ConditionReplicaMode,
+			LastTransitionTime: now,
+		}
+		if allReplicasConnected && len(statuses) > 0 {
+			replicaModeCondition.Status = metav1.ConditionTrue
+			replicaModeCondition.Reason = "ReplicatingFromExternal"
+			replicaModeCondition.Message = "Replica mode is enabled and external replication is healthy"
+		} else {
+			replicaModeCondition.Status = metav1.ConditionFalse
+			replicaModeCondition.Reason = "ExternalReplicationUnhealthy"
+			replicaModeCondition.Message = "Replica mode is enabled but external replication is unhealthy"
+		}
+		conditions = append(conditions, replicaModeCondition)
+
+		return conditions
+	}
 
 	// Ready condition.
 	ready := false

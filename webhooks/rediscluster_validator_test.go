@@ -192,6 +192,90 @@ func TestValidateCreate_TLSAndCASecretsSet(t *testing.T) {
 	assert.Nil(t, warnings)
 }
 
+func TestValidateCreate_ReplicaModeEnabledRequiresSource(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+	}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), replicaModeSourceRequiredMessage)
+}
+
+func TestValidateCreate_ReplicaModeSourceRequiresHost(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+		Source:  &redisv1.ReplicaSourceSpec{Port: 6379},
+	}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), replicaModeHostRequiredMessage)
+}
+
+func TestValidateCreate_ReplicaModeSourceRejectsInvalidPort(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: -1,
+		},
+	}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be between 1 and 65535 when set")
+}
+
+func TestValidateCreate_ReplicaModeAuthSecretNotFound(t *testing.T) {
+	v := validatorWithReader(t)
+	cluster := validCluster()
+	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host:           "external-primary",
+			Port:           6379,
+			AuthSecretName: "missing-secret",
+		},
+	}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing-secret")
+}
+
+func TestValidateCreate_ReplicaModeValid(t *testing.T) {
+	authSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "replica-auth",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"password": []byte("secret"),
+		},
+	}
+	v := validatorWithReader(t, authSecret)
+	cluster := validCluster()
+	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host:           "external-primary",
+			Port:           6379,
+			AuthSecretName: "replica-auth",
+		},
+	}
+
+	warnings, err := v.ValidateCreate(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
 func TestValidateCreate_PrimaryUpdateApprovalAnnotationValid(t *testing.T) {
 	v := &RedisClusterValidator{}
 	cluster := validCluster()
@@ -299,6 +383,74 @@ func TestValidateUpdate_StorageSizeIncreaseAllowed(t *testing.T) {
 	warnings, err := v.ValidateUpdate(context.Background(), old, new)
 	assert.NoError(t, err)
 	assert.Nil(t, warnings)
+}
+
+func TestValidateUpdate_ReplicaModeDisableRequiresPromote(t *testing.T) {
+	v := &RedisClusterValidator{}
+	old := validCluster()
+	old.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: 6379,
+		},
+	}
+	new := validCluster()
+	new.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: false,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: 6379,
+		},
+	}
+
+	_, err := v.ValidateUpdate(context.Background(), old, new)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), replicaModeDisableMessage)
+}
+
+func TestValidateUpdate_ReplicaModeDisableAllowedAfterPromote(t *testing.T) {
+	v := &RedisClusterValidator{}
+	old := validCluster()
+	old.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+		Promote: true,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: 6379,
+		},
+	}
+	new := validCluster()
+	new.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: false,
+		Promote: false,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: 6379,
+		},
+	}
+
+	warnings, err := v.ValidateUpdate(context.Background(), old, new)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
+func TestValidateUpdate_ReplicaModePromoteRequiresPreviouslyEnabled(t *testing.T) {
+	v := &RedisClusterValidator{}
+	old := validCluster()
+	new := validCluster()
+	new.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
+		Enabled: true,
+		Promote: true,
+		Source: &redisv1.ReplicaSourceSpec{
+			Host: "external-primary",
+			Port: 6379,
+		},
+	}
+
+	_, err := v.ValidateUpdate(context.Background(), old, new)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "replicaMode.promote can only be set after replicaMode is already enabled")
 }
 
 func TestValidateUpdate_StorageSizeDecreaseRejected(t *testing.T) {

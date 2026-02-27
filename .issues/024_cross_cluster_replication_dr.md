@@ -5,9 +5,9 @@ priority: p1
 type: feature
 labels: [production-readiness, high-availability, disaster-recovery, replication]
 created: 2026-02-23
-updated: 2026-02-24
+updated: 2026-02-27
 depends_on: [14, 15]
-completed: false
+completed: true
 ---
 
 ## Summary
@@ -84,12 +84,12 @@ Promotion (on region A failure):
 
 ## Acceptance Criteria
 
-- [ ] `spec.replicaMode.enabled: true` causes all instances to replicate from the external source
-- [ ] Replica cluster serves read-only queries while in replica mode
-- [ ] Setting `spec.replicaMode.promote: true` promotes the cluster to an independent primary
-- [ ] Promotion is recorded as an event and status condition
-- [ ] Webhook rejects `replicaMode.source` with missing or invalid fields
-- [ ] E2E test: create primary cluster → write data → create replica cluster → verify data replicates → promote replica → write to promoted cluster → verify
+- [x] `spec.replicaMode.enabled: true` causes all instances to replicate from the external source
+- [x] Replica cluster serves read-only queries while in replica mode
+- [x] Setting `spec.replicaMode.promote: true` promotes the cluster to an independent primary
+- [x] Promotion is recorded as an event and status condition
+- [x] Webhook rejects `replicaMode.source` with missing or invalid fields
+- [x] E2E test: create primary cluster → write data → create replica cluster → verify data replicates → promote replica → write to promoted cluster → verify
 
 ## Notes
 

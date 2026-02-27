@@ -33,6 +33,7 @@ const (
 	ClusterPhaseCreating       ClusterPhase = "Creating"
 	ClusterPhaseHealthy        ClusterPhase = "Healthy"
 	ClusterPhaseDegraded       ClusterPhase = "Degraded"
+	ClusterPhaseReplicating    ClusterPhase = "Replicating"
 	ClusterPhaseFailingOver    ClusterPhase = "FailingOver"
 	ClusterPhaseScaling        ClusterPhase = "Scaling"
 	ClusterPhaseUpdating       ClusterPhase = "Updating"
@@ -46,6 +47,7 @@ const (
 	ConditionReady                 = "Ready"
 	ConditionPrimaryAvailable      = "PrimaryAvailable"
 	ConditionReplicationHealthy    = "ReplicationHealthy"
+	ConditionReplicaMode           = "ReplicaMode"
 	ConditionPrimaryUpdateWaiting  = "PrimaryUpdateWaiting"
 	ConditionLastBackupSucceeded   = "LastBackupSucceeded"
 	ConditionHibernated            = "Hibernated"
@@ -179,6 +181,10 @@ type RedisClusterSpec struct {
 	// NodeMaintenanceWindow controls planned node maintenance behavior.
 	// +optional
 	NodeMaintenanceWindow *NodeMaintenanceWindow `json:"nodeMaintenanceWindow,omitempty"`
+
+	// ReplicaMode configures a full-cluster external replication topology for DR.
+	// +optional
+	ReplicaMode *ReplicaModeSpec `json:"replicaMode,omitempty"`
 }
 
 // StorageSpec defines PVC storage for Redis data.
@@ -213,6 +219,42 @@ type NodeMaintenanceWindow struct {
 	// +kubebuilder:default=true
 	// +optional
 	ReusePVC *bool `json:"reusePVC,omitempty"`
+}
+
+// ReplicaModeSpec defines external replication behavior for DR clusters.
+type ReplicaModeSpec struct {
+	// Enabled toggles external replication mode for all data pods.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Source identifies the external Redis primary to replicate from.
+	// +optional
+	Source *ReplicaSourceSpec `json:"source,omitempty"`
+
+	// Promote requests promotion of the local designated leader to standalone primary.
+	// +optional
+	Promote bool `json:"promote,omitempty"`
+}
+
+// ReplicaSourceSpec identifies an external Redis source.
+type ReplicaSourceSpec struct {
+	// ClusterName is a human-readable source cluster identifier.
+	// +optional
+	ClusterName string `json:"clusterName,omitempty"`
+
+	// Host is the external Redis endpoint.
+	Host string `json:"host"`
+
+	// Port is the external Redis port.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +kubebuilder:default=6379
+	// +optional
+	Port int32 `json:"port,omitempty"`
+
+	// AuthSecretName references a Secret with key "password" for upstream auth.
+	// +optional
+	AuthSecretName string `json:"authSecretName,omitempty"`
 }
 
 // PrimaryIsolationSpec defines runtime primary-isolation detection settings.

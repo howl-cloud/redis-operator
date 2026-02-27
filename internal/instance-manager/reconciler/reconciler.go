@@ -29,6 +29,7 @@ import (
 const (
 	envProjectedSecretsDir = "REDIS_OPERATOR_PROJECTED_SECRETS_DIR"
 	envACLFilePath         = "REDIS_OPERATOR_ACL_FILE_PATH"
+	defaultReplicaModePort = 6379
 )
 
 var (
@@ -177,6 +178,35 @@ func (r *InstanceReconciler) reconcileRole(ctx context.Context, cluster *redisv1
 		return fmt.Errorf("getting replication info: %w", err)
 	}
 
+	if replicaModeEnabled(cluster) {
+		sourceHost, sourcePort, err := replicaModeSourceEndpoint(cluster)
+		if err != nil {
+			return err
+		}
+
+		if cluster.Spec.ReplicaMode.Promote && cluster.Status.CurrentPrimary == r.podName {
+			if info.Role == "slave" {
+				r.recorder.Eventf(cluster, corev1.EventTypeNormal, "ReplicaModePromoteRequested", "Promoting pod %s out of replica mode", r.podName)
+				return replication.Promote(ctx, r.redisClient)
+			}
+			return nil
+		}
+
+		if info.Role != "slave" || info.MasterHost != sourceHost || info.MasterPort != sourcePort {
+			r.recorder.Eventf(
+				cluster,
+				corev1.EventTypeNormal,
+				"ReplicaModeSourceUpdated",
+				"Pod %s configured to replicate from external source %s:%d",
+				r.podName,
+				sourceHost,
+				sourcePort,
+			)
+			return replication.SetReplicaOf(ctx, r.redisClient, sourceHost, sourcePort)
+		}
+		return nil
+	}
+
 	isPrimary := cluster.Status.CurrentPrimary == r.podName
 
 	if isPrimary && info.Role == "slave" {
@@ -186,13 +216,30 @@ func (r *InstanceReconciler) reconcileRole(ctx context.Context, cluster *redisv1
 	}
 
 	if !isPrimary && info.Role == "master" {
-		// Should be a replica but is primary -- demote.
-		r.recorder.Eventf(cluster, corev1.EventTypeNormal, "DemotedToReplica", "Pod %s demoted to replica of %s", r.podName, cluster.Status.CurrentPrimary)
 		primaryIP, err := r.getPodIP(ctx, cluster.Status.CurrentPrimary, cluster.Namespace)
 		if err != nil {
 			return fmt.Errorf("resolving primary IP: %w", err)
 		}
-		return replication.SetReplicaOf(ctx, r.redisClient, primaryIP, 6379)
+		r.recorder.Eventf(cluster, corev1.EventTypeNormal, "DemotedToReplica", "Pod %s demoted to replica of %s", r.podName, cluster.Status.CurrentPrimary)
+		return replication.SetReplicaOf(ctx, r.redisClient, primaryIP, defaultReplicaModePort)
+	}
+
+	if !isPrimary && info.Role == "slave" {
+		primaryIP, err := r.getPodIP(ctx, cluster.Status.CurrentPrimary, cluster.Namespace)
+		if err != nil {
+			return fmt.Errorf("resolving primary IP: %w", err)
+		}
+		if info.MasterHost != primaryIP || info.MasterPort != defaultReplicaModePort {
+			r.recorder.Eventf(
+				cluster,
+				corev1.EventTypeNormal,
+				"ReplicaReconfigured",
+				"Pod %s reconfigured to replicate from primary %s",
+				r.podName,
+				cluster.Status.CurrentPrimary,
+			)
+			return replication.SetReplicaOf(ctx, r.redisClient, primaryIP, defaultReplicaModePort)
+		}
 	}
 
 	return nil
@@ -214,6 +261,8 @@ func (r *InstanceReconciler) reconcileConfig(ctx context.Context, cluster *redis
 
 // reconcileSecrets handles live secret rotation.
 func (r *InstanceReconciler) reconcileSecrets(ctx context.Context, cluster *redisv1.RedisCluster) error {
+	localAuthPassword := ""
+
 	// Auth secret: CONFIG SET requirepass.
 	if cluster.Spec.AuthSecret != nil {
 		password, err := r.readSecretKey(ctx, cluster.Namespace, cluster.Spec.AuthSecret.Name, "password")
@@ -224,6 +273,10 @@ func (r *InstanceReconciler) reconcileSecrets(ctx context.Context, cluster *redi
 			if err := r.redisClient.ConfigSet(ctx, "requirepass", password).Err(); err != nil {
 				return fmt.Errorf("CONFIG SET requirepass: %w", err)
 			}
+			if err := r.redisClient.ConfigSet(ctx, "masterauth", password).Err(); err != nil {
+				return fmt.Errorf("CONFIG SET masterauth: %w", err)
+			}
+			localAuthPassword = password
 		}
 	}
 
@@ -241,6 +294,28 @@ func (r *InstanceReconciler) reconcileSecrets(ctx context.Context, cluster *redi
 			if err := r.redisClient.Do(ctx, "ACL", "LOAD").Err(); err != nil {
 				return fmt.Errorf("ACL LOAD: %w", err)
 			}
+		}
+	}
+
+	// In replica mode, upstream auth may differ from local auth, so override masterauth.
+	if replicaModeEnabled(cluster) &&
+		cluster.Spec.ReplicaMode.Source != nil &&
+		strings.TrimSpace(cluster.Spec.ReplicaMode.Source.AuthSecretName) != "" {
+		authSecretName := strings.TrimSpace(cluster.Spec.ReplicaMode.Source.AuthSecretName)
+		password, err := r.readSecretKey(ctx, cluster.Namespace, authSecretName, "password")
+		if err != nil {
+			return fmt.Errorf("reading replica mode auth secret: %w", err)
+		}
+		if password == "" {
+			return fmt.Errorf("replica mode auth secret %s/password is empty or missing", authSecretName)
+		}
+		if err := r.redisClient.ConfigSet(ctx, "masterauth", password).Err(); err != nil {
+			return fmt.Errorf("CONFIG SET masterauth for replica mode: %w", err)
+		}
+	} else if localAuthPassword == "" {
+		// Outside replica mode, avoid stale upstream auth by clearing masterauth.
+		if err := r.redisClient.ConfigSet(ctx, "masterauth", "").Err(); err != nil {
+			return fmt.Errorf("CONFIG SET masterauth clear: %w", err)
 		}
 	}
 
@@ -397,4 +472,25 @@ func resolveACLFilePath() string {
 		return p
 	}
 	return usersACLFilePath
+}
+
+func replicaModeEnabled(cluster *redisv1.RedisCluster) bool {
+	return cluster != nil &&
+		cluster.Spec.ReplicaMode != nil &&
+		cluster.Spec.ReplicaMode.Enabled
+}
+
+func replicaModeSourceEndpoint(cluster *redisv1.RedisCluster) (string, int, error) {
+	if cluster == nil || cluster.Spec.ReplicaMode == nil || cluster.Spec.ReplicaMode.Source == nil {
+		return "", 0, fmt.Errorf("replica mode source is not configured")
+	}
+	host := strings.TrimSpace(cluster.Spec.ReplicaMode.Source.Host)
+	if host == "" {
+		return "", 0, fmt.Errorf("replica mode source host is empty")
+	}
+	port := int(cluster.Spec.ReplicaMode.Source.Port)
+	if port <= 0 {
+		port = defaultReplicaModePort
+	}
+	return host, port, nil
 }

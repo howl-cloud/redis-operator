@@ -3,6 +3,7 @@ package webhooks
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -34,6 +35,10 @@ const (
 	caSecretRequiredMessage          = "caSecret is required when tlsSecret is set"
 	primaryUpdateApprovalValue       = `must be "true" when present`
 	maintenanceSingleInstanceMessage = "nodeMaintenanceWindow.reusePVC=false is not allowed for single-instance clusters; set reusePVC=true or scale up first"
+	replicaModeSourceRequiredMessage = "source is required when replicaMode.enabled=true"
+	replicaModeHostRequiredMessage   = "source.host is required when replicaMode.enabled=true"
+	replicaModePromoteMessage        = "replicaMode.promote=true requires replicaMode.enabled=true"
+	replicaModeDisableMessage        = "replicaMode.enabled cannot be disabled directly; set replicaMode.promote=true first"
 )
 
 // SetupValidatingWebhookWithManager registers the validating webhook with the manager.
@@ -177,6 +182,7 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 		))
 	}
 
+	allErrs = append(allErrs, v.validateReplicaMode(ctx, cluster)...)
 	allErrs = append(allErrs, v.validateBootstrapReference(ctx, cluster)...)
 
 	return allErrs
@@ -245,7 +251,106 @@ func (v *RedisClusterValidator) validateUpdate(ctx context.Context, oldCluster, 
 		))
 	}
 
+	oldReplicaEnabled := replicaModeEnabled(oldCluster.Spec.ReplicaMode)
+	newReplicaEnabled := replicaModeEnabled(newCluster.Spec.ReplicaMode)
+	if oldReplicaEnabled && !newReplicaEnabled {
+		oldPromoteRequested := oldCluster.Spec.ReplicaMode != nil && oldCluster.Spec.ReplicaMode.Promote
+		if !oldPromoteRequested {
+			allErrs = append(allErrs, field.Forbidden(
+				specPath.Child("replicaMode", "enabled"),
+				replicaModeDisableMessage,
+			))
+		}
+	}
+
+	newPromoteRequested := newCluster.Spec.ReplicaMode != nil && newCluster.Spec.ReplicaMode.Promote
+	if !oldReplicaEnabled && newPromoteRequested {
+		allErrs = append(allErrs, field.Forbidden(
+			specPath.Child("replicaMode", "promote"),
+			"replicaMode.promote can only be set after replicaMode is already enabled",
+		))
+	}
+
 	return allErrs
+}
+
+func (v *RedisClusterValidator) validateReplicaMode(ctx context.Context, cluster *redisv1.RedisCluster) field.ErrorList {
+	replicaMode := cluster.Spec.ReplicaMode
+	if replicaMode == nil {
+		return nil
+	}
+
+	var allErrs field.ErrorList
+	replicaModePath := field.NewPath("spec", "replicaMode")
+
+	if replicaMode.Promote && !replicaMode.Enabled {
+		allErrs = append(allErrs, field.Invalid(
+			replicaModePath.Child("promote"),
+			replicaMode.Promote,
+			replicaModePromoteMessage,
+		))
+	}
+
+	if !replicaMode.Enabled {
+		return allErrs
+	}
+
+	if replicaMode.Source == nil {
+		allErrs = append(allErrs, field.Required(
+			replicaModePath.Child("source"),
+			replicaModeSourceRequiredMessage,
+		))
+		return allErrs
+	}
+
+	if strings.TrimSpace(replicaMode.Source.Host) == "" {
+		allErrs = append(allErrs, field.Required(
+			replicaModePath.Child("source", "host"),
+			replicaModeHostRequiredMessage,
+		))
+	}
+
+	if replicaMode.Source.Port < 0 || replicaMode.Source.Port > 65535 {
+		allErrs = append(allErrs, field.Invalid(
+			replicaModePath.Child("source", "port"),
+			replicaMode.Source.Port,
+			"must be between 1 and 65535 when set",
+		))
+	}
+
+	authSecretName := strings.TrimSpace(replicaMode.Source.AuthSecretName)
+	if replicaMode.Source.AuthSecretName != "" && authSecretName == "" {
+		allErrs = append(allErrs, field.Invalid(
+			replicaModePath.Child("source", "authSecretName"),
+			replicaMode.Source.AuthSecretName,
+			"must not be empty when set",
+		))
+	}
+	if authSecretName != "" && v.Reader != nil {
+		var secret corev1.Secret
+		if err := v.Reader.Get(ctx, types.NamespacedName{
+			Name:      authSecretName,
+			Namespace: cluster.Namespace,
+		}, &secret); err != nil {
+			if apierrors.IsNotFound(err) {
+				allErrs = append(allErrs, field.NotFound(
+					replicaModePath.Child("source", "authSecretName"),
+					authSecretName,
+				))
+			} else {
+				allErrs = append(allErrs, field.InternalError(
+					replicaModePath.Child("source", "authSecretName"),
+					fmt.Errorf("getting secret %s/%s: %w", cluster.Namespace, authSecretName, err),
+				))
+			}
+		}
+	}
+
+	return allErrs
+}
+
+func replicaModeEnabled(replicaMode *redisv1.ReplicaModeSpec) bool {
+	return replicaMode != nil && replicaMode.Enabled
 }
 
 func (v *RedisClusterValidator) validateStorageClassExpansion(

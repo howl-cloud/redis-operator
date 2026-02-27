@@ -42,6 +42,7 @@ const (
 	redisPort                      = 6379
 	httpListenAddr                 = ":8080"
 	defaultPrimaryIsolationTimeout = 5 * time.Second
+	defaultReplicaModeSourcePort   = int32(6379)
 )
 
 // Run is the top-level entry point for the instance manager.
@@ -77,22 +78,40 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 	}
 
 	// Step 3: Determine role and apply split-brain guard.
-	isPrimary := cluster.Status.CurrentPrimary == podName || cluster.Status.CurrentPrimary == ""
 	var replicaOfDirective string
-	if !isPrimary {
-		// Unconditionally start as replica of the current primary.
-		primaryIP, err := resolvePodIP(ctx, k8sClient, cluster.Status.CurrentPrimary, namespace)
-		if err != nil {
-			return fmt.Errorf("resolving primary IP for split-brain guard: %w", err)
+	var masterAuth string
+	if isReplicaModeEnabled(&cluster) {
+		source := cluster.Spec.ReplicaMode.Source
+		if source == nil || strings.TrimSpace(source.Host) == "" {
+			return fmt.Errorf("replica mode is enabled but source.host is missing")
 		}
-		replicaOfDirective = fmt.Sprintf("replicaof %s %d", primaryIP, redisPort)
-		logger.Info("Split-brain guard: starting as replica", "primary", cluster.Status.CurrentPrimary, "primaryIP", primaryIP)
+		sourcePort := replicaModeSourcePort(source)
+		replicaOfDirective = fmt.Sprintf("replicaof %s %d", source.Host, sourcePort)
+		if source.AuthSecretName != "" {
+			password, err := readProjectedSecretPassword(source.AuthSecretName)
+			if err != nil {
+				return fmt.Errorf("reading replica mode auth secret %s/password: %w", source.AuthSecretName, err)
+			}
+			masterAuth = password
+		}
+		logger.Info("Replica mode: starting as external replica", "sourceHost", source.Host, "sourcePort", sourcePort)
 	} else {
-		logger.Info("Starting as primary")
+		isPrimary := cluster.Status.CurrentPrimary == podName || cluster.Status.CurrentPrimary == ""
+		if !isPrimary {
+			// Unconditionally start as replica of the current primary.
+			primaryIP, err := resolvePodIP(ctx, k8sClient, cluster.Status.CurrentPrimary, namespace)
+			if err != nil {
+				return fmt.Errorf("resolving primary IP for split-brain guard: %w", err)
+			}
+			replicaOfDirective = fmt.Sprintf("replicaof %s %d", primaryIP, redisPort)
+			logger.Info("Split-brain guard: starting as replica", "primary", cluster.Status.CurrentPrimary, "primaryIP", primaryIP)
+		} else {
+			logger.Info("Starting as primary")
+		}
 	}
 
 	// Step 4: Write redis.conf.
-	if err := writeRedisConf(&cluster, replicaOfDirective); err != nil {
+	if err := writeRedisConf(&cluster, replicaOfDirective, masterAuth); err != nil {
 		return fmt.Errorf("writing redis.conf: %w", err)
 	}
 
@@ -189,7 +208,7 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 }
 
 // writeRedisConf generates redis.conf from the cluster spec.
-func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective string) error {
+func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective, masterAuth string) error {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return fmt.Errorf("creating data directory: %w", err)
 	}
@@ -224,6 +243,9 @@ func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective string) er
 	if replicaOfDirective != "" {
 		lines = append(lines, replicaOfDirective)
 	}
+	if masterAuth != "" {
+		lines = append(lines, fmt.Sprintf("masterauth %s", masterAuth))
+	}
 
 	// User-specified redis.conf parameters.
 	for key, val := range cluster.Spec.Redis {
@@ -237,6 +259,26 @@ func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective string) er
 
 	content := strings.Join(lines, "\n") + "\n"
 	return os.WriteFile(redisConfPath, []byte(content), 0644)
+}
+
+func isReplicaModeEnabled(cluster *redisv1.RedisCluster) bool {
+	return cluster != nil && cluster.Spec.ReplicaMode != nil && cluster.Spec.ReplicaMode.Enabled
+}
+
+func replicaModeSourcePort(source *redisv1.ReplicaSourceSpec) int32 {
+	if source == nil || source.Port <= 0 {
+		return defaultReplicaModeSourcePort
+	}
+	return source.Port
+}
+
+func readProjectedSecretPassword(secretName string) (string, error) {
+	secretPath := filepath.Join(resolveProjectedSecretsDir(), secretName, "password")
+	content, err := os.ReadFile(secretPath)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(content)), nil
 }
 
 func hasTLSSpec(cluster *redisv1.RedisCluster) bool {
