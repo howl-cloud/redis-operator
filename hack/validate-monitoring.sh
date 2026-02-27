@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHART_DIR="${ROOT_DIR}/charts/redis-operator"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
+# Container images may run as a non-root user, so mounted temp paths must be traversable.
+chmod 755 "${TMP_DIR}"
 
 require_tool() {
   local tool_name="$1"
@@ -56,6 +58,7 @@ if command -v promtool >/dev/null 2>&1; then
       print
     }
   ' "${TMP_DIR}/rendered.yaml" > "${TMP_DIR}/prometheus-rules.yaml"
+  chmod 644 "${TMP_DIR}/prometheus-rules.yaml"
   promtool check rules "${TMP_DIR}/prometheus-rules.yaml"
 elif docker_daemon_available; then
   echo "promtool not found; validating with prom/prometheus container..."
@@ -68,6 +71,7 @@ elif docker_daemon_available; then
       print
     }
   ' "${TMP_DIR}/rendered.yaml" > "${TMP_DIR}/prometheus-rules.yaml"
+  chmod 644 "${TMP_DIR}/prometheus-rules.yaml"
   docker run --rm \
     -v "${TMP_DIR}:/tmpdata" \
     --entrypoint promtool \
@@ -89,6 +93,7 @@ route:
 receivers:
   - name: default
 EOF
+  chmod 644 "${TMP_DIR}/alertmanager-minimal.yaml"
   amtool check-config "${TMP_DIR}/alertmanager-minimal.yaml"
 elif docker_daemon_available; then
   echo "amtool not found; validating with prom/alertmanager container..."
@@ -98,6 +103,7 @@ route:
 receivers:
   - name: default
 EOF
+  chmod 644 "${TMP_DIR}/alertmanager-minimal.yaml"
   docker run --rm \
     -v "${TMP_DIR}:/tmpdata" \
     --entrypoint amtool \
