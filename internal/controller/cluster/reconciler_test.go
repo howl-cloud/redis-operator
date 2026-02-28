@@ -1583,6 +1583,7 @@ func TestReconcile_SentinelModeContinuesWhenRollingUpdateStops(t *testing.T) {
 	cluster := newTestCluster("test", "default", 3)
 	cluster.Spec.Mode = redisv1.ClusterModeSentinel
 	cluster.Spec.PrimaryUpdateStrategy = redisv1.PrimaryUpdateStrategySupervised
+	cluster.Spec.AuthSecret = &redisv1.LocalObjectReference{Name: "test-auth"}
 	cluster.Status.CurrentPrimary = "test-0"
 
 	r, c := newReconciler(cluster)

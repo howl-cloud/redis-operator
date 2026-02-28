@@ -34,7 +34,7 @@ The `Reconcile()` function delegates to `reconcile()`, which executes ordered su
 `reconcileSecrets()` runs early in every reconcile cycle:
 
 1. For each secret reference in `ClusterSpec` (`authSecret`, `aclConfigSecret`, `tlsSecret`, `caSecret`, `backupCredentialsSecret`), fetch the `Secret` and record its `ResourceVersion` into `status.secretsResourceVersion`.
-2. If `authSecret` is not set, generate a random password, store it in `<cluster-name>-auth`, and set `spec.authSecret` to point at it.
+2. If `authSecret` is not set, generate a random password, store it in `<cluster-name>-auth`, and persist `spec.authSecret` on the main `RedisCluster` resource to point at it.
 3. Secrets are injected into pods as **projected volumes** (not env vars) so rotations reach the pod filesystem automatically.
 4. The reconciler watches `Secret` objects and uses `UsesSecret(name) bool` — checking `status.secretsResourceVersion` — to decide whether to enqueue a cluster when a secret changes.
 
