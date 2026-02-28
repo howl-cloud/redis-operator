@@ -32,7 +32,7 @@ var _ = Describe("Primary kill during writes", Label("pod-kill", "failover"), fu
 
 		workloadScript := fmt.Sprintf(`i=1
 while [ $i -le 50000 ]; do
-  redis-cli --no-auth-warning -h %s-leader SET %s:inflight:$i inflight-$i >/dev/null 2>&1 || true
+  redis-cli --no-auth-warning -h %s-leader SET inflight-%s:$i inflight-$i >/dev/null 2>&1 || true
   i=$((i+1))
 done
 `, clusterName, prefix)

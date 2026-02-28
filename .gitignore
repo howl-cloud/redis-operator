@@ -52,3 +52,5 @@ kubeconfig
 .env.*
 
 .issues/*
+
+temp/*

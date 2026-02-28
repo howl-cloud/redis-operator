@@ -31,7 +31,7 @@ var _ = Describe("Rolling update under load", Label("rolling-update"), func() {
 			ctx,
 			"-n", testNamespace, "exec", clientPod.Name, "--",
 			"env", "REDISCLI_AUTH="+redisPassword,
-			"redis-benchmark", "--no-auth-warning",
+			"redis-benchmark",
 			"-h", clusterName+"-leader",
 			"-t", "set",
 			"-n", "500000",

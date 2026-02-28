@@ -353,7 +353,10 @@ func WaitForPrimaryChange(ctx context.Context, c client.Reader, namespace, name,
 func WaitForFenceAnnotation(ctx context.Context, c client.Reader, namespace, name string, timeout time.Duration) error {
 	err := wait.PollUntilContextTimeout(ctx, pollInterval, timeout, true, func(ctx context.Context) (bool, error) {
 		var cluster redisv1.RedisCluster
-		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cluster); err != nil {
+		getCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := c.Get(getCtx, types.NamespacedName{Namespace: namespace, Name: name}, &cluster); err != nil {
 			if apierrors.IsNotFound(err) {
 				return false, nil
 			}

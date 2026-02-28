@@ -33,11 +33,11 @@ var _ = Describe("Simultaneous replica failures", Label("pod-kill", "replica"), 
 			Expect(faults.KillPod(ctx, k8sClient, testNamespace, replica.Name)).To(Succeed())
 		}
 
-		setResult, err := faults.ExecRedisCLI(ctx, testNamespace, primaryPod.Name, redisPassword, "SET", prefix+":after-kill", "yes")
+		setResult, err := faults.ExecRedisCLI(ctx, testNamespace, primaryPod.Name, redisPassword, "SET", "healthcheck:"+prefix+":after-kill", "yes")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(setResult)).To(Equal("OK"))
 
-		getResult, err := faults.ExecRedisCLI(ctx, testNamespace, primaryPod.Name, redisPassword, "GET", prefix+":after-kill")
+		getResult, err := faults.ExecRedisCLI(ctx, testNamespace, primaryPod.Name, redisPassword, "GET", "healthcheck:"+prefix+":after-kill")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(getResult)).To(Equal("yes"))
 

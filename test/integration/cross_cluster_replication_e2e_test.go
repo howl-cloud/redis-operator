@@ -76,6 +76,11 @@ func TestCrossClusterReplicationReplicaModeFlow(t *testing.T) {
 			Storage: redisv1.StorageSpec{
 				Size: resource.MustParse("1Gi"),
 			},
+			// Keep auth explicitly configured in this test so it does not rely on
+			// generated fallback secret projection from the cluster reconciler.
+			AuthSecret: &redisv1.LocalObjectReference{
+				Name: "dr-replica-auth",
+			},
 			ReplicaMode: &redisv1.ReplicaModeSpec{
 				Enabled: true,
 				Source: &redisv1.ReplicaSourceSpec{

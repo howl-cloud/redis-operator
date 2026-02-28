@@ -27,7 +27,15 @@ var _ = Describe("Redis process kill", Label("pod-kill", "oom"), func() {
 		restartBefore, err := faults.PodRestartCount(ctx, k8sClient, testNamespace, primaryPod.Name)
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = faults.ExecInPod(ctx, testNamespace, primaryPod.Name, "sh", "-ceu", `kill -9 "$(pgrep redis-server)"`)
+		_, err = faults.ExecInPod(ctx, testNamespace, primaryPod.Name, "sh", "-ceu", `found=0
+for proc in /proc/[0-9]*; do
+  if [ "$(cat "${proc}/comm" 2>/dev/null || true)" = "redis-server" ]; then
+    kill -9 "${proc##*/}"
+    found=1
+    break
+  fi
+done
+[ "${found}" -eq 1 ]`)
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(faults.WaitForRestartCountIncrease(ctx, k8sClient, testNamespace, primaryPod.Name, restartBefore, 3*time.Minute)).To(Succeed())
