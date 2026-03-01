@@ -129,8 +129,13 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 	if err != nil {
 		return fmt.Errorf("building redis client TLS config: %w", err)
 	}
+	localAuthPassword, err := resolveLocalAuthPassword(&cluster)
+	if err != nil {
+		return fmt.Errorf("resolving local auth password: %w", err)
+	}
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:      fmt.Sprintf("127.0.0.1:%d", redisPort),
+		Password:  localAuthPassword,
 		TLSConfig: tlsConfig,
 	})
 	defer func() { _ = redisClient.Close() }()
@@ -279,6 +284,38 @@ func readProjectedSecretPassword(secretName string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(content)), nil
+}
+
+func resolveLocalAuthPassword(cluster *redisv1.RedisCluster) (string, error) {
+	authSecretName := effectiveAuthSecretName(cluster)
+	if authSecretName == "" {
+		return "", nil
+	}
+
+	password, err := readProjectedSecretPassword(authSecretName)
+	if err != nil {
+		return "", fmt.Errorf("reading projected auth secret %s/password: %w", authSecretName, err)
+	}
+	return password, nil
+}
+
+func generatedAuthSecretName(clusterName string) string {
+	return fmt.Sprintf("%s-auth", clusterName)
+}
+
+func effectiveAuthSecretName(cluster *redisv1.RedisCluster) string {
+	if cluster == nil {
+		return ""
+	}
+	if cluster.Spec.AuthSecret != nil {
+		if name := strings.TrimSpace(cluster.Spec.AuthSecret.Name); name != "" {
+			return name
+		}
+	}
+	if strings.TrimSpace(cluster.Name) == "" {
+		return ""
+	}
+	return generatedAuthSecretName(cluster.Name)
 }
 
 func hasTLSSpec(cluster *redisv1.RedisCluster) bool {

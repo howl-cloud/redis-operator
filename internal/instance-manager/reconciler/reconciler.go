@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,6 +34,8 @@ const (
 )
 
 var (
+	errFallbackAuthSecretUnavailable = errors.New("fallback auth secret unavailable")
+
 	projectedSecretsDir = "/projected"
 	usersACLFilePath    = "/data/users.acl"
 	tlsCertFilePath     = "/tls/tls.crt"
@@ -118,6 +121,9 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, _ reconcile.Request)
 	// Step 4: Secret reconciliation.
 	if err := r.reconcileSecrets(ctx, &cluster); err != nil {
 		logger.Error(err, "Failed to reconcile secrets")
+		if errors.Is(err, errFallbackAuthSecretUnavailable) {
+			return reconcile.Result{}, err
+		}
 		// Not fatal -- continue to status reporting.
 	}
 
@@ -262,12 +268,21 @@ func (r *InstanceReconciler) reconcileConfig(ctx context.Context, cluster *redis
 // reconcileSecrets handles live secret rotation.
 func (r *InstanceReconciler) reconcileSecrets(ctx context.Context, cluster *redisv1.RedisCluster) error {
 	localAuthPassword := ""
+	authSecretName := effectiveAuthSecretName(cluster)
+	usingGeneratedFallback := usingGeneratedAuthSecretFallback(cluster, authSecretName)
 
 	// Auth secret: CONFIG SET requirepass.
-	if cluster.Spec.AuthSecret != nil {
-		password, err := r.readSecretKey(ctx, cluster.Namespace, cluster.Spec.AuthSecret.Name, "password")
+	if authSecretName != "" {
+		password, err := r.readSecretKey(ctx, cluster.Namespace, authSecretName, "password")
 		if err != nil {
 			return fmt.Errorf("reading auth secret: %w", err)
+		}
+		if password == "" && usingGeneratedFallback {
+			return fmt.Errorf(
+				"%w: projected secret %s/password is empty or missing",
+				errFallbackAuthSecretUnavailable,
+				authSecretName,
+			)
 		}
 		if password != "" {
 			if err := r.redisClient.ConfigSet(ctx, "requirepass", password).Err(); err != nil {
@@ -472,6 +487,35 @@ func resolveACLFilePath() string {
 		return p
 	}
 	return usersACLFilePath
+}
+
+func generatedAuthSecretName(clusterName string) string {
+	return fmt.Sprintf("%s-auth", clusterName)
+}
+
+func effectiveAuthSecretName(cluster *redisv1.RedisCluster) string {
+	if cluster == nil {
+		return ""
+	}
+	if cluster.Spec.AuthSecret != nil {
+		if name := strings.TrimSpace(cluster.Spec.AuthSecret.Name); name != "" {
+			return name
+		}
+	}
+	if strings.TrimSpace(cluster.Name) == "" {
+		return ""
+	}
+	return generatedAuthSecretName(cluster.Name)
+}
+
+func usingGeneratedAuthSecretFallback(cluster *redisv1.RedisCluster, authSecretName string) bool {
+	if strings.TrimSpace(authSecretName) == "" || cluster == nil {
+		return false
+	}
+	if cluster.Spec.AuthSecret != nil && strings.TrimSpace(cluster.Spec.AuthSecret.Name) != "" {
+		return false
+	}
+	return authSecretName == generatedAuthSecretName(cluster.Name)
 }
 
 func replicaModeEnabled(cluster *redisv1.RedisCluster) bool {

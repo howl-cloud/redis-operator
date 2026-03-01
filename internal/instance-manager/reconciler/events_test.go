@@ -342,6 +342,9 @@ func TestReconcile_PromoteAndConfig_EmitsBothEvents(t *testing.T) {
 		Spec: redisv1.RedisClusterSpec{
 			Instances: 3,
 			ImageName: "redis:7.2",
+			AuthSecret: &redisv1.LocalObjectReference{
+				Name: "test-auth",
+			},
 			Redis: map[string]string{
 				"maxmemory": "512mb",
 			},

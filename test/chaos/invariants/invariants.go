@@ -73,12 +73,6 @@ func scanLeaderKeys(
 	namespace, podName, leaderHost, password string,
 	scanArgs ...string,
 ) (string, error) {
-	pingArgs := []string{"redis-cli", "--no-auth-warning", "-h", leaderHost, "PING"}
-	if _, err := faults.ExecInPod(ctx, namespace, podName, pingArgs...); err == nil {
-		args := append([]string{"redis-cli", "--no-auth-warning", "-h", leaderHost}, scanArgs...)
-		return faults.ExecInPod(ctx, namespace, podName, args...)
-	}
-
 	args := append([]string{"-h", leaderHost}, scanArgs...)
 	return faults.ExecRedisCLI(ctx, namespace, podName, password, args...)
 }
@@ -214,7 +208,21 @@ func getAnyClusterPod(ctx context.Context, c client.Client, namespace, clusterNa
 	if len(pods) == 0 {
 		return corev1.Pod{}, fmt.Errorf("no pods found for cluster %s/%s", namespace, clusterName)
 	}
+	for _, pod := range pods {
+		if podReady(pod) {
+			return pod, nil
+		}
+	}
 	return pods[0], nil
+}
+
+func podReady(pod corev1.Pod) bool {
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 func execRedisLeader(ctx context.Context, c client.Client, namespace, clusterName, password string, args ...string) (string, error) {

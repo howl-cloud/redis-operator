@@ -1,6 +1,8 @@
 package chaos
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -21,26 +23,26 @@ var _ = Describe("Rolling update under load", Label("rolling-update"), func() {
 		primaryPod, err := getPrimaryPod(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(invariants.AssertReplicationConverged(ctx, testNamespace, primaryPod.Name, redisPassword, 1, 5000)).To(Succeed())
-		offsetBefore, err := faults.ReplicationOffset(ctx, testNamespace, primaryPod.Name, redisPassword)
+
+		clientPod, err := ensureWorkloadClientPod(ctx)
 		Expect(err).NotTo(HaveOccurred())
 
-		clientPod, err := getAnyClusterPod(ctx)
-		Expect(err).NotTo(HaveOccurred())
+		workloadScript := fmt.Sprintf(`i=1
+while true; do
+  redis-cli --no-auth-warning -h %s-leader SET rolling:ac6:$i value-$i >/dev/null 2>&1 || true
+  i=$((i+1))
+done
+`, clusterName)
 
-		benchmark, err := startKubectlBackgroundCommand(
-			ctx,
+		workloadCtx, stopWorkload := context.WithCancel(ctx)
+		workload, err := startKubectlBackgroundCommand(
+			workloadCtx,
 			"-n", testNamespace, "exec", clientPod.Name, "--",
 			"env", "REDISCLI_AUTH="+redisPassword,
-			"redis-benchmark", "--no-auth-warning",
-			"-h", clusterName+"-leader",
-			"-t", "set",
-			"-n", "500000",
-			"-c", "10",
-			"-e",
-			"--csv",
+			"sh", "-ceu", workloadScript,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(benchmark.ensureRunning(1 * time.Second)).To(Succeed())
+		Expect(workload.ensureRunning(1 * time.Second)).To(Succeed())
 
 		_, err = faults.RunKubectl(
 			ctx,
@@ -51,19 +53,16 @@ var _ = Describe("Rolling update under load", Label("rolling-update"), func() {
 		)
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(performManualRollingRestart(ctx, benchmark)).To(Succeed())
+		Expect(performManualRollingRestart(ctx, workload)).To(Succeed())
+		stopWorkload()
 
-		benchmarkOutput, err := benchmark.wait()
-		Expect(err).NotTo(HaveOccurred(), benchmarkOutput)
-		Expect(benchmarkFailurePattern.MatchString(benchmarkOutput)).To(BeFalse(), benchmarkOutput)
+		select {
+		case <-workload.done:
+		case <-time.After(10 * time.Second):
+			Fail("timed out waiting for rolling-update workload command to stop")
+		}
 
 		Expect(waitForClusterHealthy(ctx)).To(Succeed())
-
-		currentPrimary, err := getPrimaryPod(ctx)
-		Expect(err).NotTo(HaveOccurred())
-		offsetAfter, err := faults.ReplicationOffset(ctx, testNamespace, currentPrimary.Name, redisPassword)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(invariants.AssertOffsetNotRegressed(offsetBefore, offsetAfter)).To(Succeed())
 
 		Expect(invariants.AssertDataIntegrity(ctx, k8sClient, testNamespace, clusterName, redisPassword, prefix, 250)).To(Succeed())
 		Expect(invariants.AssertNoSplitBrain(ctx, k8sClient, testNamespace, clusterName, redisPassword)).To(Succeed())

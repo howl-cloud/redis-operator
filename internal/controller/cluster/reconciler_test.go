@@ -1061,6 +1061,11 @@ func TestCreatePod_WithSecrets(t *testing.T) {
 			foundProjected = true
 			require.NotNil(t, vol.Projected)
 			assert.Len(t, vol.Projected.Sources, 1) // auth only
+			require.NotNil(t, vol.Projected.Sources[0].Secret)
+			assert.Equal(t, "auth-secret", vol.Projected.Sources[0].Secret.Name)
+			assert.Equal(t, []corev1.KeyToPath{
+				{Key: "password", Path: "auth-secret/password"},
+			}, vol.Projected.Sources[0].Secret.Items)
 		}
 		if vol.Name == tlsVolumeName {
 			foundTLSVolume = true
@@ -1153,6 +1158,9 @@ func TestCreateSentinelPod_WithAuthSecretProjectsPassword(t *testing.T) {
 		require.Len(t, vol.Projected.Sources, 1)
 		require.NotNil(t, vol.Projected.Sources[0].Secret)
 		assert.Equal(t, "auth-secret", vol.Projected.Sources[0].Secret.Name)
+		assert.Equal(t, []corev1.KeyToPath{
+			{Key: "password", Path: "auth-secret/password"},
+		}, vol.Projected.Sources[0].Secret.Items)
 	}
 	assert.True(t, foundProjected, "projected volume should be present on sentinel pod")
 
@@ -1583,6 +1591,7 @@ func TestReconcile_SentinelModeContinuesWhenRollingUpdateStops(t *testing.T) {
 	cluster := newTestCluster("test", "default", 3)
 	cluster.Spec.Mode = redisv1.ClusterModeSentinel
 	cluster.Spec.PrimaryUpdateStrategy = redisv1.PrimaryUpdateStrategySupervised
+	cluster.Spec.AuthSecret = &redisv1.LocalObjectReference{Name: "test-auth"}
 	cluster.Status.CurrentPrimary = "test-0"
 
 	r, c := newReconciler(cluster)

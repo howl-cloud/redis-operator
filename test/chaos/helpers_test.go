@@ -8,20 +8,19 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 	"github.com/howl-cloud/redis-operator/test/chaos/faults"
 	"github.com/howl-cloud/redis-operator/test/chaos/invariants"
 )
-
-var benchmarkFailurePattern = regexp.MustCompile(`(?i)(^|[^a-z])(error|err|failed)([^a-z]|$)`)
 
 type backgroundCommand struct {
 	cmd    *exec.Cmd
@@ -43,6 +42,9 @@ func prepareBaseline(ctx context.Context, keyPrefix string, keyCount int) error 
 		return err
 	}
 	if err := refreshRedisPassword(ctx); err != nil {
+		return err
+	}
+	if err := waitForLeaderReachable(ctx, 2*time.Minute); err != nil {
 		return err
 	}
 	if err := invariants.FlushClusterData(ctx, k8sClient, testNamespace, clusterName, redisPassword); err != nil {
@@ -103,7 +105,119 @@ func getAnyClusterPod(ctx context.Context) (corev1.Pod, error) {
 	if len(pods) == 0 {
 		return corev1.Pod{}, fmt.Errorf("no pods found for cluster %s/%s", testNamespace, clusterName)
 	}
+	for _, pod := range pods {
+		if isPodReady(pod) {
+			return pod, nil
+		}
+	}
 	return pods[0], nil
+}
+
+func isPodReady(pod corev1.Pod) bool {
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForLeaderReachable(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	leaderHost := clusterName + "-leader"
+
+	for {
+		clientPod, err := getAnyClusterPod(ctx)
+		if err != nil {
+			lastErr = err
+		} else {
+			out, pingErr := faults.ExecRedisCLI(ctx, testNamespace, clientPod.Name, redisPassword, "-h", leaderHost, "PING")
+			if pingErr == nil && strings.TrimSpace(out) == "PONG" {
+				return nil
+			}
+			if pingErr != nil {
+				lastErr = pingErr
+			} else {
+				lastErr = fmt.Errorf("unexpected PING response from %q via pod %s: %q", leaderHost, clientPod.Name, strings.TrimSpace(out))
+			}
+		}
+
+		if time.Now().After(deadline) {
+			if lastErr == nil {
+				lastErr = fmt.Errorf("leader %q never became reachable", leaderHost)
+			}
+			return fmt.Errorf("waiting for leader service reachability: %w", lastErr)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func ensureWorkloadClientPod(ctx context.Context) (corev1.Pod, error) {
+	workloadPodName := fmt.Sprintf("%s-workload-client", clusterName)
+	key := types.NamespacedName{Namespace: testNamespace, Name: workloadPodName}
+
+	var existing corev1.Pod
+	if err := k8sClient.Get(ctx, key, &existing); err == nil {
+		if err := faults.WaitForPodReady(ctx, k8sClient, testNamespace, workloadPodName, 2*time.Minute); err != nil {
+			return corev1.Pod{}, err
+		}
+		if err := k8sClient.Get(ctx, key, &existing); err != nil {
+			return corev1.Pod{}, fmt.Errorf("getting workload client pod %s/%s: %w", testNamespace, workloadPodName, err)
+		}
+		return existing, nil
+	} else if !apierrors.IsNotFound(err) {
+		return corev1.Pod{}, fmt.Errorf("checking workload client pod %s/%s: %w", testNamespace, workloadPodName, err)
+	}
+
+	seedPod, err := getAnyClusterPod(ctx)
+	if err != nil {
+		return corev1.Pod{}, err
+	}
+	if len(seedPod.Spec.Containers) == 0 {
+		return corev1.Pod{}, fmt.Errorf("cluster pod %s has no containers", seedPod.Name)
+	}
+	clientImage := strings.TrimSpace(seedPod.Spec.Containers[0].Image)
+	if clientImage == "" {
+		return corev1.Pod{}, fmt.Errorf("cluster pod %s has empty container image", seedPod.Name)
+	}
+
+	workloadPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      workloadPodName,
+			Namespace: testNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "redis-chaos-workload-client",
+			},
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyAlways,
+			Containers: []corev1.Container{
+				{
+					Name:    "client",
+					Image:   clientImage,
+					Command: []string{"sh", "-ceu", "while true; do sleep 3600; done"},
+				},
+			},
+		},
+	}
+
+	if err := k8sClient.Create(ctx, workloadPod); err != nil && !apierrors.IsAlreadyExists(err) {
+		return corev1.Pod{}, fmt.Errorf("creating workload client pod %s/%s: %w", testNamespace, workloadPodName, err)
+	}
+	if err := faults.WaitForPodReady(ctx, k8sClient, testNamespace, workloadPodName, 2*time.Minute); err != nil {
+		return corev1.Pod{}, err
+	}
+	if err := k8sClient.Get(ctx, key, &existing); err != nil {
+		return corev1.Pod{}, fmt.Errorf("getting workload client pod %s/%s after creation: %w", testNamespace, workloadPodName, err)
+	}
+
+	return existing, nil
 }
 
 func getPeerIPsExcluding(ctx context.Context, excludedPodName string) ([]string, error) {

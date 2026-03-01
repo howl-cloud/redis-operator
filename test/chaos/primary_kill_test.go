@@ -27,12 +27,12 @@ var _ = Describe("Primary kill during writes", Label("pod-kill", "failover"), fu
 		offsetBefore, err := faults.ReplicationOffset(ctx, testNamespace, primaryPod.Name, redisPassword)
 		Expect(err).NotTo(HaveOccurred())
 
-		clientPod, err := getAnyClusterPod(ctx)
+		clientPod, err := ensureWorkloadClientPod(ctx)
 		Expect(err).NotTo(HaveOccurred())
 
 		workloadScript := fmt.Sprintf(`i=1
 while [ $i -le 50000 ]; do
-  redis-cli --no-auth-warning -h %s-leader SET %s:inflight:$i inflight-$i >/dev/null 2>&1 || true
+  redis-cli --no-auth-warning -h %s-leader SET inflight-%s:$i inflight-$i >/dev/null 2>&1 || true
   i=$((i+1))
 done
 `, clusterName, prefix)

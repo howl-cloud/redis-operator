@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -22,19 +23,31 @@ func (r *ClusterReconciler) reconcileSecrets(ctx context.Context, cluster *redis
 
 	// Auto-generate auth secret if not provided.
 	if cluster.Spec.AuthSecret == nil {
-		secretName := fmt.Sprintf("%s-auth", cluster.Name)
+		secretName := generatedAuthSecretName(cluster.Name)
 		if err := r.ensureAuthSecret(ctx, cluster, secretName); err != nil {
 			return fmt.Errorf("ensuring auth secret: %w", err)
 		}
+
+		specPatch := client.MergeFrom(cluster.DeepCopy())
 		cluster.Spec.AuthSecret = &redisv1.LocalObjectReference{Name: secretName}
+		if err := r.Patch(ctx, cluster, specPatch); err != nil {
+			return fmt.Errorf("persisting generated auth secret reference: %w", err)
+		}
+
+		if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, cluster); err != nil {
+			return fmt.Errorf("refetching cluster after auth secret persistence: %w", err)
+		}
 	}
 
+	authSecretName := effectiveAuthSecretName(cluster)
 	secretRefs := map[string]*redisv1.LocalObjectReference{
-		"authSecret":              cluster.Spec.AuthSecret,
 		"aclConfigSecret":         cluster.Spec.ACLConfigSecret,
 		"tlsSecret":               cluster.Spec.TLSSecret,
 		"caSecret":                cluster.Spec.CASecret,
 		"backupCredentialsSecret": cluster.Spec.BackupCredentialsSecret,
+	}
+	if authSecretName != "" {
+		secretRefs["authSecret"] = &redisv1.LocalObjectReference{Name: authSecretName}
 	}
 	if sourceAuthSecret := replicaModeSourceAuthSecretName(cluster); sourceAuthSecret != "" {
 		secretRefs["replicaMode.source.authSecretName"] = &redisv1.LocalObjectReference{Name: sourceAuthSecret}
@@ -114,6 +127,25 @@ func (r *ClusterReconciler) ensureAuthSecret(ctx context.Context, cluster *redis
 	}
 
 	return nil
+}
+
+func generatedAuthSecretName(clusterName string) string {
+	return fmt.Sprintf("%s-auth", clusterName)
+}
+
+func effectiveAuthSecretName(cluster *redisv1.RedisCluster) string {
+	if cluster == nil {
+		return ""
+	}
+	if cluster.Spec.AuthSecret != nil {
+		if name := strings.TrimSpace(cluster.Spec.AuthSecret.Name); name != "" {
+			return name
+		}
+	}
+	if strings.TrimSpace(cluster.Name) == "" {
+		return ""
+	}
+	return generatedAuthSecretName(cluster.Name)
 }
 
 // UsesSecret checks if the cluster references the given secret name.

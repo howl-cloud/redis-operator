@@ -472,6 +472,9 @@ func newTestCluster(name, namespace string) *redisv1.RedisCluster {
 		Spec: redisv1.RedisClusterSpec{
 			Instances: 3,
 			ImageName: "redis:7.2",
+			AuthSecret: &redisv1.LocalObjectReference{
+				Name: name + "-auth",
+			},
 			Storage: redisv1.StorageSpec{
 				Size: resource.MustParse("1Gi"),
 			},
@@ -760,6 +763,59 @@ func TestReconcileSecrets_NoSecretRefs(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestReconcileSecrets_FallbackToGeneratedAuthSecret(t *testing.T) {
+	srv, redisClient := newFakeRedisServer(t)
+	projectedDir := t.TempDir()
+	t.Setenv(envProjectedSecretsDir, projectedDir)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(projectedDir, "test-auth"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(projectedDir, "test-auth", "password"), []byte("generated-pass"), 0o600))
+
+	rec := &InstanceReconciler{
+		redisClient: redisClient,
+		podName:     "test-0",
+		namespace:   "default",
+	}
+
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test",
+			Namespace: "default",
+		},
+	}
+
+	err := rec.reconcileSecrets(context.Background(), cluster)
+	require.NoError(t, err)
+
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	assert.Equal(t, "generated-pass", srv.configValues["requirepass"])
+	assert.Equal(t, "generated-pass", srv.configValues["masterauth"])
+}
+
+func TestReconcileSecrets_FallbackAuthSecretMissingReturnsError(t *testing.T) {
+	_, redisClient := newFakeRedisServer(t)
+	projectedDir := t.TempDir()
+	t.Setenv(envProjectedSecretsDir, projectedDir)
+
+	rec := &InstanceReconciler{
+		redisClient: redisClient,
+		podName:     "test-0",
+		namespace:   "default",
+	}
+
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test",
+			Namespace: "default",
+		},
+	}
+
+	err := rec.reconcileSecrets(context.Background(), cluster)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errFallbackAuthSecretUnavailable)
+}
+
 func TestReconcileSecrets_ReplicaModeAuthOverridesMasterAuth(t *testing.T) {
 	srv, redisClient := newFakeRedisServer(t)
 	projectedDir := t.TempDir()
@@ -1025,6 +1081,31 @@ func TestReconcile_FullCycle_WithConfig(t *testing.T) {
 	require.NoError(t, err)
 	_, ok := updated.Status.InstancesStatus["test-0"]
 	assert.True(t, ok)
+}
+
+func TestReconcile_FallbackAuthSecretMissingIsFatal(t *testing.T) {
+	_, redisClient := newFakeRedisServer(t)
+	projectedDir := t.TempDir()
+	t.Setenv(envProjectedSecretsDir, projectedDir)
+
+	cluster := newTestCluster("test", "default")
+	cluster.Spec.AuthSecret = nil
+	cluster.Status.CurrentPrimary = "test-0"
+
+	scheme := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cluster).
+		WithStatusSubresource(&redisv1.RedisCluster{}).
+		Build()
+
+	rec := NewInstanceReconciler(fakeClient, redisClient, record.NewFakeRecorder(100), "test", "test-0", "default")
+
+	_, err := rec.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "test", Namespace: "default"},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errFallbackAuthSecretUnavailable)
 }
 
 func TestStopRedis_NilCmd(t *testing.T) {

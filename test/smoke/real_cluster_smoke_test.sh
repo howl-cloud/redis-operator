@@ -103,7 +103,24 @@ if [[ "${replica_targets}" != *"${REDIS_CLUSTER_NAME}-1"* ]] || [[ "${replica_ta
 fi
 
 password=$(kubectl get secret ${REDIS_CLUSTER_NAME}-auth -n "${TEST_NS}" -o jsonpath='{.data.password}' | base64 -d)
-ping_result=$(kubectl exec -n "${TEST_NS}" ${REDIS_CLUSTER_NAME}-0 -- redis-cli -a "${password}" ping)
+unauth_ping_result=""
+for ((attempt=1; attempt<=30; attempt++)); do
+  unauth_ping_result=$(kubectl exec -n "${TEST_NS}" -c redis "${REDIS_CLUSTER_NAME}-0" -- redis-cli ping 2>&1 || true)
+  if [[ "${unauth_ping_result}" == *"NOAUTH"* ]] || [[ "${unauth_ping_result}" == *"Authentication required"* ]]; then
+    break
+  fi
+  sleep 2
+done
+if [[ "${unauth_ping_result}" == *"PONG"* ]]; then
+  echo "expected unauthenticated ping to fail, got ${unauth_ping_result}" >&2
+  exit 1
+fi
+if [[ "${unauth_ping_result}" != *"NOAUTH"* ]] && [[ "${unauth_ping_result}" != *"Authentication required"* ]]; then
+  echo "expected unauthenticated ping to return NOAUTH/auth-required, got ${unauth_ping_result}" >&2
+  exit 1
+fi
+
+ping_result=$(kubectl exec -n "${TEST_NS}" -c redis "${REDIS_CLUSTER_NAME}-0" -- redis-cli -a "${password}" ping 2>/dev/null | tr -d '\r')
 if [[ "${ping_result}" != "PONG" ]]; then
   echo "expected PONG, got ${ping_result}" >&2
   exit 1
