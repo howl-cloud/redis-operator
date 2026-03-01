@@ -1,0 +1,64 @@
+name: Publish Helm Chart
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Chart version to publish (example: 0.1.4)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish-chart:
+    name: Publish chart to GHCR (OCI)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            version="${{ github.event.inputs.version }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            echo "Unable to determine chart version."
+            echo "Use workflow_dispatch with inputs.version when not running from a tag."
+            exit 1
+          fi
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            --username "${{ github.actor }}" \
+            --password-stdin
+
+      - name: Lint chart
+        run: helm lint charts/redis-operator
+
+      - name: Package chart
+        run: |
+          mkdir -p dist
+          helm package charts/redis-operator \
+            --version "${{ steps.version.outputs.version }}" \
+            --app-version "${{ steps.version.outputs.version }}" \
+            --destination dist
+
+      - name: Push chart
+        run: |
+          helm push "dist/redis-operator-${{ steps.version.outputs.version }}.tgz" \
+            "oci://ghcr.io/${{ github.repository_owner }}/charts"

@@ -1,4 +1,4 @@
-# redis-operator
+# Redis Kubernetes Operator
 
 A Kubernetes operator for Redis built around the same control-plane ideas used by [CloudNativePG](https://github.com/cloudnative-pg/cloudnative-pg): direct pod/PVC management, a split control/data architecture, and deterministic failover behavior.
 
@@ -51,23 +51,51 @@ Why this matters: the operator can enforce strict pod update ordering, explicit 
 
 ## Quick Start
 
-### 1) Install CRDs
+Set a release version once:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/howl-cloud/redis-operator/main/config/crd/bases/redis.io_redisclusters.yaml
-kubectl apply -f https://raw.githubusercontent.com/howl-cloud/redis-operator/main/config/crd/bases/redis.io_redisbackups.yaml
-kubectl apply -f https://raw.githubusercontent.com/howl-cloud/redis-operator/main/config/crd/bases/redis.io_redisscheduledbackups.yaml
+VERSION="" // e.g. "v0.1.4"
 ```
 
-### 2) Install the operator
+### 1) Install the operator
+
+Option A: one command with Kustomize (CRDs + RBAC + controller + webhooks).
 
 ```bash
-helm upgrade --install redis-operator charts/redis-operator \
+kubectl apply -k "github.com/howl-cloud/redis-operator/config/default?ref=${VERSION}"
+```
+
+Option B: Helm OCI chart.
+Charts are published to GHCR at `ghcr.io/howl-cloud/charts/redis-operator` on version tags.
+
+Install CRDs first:
+
+```bash
+kubectl apply -f "https://raw.githubusercontent.com/howl-cloud/redis-operator/${VERSION}/config/crd/bases/redis.io_redisclusters.yaml"
+kubectl apply -f "https://raw.githubusercontent.com/howl-cloud/redis-operator/${VERSION}/config/crd/bases/redis.io_redisbackups.yaml"
+kubectl apply -f "https://raw.githubusercontent.com/howl-cloud/redis-operator/${VERSION}/config/crd/bases/redis.io_redisscheduledbackups.yaml"
+```
+
+Install the chart:
+
+```bash
+helm upgrade --install redis-operator oci://ghcr.io/howl-cloud/charts/redis-operator \
+  --version "${VERSION#v}" \
   --namespace redis-operator-system \
   --create-namespace
 ```
 
-### 3) Create a Redis cluster
+Option C: Helm chart from local checkout.
+
+Install CRDs first (same as above), then:
+
+```bash
+helm upgrade --install redis-operator ./charts/redis-operator \
+  --namespace redis-operator-system \
+  --create-namespace
+```
+
+### 2) Create a Redis cluster
 
 ```yaml
 apiVersion: redis.io/v1
@@ -87,7 +115,7 @@ kubectl apply -f rediscluster.yaml
 kubectl wait --for=condition=Ready rediscluster/my-redis -n default --timeout=10m
 ```
 
-### 4) Connect
+### 3) Connect
 
 ```bash
 PASSWORD=$(kubectl get secret my-redis-auth -n default -o jsonpath='{.data.password}' | base64 -d)
@@ -107,3 +135,7 @@ redis-cli -a "$PASSWORD" -h 127.0.0.1 -p 6379 ping
 - Runbooks: `docs/runbooks/index.md`
 - Upgrade guidance: `docs/upgrade.md`
 - Contributor guide: `CONTRIBUTING.md`
+
+## Credits
+
+- Horizon Web Labs.

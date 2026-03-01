@@ -9,9 +9,9 @@ Version      : {{ .Chart.AppVersion }}
 IMPORTANT: Install CRDs before creating any RedisCluster resources.
 CRDs are NOT bundled in this chart (Helm best practice for operators).
 
-  kubectl apply -f https://raw.githubusercontent.com/howl/redis-operator/main/config/crd/bases/redis.io_redisclusters.yaml
-  kubectl apply -f https://raw.githubusercontent.com/howl/redis-operator/main/config/crd/bases/redis.io_redisbackups.yaml
-  kubectl apply -f https://raw.githubusercontent.com/howl/redis-operator/main/config/crd/bases/redis.io_redisscheduledbackups.yaml
+  kubectl apply -f https://raw.githubusercontent.com/howl-cloud/redis-operator/main/config/crd/bases/redis.io_redisclusters.yaml
+  kubectl apply -f https://raw.githubusercontent.com/howl-cloud/redis-operator/main/config/crd/bases/redis.io_redisbackups.yaml
+  kubectl apply -f https://raw.githubusercontent.com/howl-cloud/redis-operator/main/config/crd/bases/redis.io_redisscheduledbackups.yaml
 
 Or from a local checkout:
 
@@ -104,4 +104,4 @@ injects the caBundle into the webhook configurations automatically.
 {{- end }}
 
 For documentation and examples visit:
-  https://github.com/howl/redis-operator
+  https://github.com/howl-cloud/redis-operator
