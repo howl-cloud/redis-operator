@@ -1348,6 +1348,49 @@ func TestShouldRestoreFromBackup_OnlyFirstBootstrapPrimary(t *testing.T) {
 	}
 }
 
+func TestShouldRestoreFromBackup_ClusterModeOnlyBeforeBootstrapCompletion(t *testing.T) {
+	cluster := newTestCluster("test", "default", 0)
+	cluster.Spec.Mode = redisv1.ClusterModeCluster
+	cluster.Spec.Shards = 3
+	cluster.Spec.ReplicasPerShard = 1
+	cluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: "seed-backup"}
+
+	tests := []struct {
+		name               string
+		index              int
+		bootstrapCompleted bool
+		want               bool
+	}{
+		{
+			name:               "shard primary restores during bootstrap",
+			index:              0,
+			bootstrapCompleted: false,
+			want:               true,
+		},
+		{
+			name:               "shard replica does not restore",
+			index:              1,
+			bootstrapCompleted: false,
+			want:               false,
+		},
+		{
+			name:               "primary recreation does not restore once bootstrap is complete",
+			index:              2,
+			bootstrapCompleted: true,
+			want:               false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cluster.Status.BootstrapCompleted = tt.bootstrapCompleted
+			podName := podNameForIndex(cluster.Name, tt.index)
+			got := shouldRestoreFromBackup(cluster, podName, tt.index)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestCreatePod_DoesNotInjectRestoreAfterBootstrap(t *testing.T) {
 	cluster := newTestCluster("test", "default", 1)
 	cluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: "seed-backup"}

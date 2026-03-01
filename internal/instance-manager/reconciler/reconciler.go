@@ -169,6 +169,10 @@ func (r *InstanceReconciler) stopRedis() {
 
 // reconcileRole ensures this instance has the correct replication role.
 func (r *InstanceReconciler) reconcileRole(ctx context.Context, cluster *redisv1.RedisCluster) error {
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		return nil
+	}
+
 	info, err := replication.GetInfo(ctx, r.redisClient)
 	if err != nil {
 		return fmt.Errorf("getting replication info: %w", err)

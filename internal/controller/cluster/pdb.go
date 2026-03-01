@@ -25,7 +25,10 @@ func (r *ClusterReconciler) reconcilePDB(ctx context.Context, cluster *redisv1.R
 	}
 
 	pdbName := fmt.Sprintf("%s-pdb", cluster.Name)
-	minAvailable := pdbMinAvailable(cluster.Spec.Instances)
+	minAvailable := pdbMinAvailable(cluster.Spec.DesiredDataInstances())
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		minAvailable = pdbMinAvailable(cluster.Spec.Shards)
+	}
 
 	desired := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{

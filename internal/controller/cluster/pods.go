@@ -49,7 +49,7 @@ func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.
 		return fmt.Errorf("listing pods: %w", err)
 	}
 
-	desired := int(cluster.Spec.Instances)
+	desired := int(cluster.Spec.DesiredDataInstances())
 	current := len(existingPods)
 
 	if current < desired {
@@ -59,7 +59,12 @@ func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.
 	for i := 0; i < desired; i++ {
 		podName := podNameForIndex(cluster.Name, i)
 		role := redisv1.LabelRoleReplica
-		if podName == cluster.Status.CurrentPrimary || (cluster.Status.CurrentPrimary == "" && i == 0) {
+		if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+			_, replicaIndex := shardReplicaFromIndex(cluster, i)
+			if replicaIndex == 0 {
+				role = redisv1.LabelRolePrimary
+			}
+		} else if podName == cluster.Status.CurrentPrimary || (cluster.Status.CurrentPrimary == "" && i == 0) {
 			role = redisv1.LabelRolePrimary
 		}
 		if err := r.createPod(ctx, cluster, podName, i, role); err != nil {
@@ -86,7 +91,7 @@ func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.
 		}
 	}
 
-	if cluster.Status.CurrentPrimary == "" && desired > 0 {
+	if cluster.Spec.Mode != redisv1.ClusterModeCluster && cluster.Status.CurrentPrimary == "" && desired > 0 {
 		primaryName := podNameForIndex(cluster.Name, 0)
 		patch := client.MergeFrom(cluster.DeepCopy())
 		cluster.Status.CurrentPrimary = primaryName
@@ -147,6 +152,15 @@ func (r *ClusterReconciler) reconcileSentinelPods(ctx context.Context, cluster *
 func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.RedisCluster, podName string, index int, role string) error {
 	desiredHash := r.computeSpecHash(cluster)
 	labels := podLabels(cluster.Name, podName, role)
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		shardIndex, replicaIndex := shardReplicaFromIndex(cluster, index)
+		labels[redisv1.LabelShard] = fmt.Sprintf("s%d", shardIndex)
+		if replicaIndex == 0 {
+			labels[redisv1.LabelShardRole] = redisv1.LabelRolePrimary
+		} else {
+			labels[redisv1.LabelShardRole] = redisv1.LabelRoleReplica
+		}
+	}
 	logger := log.FromContext(ctx)
 
 	var existing corev1.Pod
@@ -292,6 +306,7 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 				fmt.Sprintf("--backup-name=%s", backup.Name),
 				fmt.Sprintf("--backup-namespace=%s", backup.Namespace),
 				fmt.Sprintf("--data-dir=%s", redisDataMountPath),
+				fmt.Sprintf("--pod-name=%s", podName),
 			},
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: redisDataVolumeName, MountPath: redisDataMountPath},
@@ -307,6 +322,30 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 		}
 
 		initContainers = append(initContainers, restoreInit)
+	}
+
+	ports := []corev1.ContainerPort{
+		{Name: "redis", ContainerPort: 6379, Protocol: corev1.ProtocolTCP},
+		{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+	}
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		ports = append(ports, corev1.ContainerPort{Name: "cluster-bus", ContainerPort: 16379, Protocol: corev1.ProtocolTCP})
+	}
+
+	envVars := []corev1.EnvVar{
+		{Name: "POD_NAME", Value: podName},
+		{Name: "CLUSTER_NAME", Value: cluster.Name},
+		{Name: "POD_NAMESPACE", Value: cluster.Namespace},
+	}
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: "POD_IP",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "status.podIP",
+				},
+			},
+		})
 	}
 
 	pod := &corev1.Pod{
@@ -336,21 +375,14 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 						fmt.Sprintf("--pod-name=%s", podName),
 						fmt.Sprintf("--pod-namespace=%s", cluster.Namespace),
 					},
-					Ports: []corev1.ContainerPort{
-						{Name: "redis", ContainerPort: 6379, Protocol: corev1.ProtocolTCP},
-						{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
-					},
+					Ports:           ports,
 					Resources:       cluster.Spec.Resources,
 					SecurityContext: redisContainerSecurityContext(false),
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: redisDataVolumeName, MountPath: redisDataMountPath},
 						{Name: controllerVolumeName, MountPath: controllerMountPath},
 					},
-					Env: []corev1.EnvVar{
-						{Name: "POD_NAME", Value: podName},
-						{Name: "CLUSTER_NAME", Value: cluster.Name},
-						{Name: "POD_NAMESPACE", Value: cluster.Namespace},
-					},
+					Env: envVars,
 					LivenessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
 							HTTPGet: &corev1.HTTPGetAction{
@@ -474,6 +506,10 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 func shouldRestoreFromBackup(cluster *redisv1.RedisCluster, podName string, index int) bool {
 	if cluster.Spec.Bootstrap == nil || cluster.Spec.Bootstrap.BackupName == "" {
 		return false
+	}
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		_, replicaIndex := shardReplicaFromIndex(cluster, index)
+		return !cluster.Status.BootstrapCompleted && replicaIndex == 0
 	}
 	// Restore is a one-time bootstrap action for the very first primary only.
 	return cluster.Status.CurrentPrimary == "" && index == 0 && podName == podNameForIndex(cluster.Name, 0)
@@ -916,4 +952,15 @@ func podIndex(clusterName, podName string) int {
 	suffix := podName[len(clusterName)+1:]
 	idx, _ := strconv.Atoi(suffix)
 	return idx
+}
+
+func shardReplicaFromIndex(cluster *redisv1.RedisCluster, index int) (int, int) {
+	if cluster == nil {
+		return 0, 0
+	}
+	groupSize := int(1 + cluster.Spec.ReplicasPerShard)
+	if groupSize <= 0 {
+		groupSize = 1
+	}
+	return index / groupSize, index % groupSize
 }

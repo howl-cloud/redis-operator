@@ -38,6 +38,18 @@ func validCluster() *redisv1.RedisCluster {
 	}
 }
 
+func validClusterModeSpec() *redisv1.RedisCluster {
+	cluster := validCluster()
+	cluster.Spec.Mode = redisv1.ClusterModeCluster
+	cluster.Spec.Instances = 0
+	cluster.Spec.Shards = 3
+	cluster.Spec.ReplicasPerShard = 1
+	cluster.Spec.MinSyncReplicas = 0
+	cluster.Spec.MaxSyncReplicas = 0
+	cluster.Spec.ReplicaMode = nil
+	return cluster
+}
+
 func completedBackup(name, namespace string) *redisv1.RedisBackup {
 	return &redisv1.RedisBackup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -116,14 +128,33 @@ func TestValidateCreate_MaxSyncLessThanMin(t *testing.T) {
 	assert.Contains(t, err.Error(), "maxSyncReplicas")
 }
 
-func TestValidateCreate_UnsupportedMode(t *testing.T) {
+func TestValidateCreate_ClusterModeValid(t *testing.T) {
 	v := &RedisClusterValidator{}
-	cluster := validCluster()
-	cluster.Spec.Mode = redisv1.ClusterModeCluster
+	cluster := validClusterModeSpec()
+
+	warnings, err := v.ValidateCreate(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
+func TestValidateCreate_ClusterModeRejectsInstances(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validClusterModeSpec()
+	cluster.Spec.Instances = 3
 
 	_, err := v.ValidateCreate(context.Background(), cluster)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), unsupportedModeMessage)
+	assert.Contains(t, err.Error(), clusterInstancesForbiddenMessage)
+}
+
+func TestValidateCreate_ClusterModeRequiresThreeShards(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validClusterModeSpec()
+	cluster.Spec.Shards = 2
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), clusterShardsMinMessage)
 }
 
 func TestValidateCreate_SentinelModeRequiresThreeInstances(t *testing.T) {
@@ -594,12 +625,13 @@ func TestValidateCreate_TableDriven(t *testing.T) {
 			},
 		},
 		{
-			name: "cluster mode unsupported",
+			name: "cluster mode with required fields is valid",
 			modify: func(c *redisv1.RedisCluster) {
 				c.Spec.Mode = redisv1.ClusterModeCluster
+				c.Spec.Instances = 0
+				c.Spec.Shards = 3
+				c.Spec.ReplicasPerShard = 1
 			},
-			wantErr:   true,
-			errSubstr: unsupportedModeMessage,
 		},
 		{
 			name: "sentinel mode with fewer than 3 instances is invalid",
@@ -625,6 +657,16 @@ func TestValidateCreate_TableDriven(t *testing.T) {
 			modify:    func(c *redisv1.RedisCluster) { c.Spec.Instances = 0 },
 			wantErr:   true,
 			errSubstr: "instances",
+		},
+		{
+			name: "cluster mode with explicit instances is invalid",
+			modify: func(c *redisv1.RedisCluster) {
+				c.Spec.Mode = redisv1.ClusterModeCluster
+				c.Spec.Instances = 3
+				c.Spec.Shards = 3
+			},
+			wantErr:   true,
+			errSubstr: clusterInstancesForbiddenMessage,
 		},
 		{
 			name: "minSync equals instances-1 is valid",

@@ -21,7 +21,7 @@ import (
 func (r *ClusterReconciler) reconcilePVCs(ctx context.Context, cluster *redisv1.RedisCluster) (map[string]struct{}, error) {
 	logger := log.FromContext(ctx)
 
-	desired := int(cluster.Spec.Instances)
+	desired := int(cluster.Spec.DesiredDataInstances())
 	desiredSize := cluster.Spec.Storage.Size
 	if desiredSize.IsZero() {
 		desiredSize = resource.MustParse("1Gi")

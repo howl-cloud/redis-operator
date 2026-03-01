@@ -182,6 +182,31 @@ spec:
               phase:
                 description: Phase is the current backup phase.
                 type: string
+              shardArtifacts:
+                additionalProperties:
+                  description: ShardBackupArtifact contains backup metadata for a
+                    single shard.
+                  properties:
+                    artifactType:
+                      description: BackupArtifactType defines the backup artifact
+                        format stored in object storage.
+                      enum:
+                      - rdb
+                      - aof-archive
+                      type: string
+                    backupPath:
+                      type: string
+                    backupSize:
+                      format: int64
+                      type: integer
+                    checksumSHA256:
+                      type: string
+                    targetPod:
+                      type: string
+                  type: object
+                description: ShardArtifacts contains per-shard backup metadata for
+                  cluster-mode backups.
+                type: object
               startedAt:
                 description: StartedAt is when the backup started.
                 format: date-time

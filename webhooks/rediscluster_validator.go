@@ -28,9 +28,13 @@ type RedisClusterValidator struct {
 var _ webhook.CustomValidator = &RedisClusterValidator{}
 
 const (
-	unsupportedModeMessage           = "cluster mode is not yet supported; use standalone or sentinel"
 	sentinelInstancesMinMessage      = "sentinel mode requires at least 3 redis instances"
 	sentinelTLSUnsupported           = "TLS is not supported in sentinel mode yet"
+	clusterShardsMinMessage          = "cluster mode requires spec.shards >= 3"
+	clusterInstancesForbiddenMessage = "spec.instances is not allowed in cluster mode; use shards and replicasPerShard"
+	clusterMinSyncUnsupportedMessage = "minSyncReplicas is not supported in cluster mode"
+	clusterMaxSyncUnsupportedMessage = "maxSyncReplicas is not supported in cluster mode"
+	clusterReplicaModeUnsupported    = "replicaMode is not supported in cluster mode"
 	tlsSecretRequiredMessage         = "tlsSecret is required when caSecret is set"
 	caSecretRequiredMessage          = "caSecret is required when tlsSecret is set"
 	primaryUpdateApprovalValue       = `must be "true" when present`
@@ -84,14 +88,6 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
-	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("mode"),
-			cluster.Spec.Mode,
-			unsupportedModeMessage,
-		))
-	}
-
 	if cluster.Spec.Mode == redisv1.ClusterModeSentinel && cluster.Spec.Instances < 3 {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("instances"),
@@ -144,7 +140,42 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 		}
 	}
 
-	if cluster.Spec.Instances < 1 {
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		if cluster.Spec.Shards < 3 {
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("shards"),
+				cluster.Spec.Shards,
+				clusterShardsMinMessage,
+			))
+		}
+		if cluster.Spec.Instances != 0 {
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("instances"),
+				cluster.Spec.Instances,
+				clusterInstancesForbiddenMessage,
+			))
+		}
+		if cluster.Spec.MinSyncReplicas != 0 {
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("minSyncReplicas"),
+				cluster.Spec.MinSyncReplicas,
+				clusterMinSyncUnsupportedMessage,
+			))
+		}
+		if cluster.Spec.MaxSyncReplicas != 0 {
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("maxSyncReplicas"),
+				cluster.Spec.MaxSyncReplicas,
+				clusterMaxSyncUnsupportedMessage,
+			))
+		}
+		if cluster.Spec.ReplicaMode != nil {
+			allErrs = append(allErrs, field.Forbidden(
+				specPath.Child("replicaMode"),
+				clusterReplicaModeUnsupported,
+			))
+		}
+	} else if cluster.Spec.Instances < 1 {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("instances"),
 			cluster.Spec.Instances,
@@ -152,7 +183,7 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 		))
 	}
 
-	if cluster.Spec.MinSyncReplicas > cluster.Spec.Instances-1 {
+	if cluster.Spec.Mode != redisv1.ClusterModeCluster && cluster.Spec.MinSyncReplicas > cluster.Spec.Instances-1 {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("minSyncReplicas"),
 			cluster.Spec.MinSyncReplicas,
@@ -160,7 +191,7 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 		))
 	}
 
-	if cluster.Spec.MaxSyncReplicas < cluster.Spec.MinSyncReplicas {
+	if cluster.Spec.Mode != redisv1.ClusterModeCluster && cluster.Spec.MaxSyncReplicas < cluster.Spec.MinSyncReplicas {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("maxSyncReplicas"),
 			cluster.Spec.MaxSyncReplicas,
@@ -172,7 +203,7 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 		cluster.Spec.NodeMaintenanceWindow.InProgress &&
 		cluster.Spec.NodeMaintenanceWindow.ReusePVC != nil &&
 		!*cluster.Spec.NodeMaintenanceWindow.ReusePVC &&
-		cluster.Spec.Instances == 1 {
+		cluster.Spec.DesiredDataInstances() == 1 {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("nodeMaintenanceWindow", "reusePVC"),
 			*cluster.Spec.NodeMaintenanceWindow.ReusePVC,
@@ -180,7 +211,9 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 		))
 	}
 
-	allErrs = append(allErrs, v.validateReplicaMode(ctx, cluster)...)
+	if cluster.Spec.Mode != redisv1.ClusterModeCluster {
+		allErrs = append(allErrs, v.validateReplicaMode(ctx, cluster)...)
+	}
 	allErrs = append(allErrs, v.validateBootstrapReference(ctx, cluster)...)
 
 	return allErrs
@@ -446,11 +479,11 @@ func (v *RedisClusterValidator) validateBootstrapReference(ctx context.Context, 
 		))
 	}
 
-	if backup.Status.BackupPath == "" {
+	if backup.Status.BackupPath == "" && len(backup.Status.ShardArtifacts) == 0 {
 		allErrs = append(allErrs, field.Invalid(
 			backupNamePath,
 			backupName,
-			"referenced RedisBackup must have status.backupPath set",
+			"referenced RedisBackup must have status.backupPath or status.shardArtifacts set",
 		))
 	}
 

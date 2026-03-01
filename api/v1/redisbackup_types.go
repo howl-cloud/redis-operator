@@ -112,6 +112,10 @@ type RedisBackupStatus struct {
 	// +optional
 	ArtifactType BackupArtifactType `json:"artifactType,omitempty"`
 
+	// ShardArtifacts contains per-shard backup metadata for cluster-mode backups.
+	// +optional
+	ShardArtifacts map[string]ShardBackupArtifact `json:"shardArtifacts,omitempty"`
+
 	// Error contains the error message if the backup failed.
 	// +optional
 	Error string `json:"error,omitempty"`
@@ -119,6 +123,19 @@ type RedisBackupStatus struct {
 	// Conditions represent the latest available observations.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ShardBackupArtifact contains backup metadata for a single shard.
+type ShardBackupArtifact struct {
+	TargetPod string `json:"targetPod,omitempty"`
+
+	BackupPath string `json:"backupPath,omitempty"`
+	BackupSize int64  `json:"backupSize,omitempty"`
+
+	ArtifactType BackupArtifactType `json:"artifactType,omitempty"`
+
+	// +optional
+	ChecksumSHA256 string `json:"checksumSHA256,omitempty"`
 }
 
 // +kubebuilder:object:root=true

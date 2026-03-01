@@ -71,7 +71,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req reconcile.Request
 		observeReconcileDurationMetric(&cluster, time.Since(startTime))
 	}()
 
-	logger.Info("Reconciling RedisCluster", "instances", cluster.Spec.Instances, "phase", cluster.Status.Phase)
+	logger.Info("Reconciling RedisCluster", "instances", cluster.Spec.DesiredDataInstances(), "phase", cluster.Status.Phase)
 
 	if cluster.Status.Phase == "" {
 		r.Recorder.Event(&cluster, corev1.EventTypeNormal, "Creating", "Cluster reconciliation started")
@@ -132,6 +132,25 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 	}
 	setClusterInstancesMetrics(cluster, len(instanceStatuses))
 	setClusterPhaseMetric(cluster)
+
+	// Step 5.2: Bootstrap Redis Cluster topology (cluster mode only).
+	if !maintenance && cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		ready, err := r.reconcileClusterBootstrap(ctx, cluster, instanceStatuses)
+		if err != nil {
+			return reconcile.Result{}, fmt.Errorf("reconciling cluster bootstrap: %w", err)
+		}
+		if !ready {
+			return reconcile.Result{RequeueAfter: requeueInterval}, nil
+		}
+
+		reshardReady, err := r.reconcileClusterReshard(ctx, cluster, instanceStatuses)
+		if err != nil {
+			return reconcile.Result{}, fmt.Errorf("reconciling cluster reshard: %w", err)
+		}
+		if !reshardReady {
+			return reconcile.Result{RequeueAfter: requeueInterval}, nil
+		}
+	}
 
 	// Step 5.3: Finalize replica-mode promotion once the designated leader is primary.
 	promoted, err := r.reconcileReplicaModePromotion(ctx, cluster, instanceStatuses)

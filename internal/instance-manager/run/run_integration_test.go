@@ -46,7 +46,7 @@ func TestWriteRedisConf_StartsServer(t *testing.T) {
 		},
 	}
 
-	err := writeRedisConf(cluster, "", "")
+	err := writeRedisConf(cluster, "", "", "")
 	require.NoError(t, err)
 
 	// Allow the container's Redis user (uid 999) to write to the data dir.

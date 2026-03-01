@@ -20,6 +20,10 @@ const primaryUpdateApprovalMessage = `Replicas are updated. Set annotation redis
 // Replicas are updated first (highest ordinal first), primary last via switchover.
 // The returned bool indicates whether reconciliation should stop for this cycle.
 func (r *ClusterReconciler) rollingUpdate(ctx context.Context, cluster *redisv1.RedisCluster, desiredHash string) (bool, error) {
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		return r.rollingUpdateClusterMode(ctx, cluster, desiredHash)
+	}
+
 	logger := log.FromContext(ctx)
 
 	pods, err := r.listDataPods(ctx, cluster)
@@ -93,6 +97,102 @@ func (r *ClusterReconciler) rollingUpdate(ctx context.Context, cluster *redisv1.
 	}
 
 	r.Recorder.Event(cluster, corev1.EventTypeNormal, "RollingUpdateCompleted", "Rolling update completed")
+	return false, nil
+}
+
+func (r *ClusterReconciler) rollingUpdateClusterMode(
+	ctx context.Context,
+	cluster *redisv1.RedisCluster,
+	desiredHash string,
+) (bool, error) {
+	logger := log.FromContext(ctx)
+	pods, err := r.listDataPods(ctx, cluster)
+	if err != nil {
+		return false, fmt.Errorf("listing pods for cluster rolling update: %w", err)
+	}
+	if len(pods) == 0 {
+		return false, nil
+	}
+
+	podsByName := make(map[string]corev1.Pod, len(pods))
+	for i := range pods {
+		podsByName[pods[i].Name] = pods[i]
+	}
+
+	shardCount := int(cluster.Spec.Shards)
+	for shardIndex := shardCount - 1; shardIndex >= 0; shardIndex-- {
+		shardName := fmt.Sprintf("s%d", shardIndex)
+		shardStatus, ok := cluster.Status.Shards[shardName]
+		if !ok {
+			continue
+		}
+
+		shardMembers := make([]corev1.Pod, 0, len(shardStatus.ReplicaPods)+1)
+		if primaryPod, ok := podsByName[shardStatus.PrimaryPod]; ok {
+			shardMembers = append(shardMembers, primaryPod)
+		}
+		for _, replicaName := range shardStatus.ReplicaPods {
+			if replicaPod, ok := podsByName[replicaName]; ok {
+				shardMembers = append(shardMembers, replicaPod)
+			}
+		}
+		if len(shardMembers) == 0 {
+			continue
+		}
+
+		replicas := make([]corev1.Pod, 0, len(shardMembers))
+		var primary *corev1.Pod
+		for i := range shardMembers {
+			if shardMembers[i].Name == shardStatus.PrimaryPod {
+				primary = &shardMembers[i]
+				continue
+			}
+			replicas = append(replicas, shardMembers[i])
+		}
+
+		sort.Slice(replicas, func(i, j int) bool {
+			return podIndex(cluster.Name, replicas[i].Name) > podIndex(cluster.Name, replicas[j].Name)
+		})
+		for _, replica := range replicas {
+			if getPodSpecHash(&replica) == desiredHash {
+				continue
+			}
+			logger.Info("Cluster rolling update: deleting shard replica for recreate", "shard", shardName, "pod", replica.Name)
+			if err := r.Delete(ctx, &replica); err != nil && !errors.IsNotFound(err) {
+				return false, fmt.Errorf("deleting shard replica %s for update: %w", replica.Name, err)
+			}
+			return true, nil
+		}
+
+		if primary == nil || getPodSpecHash(primary) == desiredHash {
+			continue
+		}
+
+		if len(replicas) == 0 {
+			logger.Info("Cluster rolling update: deleting shard primary (no replicas)", "shard", shardName, "pod", primary.Name)
+			if err := r.Delete(ctx, primary); err != nil && !errors.IsNotFound(err) {
+				return false, fmt.Errorf("deleting shard primary %s for update: %w", primary.Name, err)
+			}
+			return true, nil
+		}
+
+		candidate := replicas[0]
+		if candidate.Status.PodIP == "" {
+			return true, nil
+		}
+		if err := r.setFence(ctx, cluster, primary.Name); err != nil {
+			return false, fmt.Errorf("fencing shard primary %s: %w", primary.Name, err)
+		}
+		logger.Info("Cluster rolling update: issuing shard failover", "shard", shardName, "candidate", candidate.Name, "formerPrimary", primary.Name)
+		if err := r.promoteInstance(ctx, candidate.Status.PodIP); err != nil {
+			return false, fmt.Errorf("promoting shard failover candidate %s: %w", candidate.Name, err)
+		}
+		if err := r.clearFence(ctx, cluster, primary.Name); err != nil {
+			return false, fmt.Errorf("clearing fence on shard primary %s: %w", primary.Name, err)
+		}
+		return true, nil
+	}
+
 	return false, nil
 }
 

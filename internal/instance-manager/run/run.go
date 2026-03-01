@@ -92,6 +92,8 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 			masterAuth = password
 		}
 		logger.Info("Replica mode: starting as external replica", "sourceHost", source.Host, "sourcePort", sourcePort)
+	} else if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		logger.Info("Starting in cluster mode")
 	} else {
 		isPrimary := cluster.Status.CurrentPrimary == podName || cluster.Status.CurrentPrimary == ""
 		if !isPrimary {
@@ -107,7 +109,7 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 		}
 	}
 
-	if err := writeRedisConf(&cluster, replicaOfDirective, masterAuth); err != nil {
+	if err := writeRedisConf(&cluster, replicaOfDirective, masterAuth, os.Getenv("POD_IP")); err != nil {
 		return fmt.Errorf("writing redis.conf: %w", err)
 	}
 
@@ -145,6 +147,7 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 		},
 	)
 	srv.SetMetricsIdentity(clusterName, namespace, podName)
+	srv.SetClusterMode(cluster.Spec.Mode == redisv1.ClusterModeCluster)
 	srv.SetPrimaryIsolationConfig(k8sClient, webserver.PrimaryIsolationConfig{
 		Enabled:          primaryIsolationEnabled(cluster.Spec.PrimaryIsolation),
 		ClusterName:      clusterName,
@@ -204,7 +207,7 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 }
 
 // writeRedisConf generates redis.conf from the cluster spec.
-func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective, masterAuth string) error {
+func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective, masterAuth, podIP string) error {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return fmt.Errorf("creating data directory: %w", err)
 	}
@@ -232,6 +235,19 @@ func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective, masterAut
 		)
 	} else {
 		lines = append(lines, fmt.Sprintf("port %d", redisPort))
+	}
+
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		lines = append(lines,
+			"cluster-enabled yes",
+			fmt.Sprintf("cluster-config-file %s", filepath.Join(dataDir, "nodes.conf")),
+			fmt.Sprintf("cluster-node-timeout %s", redisConfigValue(cluster, "cluster-node-timeout", "15000")),
+			"cluster-announce-port 6379",
+			"cluster-announce-bus-port 16379",
+		)
+		if podIP != "" {
+			lines = append(lines, fmt.Sprintf("cluster-announce-ip %s", podIP))
+		}
 	}
 
 	if replicaOfDirective != "" {
@@ -402,6 +418,16 @@ func primaryIsolationPeerTimeout(cfg *redisv1.PrimaryIsolationSpec) time.Duratio
 		return defaultPrimaryIsolationTimeout
 	}
 	return cfg.PeerTimeout.Duration
+}
+
+func redisConfigValue(cluster *redisv1.RedisCluster, key, defaultValue string) string {
+	if cluster == nil || cluster.Spec.Redis == nil {
+		return defaultValue
+	}
+	if value, ok := cluster.Spec.Redis[key]; ok && strings.TrimSpace(value) != "" {
+		return value
+	}
+	return defaultValue
 }
 
 // resolvePodIP looks up a pod's IP address from the Kubernetes API.
