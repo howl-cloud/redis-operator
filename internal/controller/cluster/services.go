@@ -51,7 +51,6 @@ func (r *ClusterReconciler) reconcileServices(ctx context.Context, cluster *redi
 		return fmt.Errorf("leader service annotations: %w", err)
 	}
 
-	// Update leader service selector to point to current primary.
 	if cluster.Status.CurrentPrimary != "" {
 		return r.updateLeaderServiceSelector(ctx, cluster)
 	}

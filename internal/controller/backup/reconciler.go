@@ -43,7 +43,6 @@ func NewBackupReconciler(c client.Client, scheme *runtime.Scheme, recorder recor
 func (r *BackupReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	logger := log.FromContext(ctx).WithValues("redisbackup", req.NamespacedName)
 
-	// Fetch the RedisBackup.
 	var backup redisv1.RedisBackup
 	if err := r.Get(ctx, req.NamespacedName, &backup); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
@@ -62,14 +61,12 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 		}()
 	}
 
-	// Skip if already completed or failed.
 	if backup.Status.Phase == redisv1.BackupPhaseCompleted || backup.Status.Phase == redisv1.BackupPhaseFailed {
 		return reconcile.Result{}, nil
 	}
 
 	logger.Info("Reconciling RedisBackup", "phase", backup.Status.Phase)
 
-	// Step 1: Validate the referenced cluster exists and is healthy.
 	var cluster redisv1.RedisCluster
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      backup.Spec.ClusterName,
@@ -87,7 +84,6 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 		return reconcile.Result{RequeueAfter: requeueInterval}, nil
 	}
 
-	// Step 2: Select target pod.
 	targetPod, targetIP, err := r.selectTargetPod(ctx, &cluster, backup.Spec.Target)
 	if err != nil {
 		return reconcile.Result{}, r.setBackupFailed(ctx, &backup, fmt.Sprintf("selecting target pod: %v", err))
@@ -96,7 +92,6 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 		return reconcile.Result{}, r.setBackupFailed(ctx, &backup, "backup destination.s3.bucket is required")
 	}
 
-	// Step 3: Trigger backup on the target pod.
 	currentPhase := backup.Status.Phase
 	var backupResult *BackupResult
 	if currentPhase == "" || currentPhase == redisv1.BackupPhasePending {
@@ -111,9 +106,6 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 		return reconcile.Result{RequeueAfter: requeueInterval}, nil
 	}
 
-	// Step 4: Poll for completion.
-	// In a full implementation, this would poll the instance manager for backup progress.
-	// For now, mark as completed after triggering.
 	if err := r.setBackupCompleted(ctx, &backup, backupResult); err != nil {
 		return reconcile.Result{}, err
 	}
@@ -140,7 +132,6 @@ func (r *BackupReconciler) selectTargetPod(ctx context.Context, cluster *redisv1
 		return "", "", fmt.Errorf("listing pods: %w", err)
 	}
 
-	// Prefer a replica if target is prefer-replica.
 	if target == redisv1.BackupTargetPreferReplica {
 		for _, pod := range pods {
 			if pod.Name != cluster.Status.CurrentPrimary && pod.Status.PodIP != "" {
@@ -149,7 +140,6 @@ func (r *BackupReconciler) selectTargetPod(ctx context.Context, cluster *redisv1
 		}
 	}
 
-	// Fall back to primary.
 	for _, pod := range pods {
 		if pod.Name == cluster.Status.CurrentPrimary && pod.Status.PodIP != "" {
 			return pod.Name, pod.Status.PodIP, nil
@@ -161,7 +151,6 @@ func (r *BackupReconciler) selectTargetPod(ctx context.Context, cluster *redisv1
 
 // startBackup triggers the backup on a pod and returns backup artifact metadata.
 func (r *BackupReconciler) startBackup(ctx context.Context, backup *redisv1.RedisBackup, targetPod, targetIP string) (*BackupResult, error) {
-	// Update status to running before invoking the backup operation.
 	patch := client.MergeFrom(backup.DeepCopy())
 	backup.Status.Phase = redisv1.BackupPhaseRunning
 	backup.Status.TargetPod = targetPod
@@ -171,7 +160,6 @@ func (r *BackupReconciler) startBackup(ctx context.Context, backup *redisv1.Redi
 		return nil, err
 	}
 
-	// Trigger backup via HTTP.
 	return triggerBackup(ctx, targetIP, backup)
 }
 

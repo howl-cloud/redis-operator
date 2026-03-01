@@ -42,7 +42,6 @@ func (r *WebhookPKIReconciler) Start(ctx context.Context) error {
 		}
 	}
 
-	// Run immediately on startup, then periodically.
 	reconcileOnce()
 
 	ticker := time.NewTicker(r.interval)

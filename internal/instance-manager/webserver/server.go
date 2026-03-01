@@ -197,7 +197,6 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if cmd != nil && cmd.Process != nil {
-		// Process is running if we can signal 0
 		if cmd.ProcessState == nil {
 			if !s.shouldRunPrimaryIsolationCheck(r.Context()) {
 				w.WriteHeader(http.StatusOK)
@@ -498,7 +497,6 @@ func podIsFenced(cluster *redisv1.RedisCluster, podName string) bool {
 	return false
 }
 
-// handleReadyz checks that Redis responds to PING and is reachable.
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := s.redisClient.Ping(ctx).Err(); err != nil {
@@ -510,7 +508,6 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprint(w, "ok")
 }
 
-// handleStatus returns JSON status for the operator's status collection.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -539,7 +536,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// handlePromote issues REPLICAOF NO ONE.
 func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -555,7 +551,6 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprint(w, "promoted")
 }
 
-// handleDemote issues REPLICAOF <primary> 6379.
 func (s *Server) handleDemote(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

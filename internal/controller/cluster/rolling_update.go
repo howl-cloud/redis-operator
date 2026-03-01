@@ -39,12 +39,10 @@ func (r *ClusterReconciler) rollingUpdate(ctx context.Context, cluster *redisv1.
 
 	r.Recorder.Event(cluster, corev1.EventTypeNormal, "RollingUpdateStarted", "Rolling update started")
 
-	// Sort replicas by ordinal descending (highest first).
 	sort.Slice(replicas, func(i, j int) bool {
 		return podIndex(cluster.Name, replicas[i].Name) > podIndex(cluster.Name, replicas[j].Name)
 	})
 
-	// Update replicas one at a time.
 	for _, replica := range replicas {
 		currentHash := getPodSpecHash(&replica)
 		if currentHash == desiredHash {
@@ -55,11 +53,9 @@ func (r *ClusterReconciler) rollingUpdate(ctx context.Context, cluster *redisv1.
 		if err := r.Delete(ctx, &replica); err != nil && !errors.IsNotFound(err) {
 			return false, fmt.Errorf("deleting replica %s for update: %w", replica.Name, err)
 		}
-		// Recreate will happen on next reconcile cycle.
-		return true, nil // One at a time.
+		return true, nil
 	}
 
-	// Update primary last (via switchover).
 	if primary != nil {
 		currentHash := getPodSpecHash(primary)
 		if currentHash != desiredHash {
@@ -92,8 +88,6 @@ func (r *ClusterReconciler) rollingUpdate(ctx context.Context, cluster *redisv1.
 					return false, fmt.Errorf("clearing primary update approval: %w", err)
 				}
 			}
-			// After switchover, the old primary becomes a replica and will be updated
-			// on the next reconcile cycle.
 			return true, nil
 		}
 	}
@@ -132,7 +126,6 @@ func (r *ClusterReconciler) restartPodsForPendingResize(ctx context.Context, clu
 		}
 	}
 
-	// Restart replicas first, highest ordinal first.
 	sort.Slice(pendingReplicas, func(i, j int) bool {
 		return podIndex(cluster.Name, pendingReplicas[i].Name) > podIndex(cluster.Name, pendingReplicas[j].Name)
 	})
@@ -160,7 +153,6 @@ func (r *ClusterReconciler) restartPodsForPendingResize(ctx context.Context, clu
 		return true, nil
 	}
 	if len(pendingReplicas) > 0 {
-		// Wait for pending replicas to become ready before issuing another restart.
 		return true, nil
 	}
 
@@ -255,7 +247,6 @@ func (r *ClusterReconciler) switchover(ctx context.Context, cluster *redisv1.Red
 		return fmt.Errorf("fencing former primary %s: %w", formerPrimary, err)
 	}
 
-	// Select the best replica (lowest replication lag).
 	candidate, err := r.selectFailoverCandidate(ctx, cluster)
 	if err != nil {
 		return fmt.Errorf("selecting switchover candidate: %w", err)
@@ -286,7 +277,6 @@ func (r *ClusterReconciler) switchover(ctx context.Context, cluster *redisv1.Red
 		return fmt.Errorf("candidate %s has no reachable pod IP", candidate)
 	}
 
-	// Persist new primary selection and update leader Service routing.
 	statusPatch := client.MergeFrom(cluster.DeepCopy())
 	cluster.Status.CurrentPrimary = candidate
 	if err := r.Status().Patch(ctx, cluster, statusPatch); err != nil {

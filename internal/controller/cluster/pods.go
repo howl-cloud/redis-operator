@@ -52,7 +52,6 @@ func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.
 	desired := int(cluster.Spec.Instances)
 	current := len(existingPods)
 
-	// Ensure desired ordinals exist.
 	if current < desired {
 		logger.Info("Scaling up", "current", current, "desired", desired)
 		r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "ScaleUp", "Scaling up from %d to %d instances", current, desired)
@@ -68,12 +67,11 @@ func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.
 		}
 	}
 
-	// Scale down: delete excess pods (highest ordinal first, never the primary).
 	if current > desired {
 		logger.Info("Scaling down", "current", current, "desired", desired)
 		r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "ScaleDown", "Scaling down from %d to %d instances", current, desired)
 		sort.Slice(existingPods, func(i, j int) bool {
-			return existingPods[i].Name > existingPods[j].Name // Descending.
+			return existingPods[i].Name > existingPods[j].Name
 		})
 		for i := 0; i < current-desired; i++ {
 			pod := existingPods[i]
@@ -88,7 +86,6 @@ func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.
 		}
 	}
 
-	// Set initial primary if not yet set.
 	if cluster.Status.CurrentPrimary == "" && desired > 0 {
 		primaryName := podNameForIndex(cluster.Name, 0)
 		patch := client.MergeFrom(cluster.DeepCopy())

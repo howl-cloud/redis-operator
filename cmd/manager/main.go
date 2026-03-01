@@ -85,7 +85,6 @@ func instanceCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := ctrl.SetupSignalHandler()
 
-			// Fall back to environment variables if flags are not set.
 			if clusterName == "" {
 				clusterName = os.Getenv("CLUSTER_NAME")
 			}

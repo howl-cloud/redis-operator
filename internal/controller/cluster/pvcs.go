@@ -109,7 +109,6 @@ func (r *ClusterReconciler) reconcilePVCs(ctx context.Context, cluster *redisv1.
 		}
 	}
 
-	// Detect dangling PVCs (PVCs that exist but have no corresponding pod).
 	allPVCs, err := r.listClusterPVCs(ctx, cluster)
 	if err != nil {
 		return nil, fmt.Errorf("listing PVCs: %w", err)
@@ -119,7 +118,6 @@ func (r *ClusterReconciler) reconcilePVCs(ctx context.Context, cluster *redisv1.
 		return nil, fmt.Errorf("listing pods for PVC check: %w", err)
 	}
 	for _, pvc := range allPVCs {
-		// Check if any pod references this PVC.
 		found := false
 		for _, pod := range existingPods {
 			for _, vol := range pod.Spec.Volumes {

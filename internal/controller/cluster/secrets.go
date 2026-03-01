@@ -21,7 +21,6 @@ import (
 func (r *ClusterReconciler) reconcileSecrets(ctx context.Context, cluster *redisv1.RedisCluster) error {
 	logger := log.FromContext(ctx)
 
-	// Auto-generate auth secret if not provided.
 	if cluster.Spec.AuthSecret == nil {
 		secretName := generatedAuthSecretName(cluster.Name)
 		if err := r.ensureAuthSecret(ctx, cluster, secretName); err != nil {
@@ -72,7 +71,6 @@ func (r *ClusterReconciler) reconcileSecrets(ctx context.Context, cluster *redis
 		newVersions[ref.Name] = secret.ResourceVersion
 	}
 
-	// Check if any secret versions changed (rotation).
 	for name, newVer := range newVersions {
 		if oldVer, ok := cluster.Status.SecretsResourceVersion[name]; ok && oldVer != newVer {
 			r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "SecretRotated", "Secret %s rotated (resourceVersion %s -> %s)", name, oldVer, newVer)
@@ -96,7 +94,7 @@ func (r *ClusterReconciler) ensureAuthSecret(ctx context.Context, cluster *redis
 		Namespace: cluster.Namespace,
 	}, &existing)
 	if err == nil {
-		return nil // Already exists.
+		return nil
 	}
 	if !errors.IsNotFound(err) {
 		return fmt.Errorf("checking auth secret: %w", err)

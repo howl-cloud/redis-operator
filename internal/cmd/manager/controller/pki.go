@@ -46,14 +46,12 @@ type WebhookPKIOptions struct {
 func EnsureWebhookPKI(ctx context.Context, c client.Client, options WebhookPKIOptions) error {
 	logger := log.FromContext(ctx)
 
-	// Step 1: Ensure CA secret.
 	caKey, caCert, err := ensureCA(ctx, c, options.Namespace)
 	if err != nil {
 		return fmt.Errorf("ensuring CA: %w", err)
 	}
 	logger.Info("CA secret ensured", "namespace", options.Namespace)
 
-	// Step 2: Ensure webhook certificate signed by CA.
 	rotated, notAfter, err := ensureWebhookCert(ctx, c, options.Namespace, options.ServiceName, caKey, caCert)
 	if err != nil {
 		return fmt.Errorf("ensuring webhook cert: %w", err)
@@ -92,14 +90,12 @@ func ensureCA(ctx context.Context, c client.Client, namespace string) (*ecdsa.Pr
 	}, &secret)
 
 	if err == nil {
-		// Parse existing CA.
 		return parseCAFromSecret(&secret)
 	}
 	if !errors.IsNotFound(err) {
 		return nil, nil, fmt.Errorf("getting CA secret: %w", err)
 	}
 
-	// Generate new CA.
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generating CA key: %w", err)
@@ -128,7 +124,6 @@ func ensureCA(ctx context.Context, c client.Client, namespace string) (*ecdsa.Pr
 		return nil, nil, fmt.Errorf("parsing CA certificate: %w", err)
 	}
 
-	// Encode PEM.
 	keyDER, err := x509.MarshalECPrivateKey(caKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshaling CA key: %w", err)
@@ -137,7 +132,6 @@ func ensureCA(ctx context.Context, c client.Client, namespace string) (*ecdsa.Pr
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCertDER})
 
-	// Store in Secret.
 	secret = corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      caSecretName,
@@ -173,7 +167,6 @@ func ensureWebhookCert(
 		Name: webhookCertSecret, Namespace: namespace,
 	}, &secret)
 	if getErr == nil {
-		// Check if cert is still valid (renew if within 30 days of expiry).
 		if !needsRenewal(&secret) {
 			return false, time.Time{}, nil
 		}
@@ -184,7 +177,6 @@ func ensureWebhookCert(
 		createNew = true
 	}
 
-	// Generate webhook server key and certificate.
 	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return false, time.Time{}, fmt.Errorf("generating server key: %w", err)
@@ -245,7 +237,7 @@ func ensureWebhookCert(
 		}
 		return false, serverTemplate.NotAfter, nil
 	}
-	// Update existing.
+
 	secret.Data = newSecret.Data
 	if err := c.Update(ctx, &secret); err != nil {
 		return false, time.Time{}, err

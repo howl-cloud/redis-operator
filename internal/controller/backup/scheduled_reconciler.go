@@ -38,13 +38,11 @@ func NewScheduledBackupReconciler(c client.Client, scheme *runtime.Scheme, recor
 func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	logger := log.FromContext(ctx).WithValues("redisscheduledbackup", req.NamespacedName)
 
-	// Fetch the RedisScheduledBackup.
 	var scheduled redisv1.RedisScheduledBackup
 	if err := r.Get(ctx, req.NamespacedName, &scheduled); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Check if suspended.
 	if scheduled.Spec.Suspend != nil && *scheduled.Spec.Suspend {
 		logger.Info("Scheduled backup is suspended")
 		patch := client.MergeFrom(scheduled.DeepCopy())
@@ -57,7 +55,6 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req reconcile
 
 	logger.Info("Reconciling RedisScheduledBackup", "schedule", scheduled.Spec.Schedule)
 
-	// Validate the referenced cluster exists.
 	var cluster redisv1.RedisCluster
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      scheduled.Spec.ClusterName,
@@ -66,14 +63,12 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req reconcile
 		return reconcile.Result{}, fmt.Errorf("cluster %s not found: %w", scheduled.Spec.ClusterName, err)
 	}
 
-	// Calculate next schedule time.
 	now := time.Now()
 	nextSchedule, err := nextScheduleTime(scheduled.Spec.Schedule, scheduled.Status.LastScheduleTime, now)
 	if err != nil {
 		return reconcile.Result{}, fmt.Errorf("parsing schedule: %w", err)
 	}
 
-	// Update next schedule time in status.
 	nextMeta := metav1.NewTime(nextSchedule)
 	statusPatch := client.MergeFrom(scheduled.DeepCopy())
 	scheduled.Status.NextScheduleTime = &nextMeta
@@ -82,13 +77,10 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req reconcile
 		return reconcile.Result{}, err
 	}
 
-	// Check if it's time to create a backup.
 	if now.Before(nextSchedule) {
-		// Not yet time -- requeue at the next schedule time.
 		return reconcile.Result{RequeueAfter: nextSchedule.Sub(now)}, nil
 	}
 
-	// Create a RedisBackup.
 	backupName := fmt.Sprintf("%s-%d", scheduled.Name, now.Unix())
 	backup := &redisv1.RedisBackup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -114,7 +106,6 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req reconcile
 	r.Recorder.Eventf(&scheduled, corev1.EventTypeNormal, "ScheduledBackupTriggered", "Created backup %s from schedule %s", backupName, scheduled.Spec.Schedule)
 	logger.Info("Created RedisBackup", "backup", backupName)
 
-	// Update last schedule time.
 	nowMeta := metav1.Now()
 	lastPatch := client.MergeFrom(scheduled.DeepCopy())
 	scheduled.Status.LastScheduleTime = &nowMeta
@@ -123,7 +114,6 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req reconcile
 		return reconcile.Result{}, err
 	}
 
-	// Cleanup old backups.
 	if err := r.cleanupOldBackups(ctx, &scheduled); err != nil {
 		logger.Error(err, "Failed to cleanup old backups")
 	}
@@ -134,25 +124,21 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req reconcile
 // nextScheduleTime computes the next time a backup should run.
 // Uses a simplified cron parser. In production, use a proper cron library.
 func nextScheduleTime(schedule string, lastSchedule *metav1.Time, now time.Time) (time.Time, error) {
-	// Simplified: treat schedule as an interval duration for demonstration.
-	// A production implementation would use robfig/cron or similar.
-	// For now, default to every hour if we can't parse.
 	interval := 1 * time.Hour
 
 	if lastSchedule == nil {
-		return now, nil // Run immediately if never run before.
+		return now, nil
 	}
 
 	next := lastSchedule.Add(interval)
 	if next.Before(now) {
-		return now, nil // Overdue, run now.
+		return now, nil
 	}
 	return next, nil
 }
 
 // cleanupOldBackups removes excess backups beyond the history limits.
 func (r *ScheduledBackupReconciler) cleanupOldBackups(ctx context.Context, scheduled *redisv1.RedisScheduledBackup) error {
-	// List all backups created by this scheduled backup.
 	var backupList redisv1.RedisBackupList
 	if err := r.List(ctx, &backupList, client.InNamespace(scheduled.Namespace), client.MatchingLabels{
 		"redis.io/scheduled-backup": scheduled.Name,
@@ -160,7 +146,6 @@ func (r *ScheduledBackupReconciler) cleanupOldBackups(ctx context.Context, sched
 		return fmt.Errorf("listing backups: %w", err)
 	}
 
-	// Count successful and failed backups.
 	var successful, failed []redisv1.RedisBackup
 	for _, b := range backupList.Items {
 		switch b.Status.Phase {
@@ -171,7 +156,6 @@ func (r *ScheduledBackupReconciler) cleanupOldBackups(ctx context.Context, sched
 		}
 	}
 
-	// Cleanup successful backups.
 	successLimit := int32(3)
 	if scheduled.Spec.SuccessfulBackupsHistoryLimit != nil {
 		successLimit = *scheduled.Spec.SuccessfulBackupsHistoryLimit
@@ -185,7 +169,6 @@ func (r *ScheduledBackupReconciler) cleanupOldBackups(ctx context.Context, sched
 		}
 	}
 
-	// Cleanup failed backups.
 	failedLimit := int32(3)
 	if scheduled.Spec.FailedBackupsHistoryLimit != nil {
 		failedLimit = *scheduled.Spec.FailedBackupsHistoryLimit

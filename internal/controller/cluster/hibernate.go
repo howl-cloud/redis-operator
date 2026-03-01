@@ -35,7 +35,6 @@ func (r *ClusterReconciler) reconcileHibernation(ctx context.Context, cluster *r
 	logger := log.FromContext(ctx)
 
 	if isHibernationEnabled(cluster) {
-		// Hibernate: delete all pods but keep PVCs.
 		if cluster.Status.Phase != redisv1.ClusterPhaseHibernating {
 			logger.Info("Hibernating cluster: deleting all pods")
 			r.Recorder.Event(cluster, corev1.EventTypeNormal, "Hibernating", "Cluster is entering hibernation, deleting all pods")
@@ -93,7 +92,6 @@ func (r *ClusterReconciler) reconcileHibernation(ctx context.Context, cluster *r
 		}
 		setCondition(&cluster.Status.Conditions, hibernatedCondition)
 
-		// Reset phase to Creating so normal reconciliation can proceed.
 		cluster.Status.Phase = redisv1.ClusterPhaseCreating
 
 		if err := r.Status().Patch(ctx, cluster, patch); err != nil {
@@ -113,12 +111,11 @@ func (r *ClusterReconciler) clearLeaderServiceSelector(ctx context.Context, clus
 		Name: svcName, Namespace: cluster.Namespace,
 	}, &svc); err != nil {
 		if errors.IsNotFound(err) {
-			return nil // Service doesn't exist yet, nothing to clear.
+			return nil
 		}
 		return fmt.Errorf("getting leader service: %w", err)
 	}
 
-	// Set selector to an impossible match to clear endpoints.
 	patch := client.MergeFrom(svc.DeepCopy())
 	svc.Spec.Selector = map[string]string{
 		redisv1.LabelCluster:  cluster.Name,

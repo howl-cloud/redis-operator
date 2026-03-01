@@ -66,7 +66,6 @@ func RunController(
 		return fmt.Errorf("creating manager: %w", err)
 	}
 
-	// Create event recorder.
 	recorder := mgr.GetEventRecorderFor("redis-operator")
 
 	if enableWebhooks {
@@ -80,7 +79,6 @@ func RunController(
 		}
 	}
 
-	// Register reconcilers.
 	clusterReconciler := cluster.NewClusterReconciler(mgr.GetClient(), mgr.GetScheme(), recorder, maxConcurrentReconciles)
 	if err := clusterReconciler.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up ClusterReconciler: %w", err)
@@ -97,7 +95,6 @@ func RunController(
 	}
 
 	if enableWebhooks {
-		// Register webhooks.
 		defaulter := &webhooks.RedisClusterDefaulter{}
 		if err := defaulter.SetupWebhookWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up RedisCluster defaulter webhook: %w", err)
@@ -120,7 +117,6 @@ func RunController(
 		logger.Info("Webhooks are disabled; skipping webhook registration")
 	}
 
-	// Health checks.
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return fmt.Errorf("setting up health check: %w", err)
 	}

@@ -51,7 +51,6 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 	logger := log.FromContext(ctx).WithValues("pod", podName, "cluster", clusterName)
 	logger.Info("Starting instance manager")
 
-	// Step 1: Create a Kubernetes client.
 	cfg, err := ctrl.GetConfig()
 	if err != nil {
 		return fmt.Errorf("getting kubeconfig: %w", err)
@@ -65,7 +64,6 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 		return fmt.Errorf("creating Kubernetes client: %w", err)
 	}
 
-	// Step 2: Fetch the RedisCluster CR.
 	var cluster redisv1.RedisCluster
 	if err := k8sClient.Get(ctx, types.NamespacedName{
 		Name:      clusterName,
@@ -77,7 +75,6 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 		return err
 	}
 
-	// Step 3: Determine role and apply split-brain guard.
 	var replicaOfDirective string
 	var masterAuth string
 	if isReplicaModeEnabled(&cluster) {
@@ -110,12 +107,10 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 		}
 	}
 
-	// Step 4: Write redis.conf.
 	if err := writeRedisConf(&cluster, replicaOfDirective, masterAuth); err != nil {
 		return fmt.Errorf("writing redis.conf: %w", err)
 	}
 
-	// Step 5: Start redis-server as a child process.
 	redisCmd := exec.CommandContext(ctx, "redis-server", redisConfPath)
 	redisCmd.Stdout = os.Stdout
 	redisCmd.Stderr = os.Stderr
@@ -124,7 +119,6 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 	}
 	logger.Info("redis-server started", "pid", redisCmd.Process.Pid)
 
-	// Step 6: Create Redis client for local instance.
 	tlsConfig, err := redisTLSConfig(&cluster)
 	if err != nil {
 		return fmt.Errorf("building redis client TLS config: %w", err)
@@ -140,7 +134,6 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 	})
 	defer func() { _ = redisClient.Close() }()
 
-	// Step 7: Start HTTP server (goroutine).
 	srv := webserver.NewServer(
 		redisClient,
 		httpListenAddr,
@@ -168,7 +161,6 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 		}
 	}()
 
-	// Step 8: Start the InstanceReconciler watch loop (goroutine).
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: "0"},
@@ -203,7 +195,6 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 		}
 	}()
 
-	// Step 9: Block on redis-server wait.
 	if err := redisCmd.Wait(); err != nil {
 		return fmt.Errorf("redis-server exited: %w", err)
 	}
@@ -220,7 +211,6 @@ func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective, masterAut
 
 	var lines []string
 
-	// Base configuration.
 	lines = append(lines, "bind 0.0.0.0",
 		fmt.Sprintf("dir %s", dataDir),
 		"appendonly yes",
@@ -244,7 +234,6 @@ func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective, masterAut
 		lines = append(lines, fmt.Sprintf("port %d", redisPort))
 	}
 
-	// Replication directive (split-brain guard).
 	if replicaOfDirective != "" {
 		lines = append(lines, replicaOfDirective)
 	}
@@ -252,12 +241,10 @@ func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective, masterAut
 		lines = append(lines, fmt.Sprintf("masterauth %s", masterAuth))
 	}
 
-	// User-specified redis.conf parameters.
 	for key, val := range cluster.Spec.Redis {
 		lines = append(lines, fmt.Sprintf("%s %s", key, val))
 	}
 
-	// ACL file if configured.
 	if cluster.Spec.ACLConfigSecret != nil {
 		lines = append(lines, fmt.Sprintf("aclfile %s", filepath.Join(dataDir, "users.acl")))
 	}

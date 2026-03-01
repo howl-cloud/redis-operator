@@ -94,7 +94,6 @@ func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.R
 
 	cluster.Status.InstancesStatus = instanceStatuses
 
-	// Count ready instances.
 	var ready int32
 	for _, s := range instanceStatuses {
 		if s.Connected {
@@ -110,16 +109,13 @@ func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.R
 	}
 	cluster.Status.SentinelReadyInstances = sentinelReady
 
-	// Update phase.
 	oldPhase := cluster.Status.Phase
 	cluster.Status.Phase = determinePhase(cluster, instanceStatuses)
 
-	// Record event on phase transition to Healthy.
 	if oldPhase != redisv1.ClusterPhaseHealthy && cluster.Status.Phase == redisv1.ClusterPhaseHealthy {
 		r.Recorder.Event(cluster, corev1.EventTypeNormal, "ClusterReady", "Cluster is healthy with all instances connected")
 	}
 
-	// Update conditions and preserve long-lived lifecycle conditions.
 	cluster.Status.Conditions = determineConditions(cluster, instanceStatuses)
 	cluster.Status.Conditions = preserveConditions(
 		existingConditions,
@@ -189,7 +185,6 @@ func (r *ClusterReconciler) countReadySentinelPods(ctx context.Context, cluster 
 func (r *ClusterReconciler) checkReachability(_ context.Context, cluster *redisv1.RedisCluster, instanceStatuses map[string]redisv1.InstanceStatus) bool {
 	expected := int(cluster.Spec.Instances)
 	if len(instanceStatuses) < expected {
-		// Allow reconciliation to continue so missing pods can be created.
 		return false
 	}
 

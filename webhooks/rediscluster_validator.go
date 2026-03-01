@@ -123,7 +123,6 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 		))
 	}
 
-	// Validate hibernation annotation value if present.
 	if val, ok := cluster.Annotations[redisv1.AnnotationHibernation]; ok {
 		validValues := map[string]bool{"on": true, "off": true, "true": true, "false": true, "": true}
 		if !validValues[val] {
@@ -135,7 +134,6 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 		}
 	}
 
-	// Validate supervised primary update approval annotation if present.
 	if val, ok := cluster.Annotations[redisv1.AnnotationApprovePrimaryUpdate]; ok {
 		if val != "true" && val != "" {
 			allErrs = append(allErrs, field.Invalid(

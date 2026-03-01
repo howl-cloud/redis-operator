@@ -62,7 +62,6 @@ func NewClusterReconciler(c client.Client, scheme *runtime.Scheme, recorder reco
 func (r *ClusterReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	logger := log.FromContext(ctx).WithValues("rediscluster", req.NamespacedName)
 
-	// Fetch the RedisCluster CR.
 	var cluster redisv1.RedisCluster
 	if err := r.Get(ctx, req.NamespacedName, &cluster); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
@@ -74,7 +73,6 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req reconcile.Request
 
 	logger.Info("Reconciling RedisCluster", "instances", cluster.Spec.Instances, "phase", cluster.Status.Phase)
 
-	// Record event on first reconciliation (Creating phase).
 	if cluster.Status.Phase == "" {
 		r.Recorder.Event(&cluster, corev1.EventTypeNormal, "Creating", "Cluster reconciliation started")
 	}

@@ -87,7 +87,6 @@ func (r *InstanceReconciler) SetRedisCmd(cmd *exec.Cmd) {
 func (r *InstanceReconciler) Reconcile(ctx context.Context, _ reconcile.Request) (reconcile.Result, error) {
 	logger := log.FromContext(ctx).WithValues("pod", r.podName, "cluster", r.clusterName)
 
-	// Fetch the current RedisCluster CR.
 	var cluster redisv1.RedisCluster
 	if err := r.client.Get(ctx, types.NamespacedName{
 		Name:      r.clusterName,
@@ -96,7 +95,6 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, _ reconcile.Request)
 		return reconcile.Result{}, fmt.Errorf("fetching RedisCluster: %w", err)
 	}
 
-	// Step 1: Fencing check.
 	if r.isFenced(&cluster) {
 		logger.Info("Pod is fenced, stopping redis-server")
 		r.recorder.Eventf(&cluster, corev1.EventTypeWarning, "InstanceFenced", "Pod %s is fenced, stopping redis-server", r.podName)
@@ -104,36 +102,28 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, _ reconcile.Request)
 		return reconcile.Result{}, nil
 	}
 
-	// Step 2: Role reconciliation.
 	if err := r.reconcileRole(ctx, &cluster); err != nil {
 		logger.Error(err, "Failed to reconcile role")
 		return reconcile.Result{}, err
 	}
 
-	// Step 3: Config reconciliation (redis.conf parameters).
 	if err := r.reconcileConfig(ctx, &cluster); err != nil {
 		logger.Error(err, "Failed to reconcile config")
-		// Not fatal -- continue to status reporting.
 	} else if len(cluster.Spec.Redis) > 0 {
 		r.recorder.Event(&cluster, corev1.EventTypeNormal, "ConfigReloaded", "Redis configuration reloaded")
 	}
 
-	// Step 4: Secret reconciliation.
 	if err := r.reconcileSecrets(ctx, &cluster); err != nil {
 		logger.Error(err, "Failed to reconcile secrets")
 		if errors.Is(err, errFallbackAuthSecretUnavailable) {
 			return reconcile.Result{}, err
 		}
-		// Not fatal -- continue to status reporting.
 	}
 
-	// Step 5: TLS certificate rotation reconciliation.
 	if err := r.reconcileTLSCerts(ctx, &cluster); err != nil {
 		logger.Error(err, "Failed to reconcile TLS certificates")
-		// Not fatal -- continue to status reporting.
 	}
 
-	// Step 6: Status reporting.
 	if err := r.reportStatus(ctx, &cluster); err != nil {
 		logger.Error(err, "Failed to report status")
 		return reconcile.Result{}, err
@@ -216,7 +206,6 @@ func (r *InstanceReconciler) reconcileRole(ctx context.Context, cluster *redisv1
 	isPrimary := cluster.Status.CurrentPrimary == r.podName
 
 	if isPrimary && info.Role == "slave" {
-		// Should be primary but is a replica -- promote.
 		r.recorder.Eventf(cluster, corev1.EventTypeNormal, "PromotedToPrimary", "Pod %s promoted to primary", r.podName)
 		return replication.Promote(ctx, r.redisClient)
 	}
