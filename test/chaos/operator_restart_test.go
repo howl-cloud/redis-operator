@@ -26,7 +26,7 @@ var _ = Describe("Operator restart during failover", Label("operator", "failover
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(faults.KillPod(ctx, k8sClient, testNamespace, primaryPod.Name)).To(Succeed())
-		Expect(faults.WaitForFenceAnnotation(ctx, k8sClient, testNamespace, clusterName, 3*time.Minute)).To(Succeed())
+		Expect(faults.WaitForFailoverSignal(ctx, k8sClient, testNamespace, clusterName, primaryPod.Name, 3*time.Minute)).To(Succeed())
 
 		Expect(faults.RestartOperator(ctx, k8sClient, operatorNamespace, releaseName, 4*time.Minute)).To(Succeed())
 

@@ -187,29 +187,55 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 	}
 
 	var projectedSources []corev1.VolumeProjection
-	projectedSecretNames := map[string]struct{}{}
-	secretRefs := []*redisv1.LocalObjectReference{
-		cluster.Spec.AuthSecret,
-		cluster.Spec.ACLConfigSecret,
-	}
-	for _, ref := range secretRefs {
-		if ref != nil && ref.Name != "" {
-			projectedSecretNames[ref.Name] = struct{}{}
+	projectedSecretKeys := map[string]map[string]struct{}{}
+	addProjectedSecretKey := func(secretName, key string) {
+		secretName = strings.TrimSpace(secretName)
+		key = strings.TrimSpace(key)
+		if secretName == "" || key == "" {
+			return
 		}
+		keys, ok := projectedSecretKeys[secretName]
+		if !ok {
+			keys = map[string]struct{}{}
+			projectedSecretKeys[secretName] = keys
+		}
+		keys[key] = struct{}{}
+	}
+
+	if cluster.Spec.AuthSecret != nil {
+		addProjectedSecretKey(cluster.Spec.AuthSecret.Name, "password")
+	}
+	if cluster.Spec.ACLConfigSecret != nil {
+		addProjectedSecretKey(cluster.Spec.ACLConfigSecret.Name, "acl")
 	}
 	if sourceAuthSecretName := replicaModeSourceAuthSecretName(cluster); sourceAuthSecretName != "" {
-		projectedSecretNames[sourceAuthSecretName] = struct{}{}
+		addProjectedSecretKey(sourceAuthSecretName, "password")
 	}
-	if len(projectedSecretNames) > 0 {
-		secretNames := make([]string, 0, len(projectedSecretNames))
-		for name := range projectedSecretNames {
+	if len(projectedSecretKeys) > 0 {
+		secretNames := make([]string, 0, len(projectedSecretKeys))
+		for name := range projectedSecretKeys {
 			secretNames = append(secretNames, name)
 		}
 		sort.Strings(secretNames)
 		for _, name := range secretNames {
+			keys := make([]string, 0, len(projectedSecretKeys[name]))
+			for key := range projectedSecretKeys[name] {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+
+			items := make([]corev1.KeyToPath, 0, len(keys))
+			for _, key := range keys {
+				items = append(items, corev1.KeyToPath{
+					Key:  key,
+					Path: fmt.Sprintf("%s/%s", name, key),
+				})
+			}
+
 			projectedSources = append(projectedSources, corev1.VolumeProjection{
 				Secret: &corev1.SecretProjection{
 					LocalObjectReference: corev1.LocalObjectReference{Name: name},
+					Items:                items,
 				},
 			})
 		}
@@ -507,10 +533,16 @@ func (r *ClusterReconciler) createSentinelPod(ctx context.Context, cluster *redi
 		return nil
 	}
 	var projectedSources []corev1.VolumeProjection
-	if cluster.Spec.AuthSecret != nil {
+	if cluster.Spec.AuthSecret != nil && strings.TrimSpace(cluster.Spec.AuthSecret.Name) != "" {
 		projectedSources = append(projectedSources, corev1.VolumeProjection{
 			Secret: &corev1.SecretProjection{
 				LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Spec.AuthSecret.Name},
+				Items: []corev1.KeyToPath{
+					{
+						Key:  "password",
+						Path: fmt.Sprintf("%s/password", cluster.Spec.AuthSecret.Name),
+					},
+				},
 			},
 		})
 	}

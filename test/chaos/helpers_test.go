@@ -14,6 +14,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
@@ -104,6 +106,68 @@ func getAnyClusterPod(ctx context.Context) (corev1.Pod, error) {
 		return corev1.Pod{}, fmt.Errorf("no pods found for cluster %s/%s", testNamespace, clusterName)
 	}
 	return pods[0], nil
+}
+
+func ensureWorkloadClientPod(ctx context.Context) (corev1.Pod, error) {
+	workloadPodName := fmt.Sprintf("%s-workload-client", clusterName)
+	key := types.NamespacedName{Namespace: testNamespace, Name: workloadPodName}
+
+	var existing corev1.Pod
+	if err := k8sClient.Get(ctx, key, &existing); err == nil {
+		if err := faults.WaitForPodReady(ctx, k8sClient, testNamespace, workloadPodName, 2*time.Minute); err != nil {
+			return corev1.Pod{}, err
+		}
+		if err := k8sClient.Get(ctx, key, &existing); err != nil {
+			return corev1.Pod{}, fmt.Errorf("getting workload client pod %s/%s: %w", testNamespace, workloadPodName, err)
+		}
+		return existing, nil
+	} else if !apierrors.IsNotFound(err) {
+		return corev1.Pod{}, fmt.Errorf("checking workload client pod %s/%s: %w", testNamespace, workloadPodName, err)
+	}
+
+	seedPod, err := getAnyClusterPod(ctx)
+	if err != nil {
+		return corev1.Pod{}, err
+	}
+	if len(seedPod.Spec.Containers) == 0 {
+		return corev1.Pod{}, fmt.Errorf("cluster pod %s has no containers", seedPod.Name)
+	}
+	clientImage := strings.TrimSpace(seedPod.Spec.Containers[0].Image)
+	if clientImage == "" {
+		return corev1.Pod{}, fmt.Errorf("cluster pod %s has empty container image", seedPod.Name)
+	}
+
+	workloadPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      workloadPodName,
+			Namespace: testNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "redis-chaos-workload-client",
+			},
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyAlways,
+			Containers: []corev1.Container{
+				{
+					Name:    "client",
+					Image:   clientImage,
+					Command: []string{"sh", "-ceu", "while true; do sleep 3600; done"},
+				},
+			},
+		},
+	}
+
+	if err := k8sClient.Create(ctx, workloadPod); err != nil && !apierrors.IsAlreadyExists(err) {
+		return corev1.Pod{}, fmt.Errorf("creating workload client pod %s/%s: %w", testNamespace, workloadPodName, err)
+	}
+	if err := faults.WaitForPodReady(ctx, k8sClient, testNamespace, workloadPodName, 2*time.Minute); err != nil {
+		return corev1.Pod{}, err
+	}
+	if err := k8sClient.Get(ctx, key, &existing); err != nil {
+		return corev1.Pod{}, fmt.Errorf("getting workload client pod %s/%s after creation: %w", testNamespace, workloadPodName, err)
+	}
+
+	return existing, nil
 }
 
 func getPeerIPsExcluding(ctx context.Context, excludedPodName string) ([]string, error) {

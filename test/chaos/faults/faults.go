@@ -353,7 +353,7 @@ func WaitForPrimaryChange(ctx context.Context, c client.Reader, namespace, name,
 func WaitForFenceAnnotation(ctx context.Context, c client.Reader, namespace, name string, timeout time.Duration) error {
 	err := wait.PollUntilContextTimeout(ctx, pollInterval, timeout, true, func(ctx context.Context) (bool, error) {
 		var cluster redisv1.RedisCluster
-		getCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
 		if err := c.Get(getCtx, types.NamespacedName{Namespace: namespace, Name: name}, &cluster); err != nil {
@@ -367,6 +367,43 @@ func WaitForFenceAnnotation(ctx context.Context, c client.Reader, namespace, nam
 	})
 	if err != nil {
 		return fmt.Errorf("waiting for RedisCluster %s/%s fencing annotation: %w", namespace, name, err)
+	}
+	return nil
+}
+
+// WaitForFailoverSignal waits for fencing annotation, failing-over phase, or primary change.
+func WaitForFailoverSignal(ctx context.Context, c client.Reader, namespace, name, oldPrimary string, timeout time.Duration) error {
+	oldPrimary = strings.TrimSpace(oldPrimary)
+	err := wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, timeout, true, func(ctx context.Context) (bool, error) {
+		var cluster redisv1.RedisCluster
+		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cluster); err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, nil
+			}
+			return false, err
+		}
+
+		if strings.TrimSpace(cluster.Annotations[redisv1.FencingAnnotationKey]) != "" {
+			return true, nil
+		}
+		if cluster.Status.Phase == redisv1.ClusterPhaseFailingOver {
+			return true, nil
+		}
+		primary := strings.TrimSpace(cluster.Status.CurrentPrimary)
+		if primary != "" && oldPrimary != "" && primary != oldPrimary {
+			return true, nil
+		}
+		return false, nil
+	})
+	if err != nil {
+		return fmt.Errorf(
+			"waiting for RedisCluster %s/%s failover signal (fence annotation, phase %q, or primary change from %q): %w",
+			namespace,
+			name,
+			redisv1.ClusterPhaseFailingOver,
+			oldPrimary,
+			err,
+		)
 	}
 	return nil
 }

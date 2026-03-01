@@ -24,7 +24,7 @@ var _ = Describe("Rolling update under load", Label("rolling-update"), func() {
 		offsetBefore, err := faults.ReplicationOffset(ctx, testNamespace, primaryPod.Name, redisPassword)
 		Expect(err).NotTo(HaveOccurred())
 
-		clientPod, err := getAnyClusterPod(ctx)
+		clientPod, err := ensureWorkloadClientPod(ctx)
 		Expect(err).NotTo(HaveOccurred())
 
 		benchmark, err := startKubectlBackgroundCommand(
@@ -36,7 +36,6 @@ var _ = Describe("Rolling update under load", Label("rolling-update"), func() {
 			"-t", "set",
 			"-n", "500000",
 			"-c", "10",
-			"-e",
 			"--csv",
 		)
 		Expect(err).NotTo(HaveOccurred())
