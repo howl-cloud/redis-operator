@@ -468,6 +468,58 @@ func TestUpdateStatus_CountsReadyInstances(t *testing.T) {
 	assert.Equal(t, redisv1.ClusterPhaseHealthy, updated.Status.Phase)
 }
 
+func TestUpdateStatus_ClusterModeMarksBootstrapCompletedWhenSlotsAssigned(t *testing.T) {
+	cluster := newTestCluster("test", "default", 0)
+	cluster.Spec.Mode = redisv1.ClusterModeCluster
+	cluster.Spec.Shards = 3
+	cluster.Spec.ReplicasPerShard = 0
+
+	r, c := newReconciler(cluster)
+	ctx := context.Background()
+
+	ranges := calculateClusterSlotRanges(3)
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Role: "master", Connected: true, NodeID: "node-0", SlotsServed: []redisv1.SlotRange{ranges[0]}, ClusterState: "ok"},
+		"test-1": {Role: "master", Connected: true, NodeID: "node-1", SlotsServed: []redisv1.SlotRange{ranges[1]}, ClusterState: "ok"},
+		"test-2": {Role: "master", Connected: true, NodeID: "node-2", SlotsServed: []redisv1.SlotRange{ranges[2]}, ClusterState: "ok"},
+	}
+
+	err := r.updateStatus(ctx, cluster, statuses)
+	require.NoError(t, err)
+
+	var updated redisv1.RedisCluster
+	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updated)
+	require.NoError(t, err)
+
+	assert.Equal(t, int32(16384), updated.Status.SlotsAssigned)
+	assert.Equal(t, "ok", updated.Status.ClusterState)
+	assert.True(t, updated.Status.BootstrapCompleted)
+}
+
+func TestUpdateStatus_ClusterModePreservesBootstrapCompletedOnceSet(t *testing.T) {
+	cluster := newTestCluster("test", "default", 0)
+	cluster.Spec.Mode = redisv1.ClusterModeCluster
+	cluster.Spec.Shards = 3
+	cluster.Spec.ReplicasPerShard = 0
+	cluster.Status.BootstrapCompleted = true
+
+	r, c := newReconciler(cluster)
+	ctx := context.Background()
+
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": {Role: "master", Connected: true, NodeID: "node-0", ClusterState: "fail"},
+	}
+
+	err := r.updateStatus(ctx, cluster, statuses)
+	require.NoError(t, err)
+
+	var updated redisv1.RedisCluster
+	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updated)
+	require.NoError(t, err)
+
+	assert.True(t, updated.Status.BootstrapCompleted)
+}
+
 func TestUpdateStatus_PreservesHibernatedCondition(t *testing.T) {
 	cluster := newTestCluster("test", "default", 1)
 	cluster.Status.CurrentPrimary = "test-0"

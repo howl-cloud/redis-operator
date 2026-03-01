@@ -99,7 +99,7 @@ func (r *ClusterReconciler) recyclePVCsForMissingPods(ctx context.Context, clust
 		existingPods[pods[i].Name] = struct{}{}
 	}
 
-	for i := 0; i < int(cluster.Spec.Instances); i++ {
+	for i := 0; i < int(cluster.Spec.DesiredDataInstances()); i++ {
 		podName := podNameForIndex(cluster.Name, i)
 		if _, ok := existingPods[podName]; ok {
 			continue

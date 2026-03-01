@@ -34,16 +34,20 @@ func (d *RedisClusterDefaulter) Default(_ context.Context, obj runtime.Object) e
 		return nil
 	}
 
-	if cluster.Spec.Instances == 0 {
+	if cluster.Spec.Mode == "" {
+		cluster.Spec.Mode = redisv1.ClusterModeStandalone
+	}
+
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		if cluster.Spec.Shards == 0 {
+			cluster.Spec.Shards = 3
+		}
+	} else if cluster.Spec.Instances == 0 {
 		cluster.Spec.Instances = 1
 	}
 
 	if cluster.Spec.ImageName == "" {
 		cluster.Spec.ImageName = "redis:7.2"
-	}
-
-	if cluster.Spec.Mode == "" {
-		cluster.Spec.Mode = redisv1.ClusterModeStandalone
 	}
 
 	if cluster.Spec.PrimaryUpdateStrategy == "" {

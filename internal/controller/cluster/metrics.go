@@ -72,7 +72,7 @@ func setClusterInstancesMetrics(cluster *redisv1.RedisCluster, actual int) {
 	if !ok {
 		return
 	}
-	redisClusterInstancesTotal.WithLabelValues(namespace, name, "desired").Set(float64(cluster.Spec.Instances))
+	redisClusterInstancesTotal.WithLabelValues(namespace, name, "desired").Set(float64(cluster.Spec.DesiredDataInstances()))
 	redisClusterInstancesTotal.WithLabelValues(namespace, name, "actual").Set(float64(actual))
 }
 

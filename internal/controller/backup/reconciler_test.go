@@ -220,7 +220,7 @@ func TestSetBackupCompleted(t *testing.T) {
 		ArtifactType: redisv1.BackupArtifactTypeRDB,
 		BackupPath:   "s3://test-bucket/backups/test-backup.rdb",
 		BackupSize:   1024,
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	var updated redisv1.RedisBackup

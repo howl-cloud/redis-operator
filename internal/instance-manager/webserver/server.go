@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,11 +46,17 @@ type PrimaryIsolationConfig struct {
 
 // StatusResponse is the JSON response for GET /v1/status.
 type StatusResponse struct {
-	Role              string `json:"role"`
-	ReplicationOffset int64  `json:"replicationOffset"`
-	ConnectedReplicas int    `json:"connectedReplicas"`
-	MasterLinkStatus  string `json:"masterLinkStatus,omitempty"`
-	Connected         bool   `json:"connected"`
+	Role              string              `json:"role"`
+	ReplicationOffset int64               `json:"replicationOffset"`
+	ConnectedReplicas int                 `json:"connectedReplicas"`
+	MasterLinkStatus  string              `json:"masterLinkStatus,omitempty"`
+	Connected         bool                `json:"connected"`
+	NodeID            string              `json:"nodeID,omitempty"`
+	ClusterState      string              `json:"clusterState,omitempty"`
+	SlotsServed       []redisv1.SlotRange `json:"slotsServed,omitempty"`
+	Epoch             int64               `json:"epoch,omitempty"`
+	ClusterKnownNodes int32               `json:"clusterKnownNodes,omitempty"`
+	SlotsAssigned     int32               `json:"slotsAssigned,omitempty"`
 }
 
 // Server is the HTTP server for the instance manager.
@@ -78,6 +85,7 @@ type Server struct {
 	peerStatusPort          int
 	peerHTTPClient          *http.Client
 	cachedPeerTargets       []string
+	clusterMode             bool
 }
 
 // NewServer creates a new HTTP server.
@@ -150,6 +158,13 @@ func (s *Server) SetMetricsIdentity(clusterName, namespace, podName string) {
 	s.podName = podName
 }
 
+// SetClusterMode configures whether Redis Cluster APIs are enabled for this pod.
+func (s *Server) SetClusterMode(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clusterMode = enabled
+}
+
 // Start starts the HTTP server. It blocks until the context is cancelled.
 func (s *Server) Start(ctx context.Context) error {
 	logger := log.FromContext(ctx)
@@ -161,6 +176,10 @@ func (s *Server) Start(ctx context.Context) error {
 		mux.HandleFunc("/v1/status", s.handleStatus)
 		mux.HandleFunc("/v1/promote", s.handlePromote)
 		mux.HandleFunc("/v1/demote", s.handleDemote)
+		mux.HandleFunc("/v1/cluster/meet", s.handleClusterMeet)
+		mux.HandleFunc("/v1/cluster/addslots", s.handleClusterAddSlots)
+		mux.HandleFunc("/v1/cluster/replicate", s.handleClusterReplicate)
+		mux.HandleFunc("/v1/cluster/migrate-range", s.handleClusterMigrateRange)
 		mux.HandleFunc("/v1/backup", s.handleBackup)
 	}
 
@@ -531,6 +550,23 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if info.Role == "slave" {
 		resp.ReplicationOffset = info.SlaveReplOffset
 	}
+	if s.clusterModeEnabled() {
+		clusterInfo, err := replication.GetClusterInfo(ctx, s.redisClient)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to get cluster info: %v", err), http.StatusInternalServerError)
+			return
+		}
+		nodes, err := replication.GetClusterNodes(ctx, s.redisClient)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to get cluster nodes: %v", err), http.StatusInternalServerError)
+			return
+		}
+		resp.ClusterState = clusterInfo.State
+		resp.ClusterKnownNodes = clusterInfo.KnownNodes
+		resp.SlotsAssigned = clusterInfo.SlotsAssigned
+		resp.Epoch = clusterInfo.CurrentEpoch
+		resp.NodeID, resp.SlotsServed = findSelfClusterNode(nodes)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
@@ -542,7 +578,13 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.promoteFunc(r.Context()); err != nil {
+	var err error
+	if s.clusterModeEnabled() {
+		err = replication.ClusterFailover(r.Context(), s.redisClient, strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("mode"))))
+	} else {
+		err = s.promoteFunc(r.Context())
+	}
+	if err != nil {
 		http.Error(w, fmt.Sprintf("promote failed: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -554,6 +596,21 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDemote(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.clusterModeEnabled() {
+		primaryNodeID := strings.TrimSpace(r.URL.Query().Get("primaryNodeID"))
+		if primaryNodeID == "" {
+			http.Error(w, "missing primaryNodeID query parameter", http.StatusBadRequest)
+			return
+		}
+		if err := replication.ClusterReplicate(r.Context(), s.redisClient, primaryNodeID); err != nil {
+			http.Error(w, fmt.Sprintf("demote failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "demoted")
 		return
 	}
 
@@ -580,4 +637,240 @@ func (s *Server) handleDemote(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprint(w, "demoted")
+}
+
+type clusterMeetRequest struct {
+	IP   string `json:"ip"`
+	Port int    `json:"port,omitempty"`
+}
+
+func (s *Server) handleClusterMeet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.clusterModeEnabled() {
+		http.Error(w, "cluster mode is disabled", http.StatusBadRequest)
+		return
+	}
+
+	var req clusterMeetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.IP) == "" {
+		http.Error(w, "ip is required", http.StatusBadRequest)
+		return
+	}
+	if req.Port == 0 {
+		req.Port = 6379
+	}
+
+	if err := replication.ClusterMeet(r.Context(), s.redisClient, req.IP, req.Port); err != nil {
+		http.Error(w, fmt.Sprintf("cluster meet failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprint(w, "ok")
+}
+
+type clusterAddSlotsRequest struct {
+	Start int32 `json:"start"`
+	End   int32 `json:"end"`
+}
+
+func (s *Server) handleClusterAddSlots(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.clusterModeEnabled() {
+		http.Error(w, "cluster mode is disabled", http.StatusBadRequest)
+		return
+	}
+
+	var req clusterAddSlotsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.End < req.Start {
+		http.Error(w, "end must be greater than or equal to start", http.StatusBadRequest)
+		return
+	}
+	if err := replication.ClusterAddSlotsRange(r.Context(), s.redisClient, req.Start, req.End); err != nil {
+		http.Error(w, fmt.Sprintf("cluster addslots failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprint(w, "ok")
+}
+
+type clusterReplicateRequest struct {
+	NodeID string `json:"nodeID"`
+}
+
+func (s *Server) handleClusterReplicate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.clusterModeEnabled() {
+		http.Error(w, "cluster mode is disabled", http.StatusBadRequest)
+		return
+	}
+
+	var req clusterReplicateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	req.NodeID = strings.TrimSpace(req.NodeID)
+	if req.NodeID == "" {
+		http.Error(w, "nodeID is required", http.StatusBadRequest)
+		return
+	}
+	if err := replication.ClusterReplicate(r.Context(), s.redisClient, req.NodeID); err != nil {
+		http.Error(w, fmt.Sprintf("cluster replicate failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprint(w, "ok")
+}
+
+type clusterMigrateRangeRequest struct {
+	TargetIP     string `json:"targetIP"`
+	TargetPort   int    `json:"targetPort,omitempty"`
+	TargetNodeID string `json:"targetNodeID"`
+	SourceNodeID string `json:"sourceNodeID"`
+	Start        int32  `json:"start"`
+	End          int32  `json:"end"`
+	BatchSize    int32  `json:"batchSize,omitempty"`
+	TimeoutMS    int    `json:"timeoutMS,omitempty"`
+}
+
+func (s *Server) handleClusterMigrateRange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.clusterModeEnabled() {
+		http.Error(w, "cluster mode is disabled", http.StatusBadRequest)
+		return
+	}
+
+	var req clusterMigrateRangeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	req.TargetIP = strings.TrimSpace(req.TargetIP)
+	req.TargetNodeID = strings.TrimSpace(req.TargetNodeID)
+	req.SourceNodeID = strings.TrimSpace(req.SourceNodeID)
+	if req.TargetIP == "" {
+		http.Error(w, "targetIP is required", http.StatusBadRequest)
+		return
+	}
+	if req.TargetNodeID == "" {
+		http.Error(w, "targetNodeID is required", http.StatusBadRequest)
+		return
+	}
+	if req.SourceNodeID == "" {
+		http.Error(w, "sourceNodeID is required", http.StatusBadRequest)
+		return
+	}
+	if req.End < req.Start {
+		http.Error(w, "end must be greater than or equal to start", http.StatusBadRequest)
+		return
+	}
+	if req.TargetPort <= 0 {
+		req.TargetPort = 6379
+	}
+	if req.BatchSize <= 0 {
+		req.BatchSize = 64
+	}
+	if req.TimeoutMS <= 0 {
+		req.TimeoutMS = 5000
+	}
+
+	targetClient := s.newPeerRedisClient(req.TargetIP, req.TargetPort)
+	defer func() { _ = targetClient.Close() }()
+
+	ctx := r.Context()
+	for slot := req.Start; slot <= req.End; slot++ {
+		if err := replication.ClusterSetSlotImporting(ctx, targetClient, slot, req.SourceNodeID); err != nil {
+			http.Error(w, fmt.Sprintf("target importing slot %d: %v", slot, err), http.StatusInternalServerError)
+			return
+		}
+		if err := replication.ClusterSetSlotMigrating(ctx, s.redisClient, slot, req.TargetNodeID); err != nil {
+			http.Error(w, fmt.Sprintf("source migrating slot %d: %v", slot, err), http.StatusInternalServerError)
+			return
+		}
+
+		for {
+			keys, err := replication.ClusterGetKeysInSlot(ctx, s.redisClient, slot, req.BatchSize)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("get keys in slot %d: %v", slot, err), http.StatusInternalServerError)
+				return
+			}
+			if len(keys) == 0 {
+				break
+			}
+			if err := replication.MigrateKeys(ctx, s.redisClient, req.TargetIP, req.TargetPort, req.TimeoutMS, keys); err != nil {
+				http.Error(w, fmt.Sprintf("migrate keys for slot %d: %v", slot, err), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		if err := replication.ClusterSetSlotNode(ctx, s.redisClient, slot, req.TargetNodeID); err != nil {
+			http.Error(w, fmt.Sprintf("source assign slot %d: %v", slot, err), http.StatusInternalServerError)
+			return
+		}
+		if err := replication.ClusterSetSlotNode(ctx, targetClient, slot, req.TargetNodeID); err != nil {
+			http.Error(w, fmt.Sprintf("target assign slot %d: %v", slot, err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprint(w, "ok")
+}
+
+func (s *Server) clusterModeEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.clusterMode
+}
+
+func findSelfClusterNode(nodes []replication.ClusterNode) (string, []redisv1.SlotRange) {
+	for _, node := range nodes {
+		if !hasNodeFlag(node.Flags, "myself") {
+			continue
+		}
+		slots := make([]redisv1.SlotRange, 0, len(node.SlotRanges))
+		for _, slot := range node.SlotRanges {
+			slots = append(slots, redisv1.SlotRange{
+				Start: slot.Start,
+				End:   slot.End,
+			})
+		}
+		return node.ID, slots
+	}
+	return "", nil
+}
+
+func hasNodeFlag(flags []string, expected string) bool {
+	for _, flag := range flags {
+		if flag == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) newPeerRedisClient(targetIP string, targetPort int) *redis.Client {
+	opts := *s.redisClient.Options()
+	opts.Addr = fmt.Sprintf("%s:%d", targetIP, targetPort)
+	return redis.NewClient(&opts)
 }

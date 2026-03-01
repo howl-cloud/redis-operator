@@ -25,13 +25,22 @@ type BackupResult struct {
 
 // triggerBackup sends POST /v1/backup to the instance manager on the target pod.
 func triggerBackup(ctx context.Context, podIP string, backup *redisv1.RedisBackup) (*BackupResult, error) {
+	return triggerBackupWithOptions(ctx, podIP, backup.Name, backup.Spec.Method, backup.Spec.Destination)
+}
+
+func triggerBackupWithOptions(
+	ctx context.Context,
+	podIP, backupName string,
+	method redisv1.BackupMethod,
+	destination *redisv1.BackupDestination,
+) (*BackupResult, error) {
 	url := fmt.Sprintf("http://%s:%d/v1/backup", podIP, instanceManagerPort)
 	httpClient := &http.Client{Timeout: 10 * time.Minute}
 
 	reqBody, err := json.Marshal(map[string]any{
-		"backupName":  backup.Name,
-		"method":      backup.Spec.Method,
-		"destination": backup.Spec.Destination,
+		"backupName":  backupName,
+		"method":      method,
+		"destination": destination,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshalling backup request body: %w", err)

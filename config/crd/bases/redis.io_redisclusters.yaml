@@ -1039,11 +1039,12 @@ spec:
                 description: ImageName is the Redis container image.
                 type: string
               instances:
-                default: 1
-                description: Instances is the total number of Redis pods (1 primary
-                  + N-1 replicas).
+                description: |-
+                  Instances is the total number of Redis pods (1 primary + N-1 replicas).
+                  This field is for standalone and sentinel modes only.
+                  Cluster mode derives pod count from shards and replicasPerShard.
                 format: int32
-                minimum: 1
+                minimum: 0
                 type: integer
               maxSyncReplicas:
                 description: MaxSyncReplicas is the maximum number of synchronous
@@ -1063,6 +1064,7 @@ spec:
                 enum:
                 - standalone
                 - sentinel
+                - cluster
                 type: string
               nodeMaintenanceWindow:
                 description: NodeMaintenanceWindow controls planned node maintenance
@@ -1161,6 +1163,12 @@ spec:
                     - host
                     type: object
                 type: object
+              replicasPerShard:
+                description: ReplicasPerShard is the number of replicas per shard
+                  in cluster mode.
+                format: int32
+                minimum: 0
+                type: integer
               resources:
                 description: Resources defines CPU/memory requests and limits for
                   Redis containers.
@@ -1221,6 +1229,11 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
+              shards:
+                description: Shards is the number of hash-slot shards in cluster mode.
+                format: int32
+                minimum: 3
+                type: integer
               storage:
                 description: Storage defines the PVC template for /data volumes.
                 properties:
@@ -1465,12 +1478,19 @@ spec:
                   type: object
                 type: array
             required:
-            - instances
             - storage
             type: object
           status:
             description: RedisClusterStatus defines the observed state of a RedisCluster.
             properties:
+              bootstrapCompleted:
+                description: BootstrapCompleted indicates the one-time bootstrap workflow
+                  has finished.
+                type: boolean
+              clusterState:
+                description: ClusterState mirrors CLUSTER INFO cluster_state in cluster
+                  mode.
+                type: string
               conditions:
                 description: Conditions represent the latest available observations
                   of the cluster state.
@@ -1552,6 +1572,10 @@ spec:
                   description: InstanceStatus holds live status reported by a single
                     instance manager.
                   properties:
+                    clusterState:
+                      description: ClusterState is the Redis cluster state reported
+                        by this node.
+                      type: string
                     connected:
                       description: Connected indicates whether the instance manager
                         can reach Redis.
@@ -1561,12 +1585,20 @@ spec:
                         (primary only).
                       format: int32
                       type: integer
+                    currentEpoch:
+                      description: CurrentEpoch is the current Redis cluster configuration
+                        epoch.
+                      format: int64
+                      type: integer
                     lastSeenAt:
                       description: LastSeenAt is when this status was last reported.
                       format: date-time
                       type: string
                     masterLinkStatus:
                       description: MasterLinkStatus is "up" or "down" (replicas only).
+                      type: string
+                    nodeID:
+                      description: NodeID is the Redis cluster node ID.
                       type: string
                     replicaLagBytes:
                       description: ReplicaLagBytes is the replication lag in bytes
@@ -1581,6 +1613,24 @@ spec:
                       description: Role is "master" or "slave" as reported by Redis
                         INFO.
                       type: string
+                    slotsServed:
+                      description: SlotsServed lists slot ranges served by this node
+                        in cluster mode.
+                      items:
+                        description: SlotRange describes an inclusive Redis hash slot
+                          range.
+                        properties:
+                          end:
+                            format: int32
+                            type: integer
+                          start:
+                            format: int32
+                            type: integer
+                        required:
+                        - end
+                        - start
+                        type: object
+                      type: array
                   type: object
                 description: |-
                   InstancesStatus is a per-pod status map keyed by pod name.
@@ -1604,6 +1654,46 @@ spec:
               sentinelReadyInstances:
                 description: SentinelReadyInstances is the count of sentinel pods
                   passing readiness probes.
+                format: int32
+                type: integer
+              shards:
+                additionalProperties:
+                  description: ShardStatus captures per-shard cluster topology and
+                    slot ownership.
+                  properties:
+                    epoch:
+                      format: int64
+                      type: integer
+                    primaryNodeID:
+                      type: string
+                    primaryPod:
+                      type: string
+                    replicaPods:
+                      items:
+                        type: string
+                      type: array
+                    slotRanges:
+                      items:
+                        description: SlotRange describes an inclusive Redis hash slot
+                          range.
+                        properties:
+                          end:
+                            format: int32
+                            type: integer
+                          start:
+                            format: int32
+                            type: integer
+                        required:
+                        - end
+                        - start
+                        type: object
+                      type: array
+                  type: object
+                description: Shards is a per-shard status map keyed by shard name.
+                type: object
+              slotsAssigned:
+                description: SlotsAssigned mirrors CLUSTER INFO cluster_slots_assigned
+                  in cluster mode.
                 format: int32
                 type: integer
             type: object

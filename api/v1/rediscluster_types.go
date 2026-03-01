@@ -7,14 +7,13 @@ import (
 )
 
 // ClusterMode defines the Redis operating mode.
-// +kubebuilder:validation:Enum=standalone;sentinel
+// +kubebuilder:validation:Enum=standalone;sentinel;cluster
 type ClusterMode string
 
 const (
 	ClusterModeStandalone ClusterMode = "standalone"
 	ClusterModeSentinel   ClusterMode = "sentinel"
-	// ClusterModeCluster is reserved for future use and currently rejected by the webhook.
-	ClusterModeCluster ClusterMode = "cluster"
+	ClusterModeCluster    ClusterMode = "cluster"
 )
 
 // PrimaryUpdateStrategy defines how the primary is updated during rolling updates.
@@ -71,6 +70,8 @@ const (
 	LabelCluster          = "redis.io/cluster"
 	LabelInstance         = "redis.io/instance"
 	LabelRole             = "redis.io/role"
+	LabelShard            = "redis.io/shard"
+	LabelShardRole        = "redis.io/shard-role"
 	LabelRolePrimary      = "primary"
 	LabelRoleReplica      = "replica"
 	LabelRoleSentinel     = "sentinel"
@@ -89,13 +90,25 @@ const (
 // RedisClusterSpec defines the desired state of a Redis replication cluster.
 type RedisClusterSpec struct {
 	// Instances is the total number of Redis pods (1 primary + N-1 replicas).
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default=1
-	Instances int32 `json:"instances"`
+	// This field is for standalone and sentinel modes only.
+	// Cluster mode derives pod count from shards and replicasPerShard.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Instances int32 `json:"instances,omitempty"`
 
 	// Mode defines the Redis operating mode.
 	// +kubebuilder:default=standalone
 	Mode ClusterMode `json:"mode,omitempty"`
+
+	// Shards is the number of hash-slot shards in cluster mode.
+	// +kubebuilder:validation:Minimum=3
+	// +optional
+	Shards int32 `json:"shards,omitempty"`
+
+	// ReplicasPerShard is the number of replicas per shard in cluster mode.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ReplicasPerShard int32 `json:"replicasPerShard,omitempty"`
 
 	// PrimaryUpdateStrategy controls whether primary replacement runs automatically
 	// after replicas are updated (unsupervised), or waits for operator approval (supervised).
@@ -294,6 +307,19 @@ type InstanceStatus struct {
 	// MasterLinkStatus is "up" or "down" (replicas only).
 	MasterLinkStatus string `json:"masterLinkStatus,omitempty"`
 
+	// NodeID is the Redis cluster node ID.
+	NodeID string `json:"nodeID,omitempty"`
+
+	// SlotsServed lists slot ranges served by this node in cluster mode.
+	// +optional
+	SlotsServed []SlotRange `json:"slotsServed,omitempty"`
+
+	// ClusterState is the Redis cluster state reported by this node.
+	ClusterState string `json:"clusterState,omitempty"`
+
+	// CurrentEpoch is the current Redis cluster configuration epoch.
+	CurrentEpoch int64 `json:"currentEpoch,omitempty"`
+
 	// LastSeenAt is when this status was last reported.
 	// +optional
 	LastSeenAt *metav1.Time `json:"lastSeenAt,omitempty"`
@@ -320,6 +346,19 @@ type RedisClusterStatus struct {
 	// Using a map (not slice) to avoid strategic-merge-patch ordering issues.
 	// +optional
 	InstancesStatus map[string]InstanceStatus `json:"instancesStatus,omitempty"`
+
+	// ClusterState mirrors CLUSTER INFO cluster_state in cluster mode.
+	ClusterState string `json:"clusterState,omitempty"`
+
+	// SlotsAssigned mirrors CLUSTER INFO cluster_slots_assigned in cluster mode.
+	SlotsAssigned int32 `json:"slotsAssigned,omitempty"`
+
+	// BootstrapCompleted indicates the one-time bootstrap workflow has finished.
+	BootstrapCompleted bool `json:"bootstrapCompleted,omitempty"`
+
+	// Shards is a per-shard status map keyed by shard name.
+	// +optional
+	Shards map[string]ShardStatus `json:"shards,omitempty"`
 
 	// HealthyPVC is the count of healthy PVCs.
 	HealthyPVC int32 `json:"healthyPVC,omitempty"`
@@ -367,4 +406,40 @@ type RedisClusterList struct {
 
 func init() {
 	SchemeBuilder.Register(&RedisCluster{}, &RedisClusterList{})
+}
+
+// SlotRange describes an inclusive Redis hash slot range.
+type SlotRange struct {
+	Start int32 `json:"start"`
+	End   int32 `json:"end"`
+}
+
+// ShardStatus captures per-shard cluster topology and slot ownership.
+type ShardStatus struct {
+	PrimaryPod string `json:"primaryPod,omitempty"`
+
+	// +optional
+	ReplicaPods []string `json:"replicaPods,omitempty"`
+
+	// +optional
+	SlotRanges []SlotRange `json:"slotRanges,omitempty"`
+
+	PrimaryNodeID string `json:"primaryNodeID,omitempty"`
+	Epoch         int64  `json:"epoch,omitempty"`
+}
+
+// DesiredDataInstances returns the desired number of Redis data pods for the spec.
+func (s RedisClusterSpec) DesiredDataInstances() int32 {
+	if s.Mode != ClusterModeCluster {
+		return s.Instances
+	}
+	shards := s.Shards
+	if shards < 3 {
+		shards = 3
+	}
+	replicasPerShard := s.ReplicasPerShard
+	if replicasPerShard < 0 {
+		replicasPerShard = 0
+	}
+	return shards * (1 + replicasPerShard)
 }

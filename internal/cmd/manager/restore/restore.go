@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -40,7 +41,7 @@ const (
 )
 
 // Run restores a backup object from S3 into the given data directory.
-func Run(ctx context.Context, clusterName, backupName, backupNamespace, dataDir string) error {
+func Run(ctx context.Context, clusterName, backupName, backupNamespace, dataDir, podName string) error {
 	if clusterName == "" {
 		return fmt.Errorf("cluster name is required")
 	}
@@ -73,25 +74,50 @@ func Run(ctx context.Context, clusterName, backupName, backupNamespace, dataDir 
 	if backup.Spec.Destination == nil || backup.Spec.Destination.S3 == nil {
 		return fmt.Errorf("RedisBackup %s/%s has no S3 destination", backupNamespace, backupName)
 	}
-	if backup.Status.BackupPath == "" {
-		return fmt.Errorf("RedisBackup %s/%s has empty status.backupPath", backupNamespace, backupName)
-	}
-	artifactType, err := resolveArtifactType(&backup)
-	if err != nil {
-		return fmt.Errorf("determining backup artifact type for RedisBackup %s/%s: %w", backupNamespace, backupName, err)
-	}
-
-	bucket, key, err := resolveBackupLocation(backup.Spec.Destination.S3.Bucket, backup.Status.BackupPath)
-	if err != nil {
-		return fmt.Errorf("resolving backup location: %w", err)
-	}
-
 	var cluster redisv1.RedisCluster
 	if err := k8sClient.Get(ctx, types.NamespacedName{
 		Name:      clusterName,
 		Namespace: backupNamespace,
 	}, &cluster); err != nil {
 		return fmt.Errorf("fetching RedisCluster %s/%s: %w", backupNamespace, clusterName, err)
+	}
+
+	backupPath := backup.Status.BackupPath
+	artifactType, err := resolveArtifactType(&backup)
+	if err != nil {
+		return fmt.Errorf("determining backup artifact type for RedisBackup %s/%s: %w", backupNamespace, backupName, err)
+	}
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster && len(backup.Status.ShardArtifacts) > 0 {
+		if podName == "" {
+			return fmt.Errorf("pod name is required for cluster-mode restore when status.shardArtifacts is set")
+		}
+		shardName, shardPrimary, err := clusterShardFromPod(cluster.Name, cluster.Spec.ReplicasPerShard, podName)
+		if err != nil {
+			return fmt.Errorf("determining shard for pod %s: %w", podName, err)
+		}
+		if !shardPrimary {
+			// Replicas should not bootstrap from backup artifacts; they resync from shard primary.
+			return nil
+		}
+		shardArtifact, ok := backup.Status.ShardArtifacts[shardName]
+		if !ok {
+			return fmt.Errorf("RedisBackup %s/%s has no shard artifact for %s", backupNamespace, backupName, shardName)
+		}
+		if shardArtifact.BackupPath == "" {
+			return fmt.Errorf("RedisBackup %s/%s shard %s has empty backupPath", backupNamespace, backupName, shardName)
+		}
+		backupPath = shardArtifact.BackupPath
+		if shardArtifact.ArtifactType != "" {
+			artifactType = shardArtifact.ArtifactType
+		}
+	}
+	if backupPath == "" {
+		return fmt.Errorf("RedisBackup %s/%s has empty status.backupPath", backupNamespace, backupName)
+	}
+
+	bucket, key, err := resolveBackupLocation(backup.Spec.Destination.S3.Bucket, backupPath)
+	if err != nil {
+		return fmt.Errorf("resolving backup location: %w", err)
 	}
 	if cluster.Spec.BackupCredentialsSecret == nil {
 		return fmt.Errorf("RedisCluster %s/%s has no backupCredentialsSecret configured", backupNamespace, cluster.Name)
@@ -130,6 +156,27 @@ func Run(ctx context.Context, clusterName, backupName, backupNamespace, dataDir 
 	}
 
 	return nil
+}
+
+func clusterShardFromPod(clusterName string, replicasPerShard int32, podName string) (string, bool, error) {
+	if clusterName == "" || podName == "" {
+		return "", false, fmt.Errorf("cluster and pod name are required")
+	}
+	prefix := clusterName + "-"
+	if !strings.HasPrefix(podName, prefix) {
+		return "", false, fmt.Errorf("pod %s does not match cluster prefix %s", podName, prefix)
+	}
+	index, err := strconv.Atoi(strings.TrimPrefix(podName, prefix))
+	if err != nil {
+		return "", false, fmt.Errorf("parsing pod ordinal from %s: %w", podName, err)
+	}
+	groupSize := int(1 + replicasPerShard)
+	if groupSize <= 0 {
+		groupSize = 1
+	}
+	shardIndex := index / groupSize
+	replicaIndex := index % groupSize
+	return fmt.Sprintf("s%d", shardIndex), replicaIndex == 0, nil
 }
 
 func resolveArtifactType(backup *redisv1.RedisBackup) (redisv1.BackupArtifactType, error) {

@@ -142,6 +142,52 @@ func TestDefault_PartialSpec(t *testing.T) {
 	assert.Equal(t, 5*time.Second, cluster.Spec.PrimaryIsolation.PeerTimeout.Duration)
 }
 
+func TestDefault_ClusterModeDefaultsShardsAndReplicas(t *testing.T) {
+	d := &RedisClusterDefaulter{}
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test",
+			Namespace: "default",
+		},
+		Spec: redisv1.RedisClusterSpec{
+			Mode: redisv1.ClusterModeCluster,
+			Storage: redisv1.StorageSpec{
+				Size: resource.MustParse("1Gi"),
+			},
+		},
+	}
+
+	err := d.Default(context.Background(), cluster)
+	require.NoError(t, err)
+
+	assert.Equal(t, redisv1.ClusterModeCluster, cluster.Spec.Mode)
+	assert.Equal(t, int32(3), cluster.Spec.Shards)
+	assert.Equal(t, int32(0), cluster.Spec.ReplicasPerShard)
+	assert.Equal(t, int32(0), cluster.Spec.Instances)
+}
+
+func TestDefault_ClusterModePreservesExplicitZeroReplicasPerShard(t *testing.T) {
+	d := &RedisClusterDefaulter{}
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test",
+			Namespace: "default",
+		},
+		Spec: redisv1.RedisClusterSpec{
+			Mode:             redisv1.ClusterModeCluster,
+			ReplicasPerShard: 0,
+			Storage: redisv1.StorageSpec{
+				Size: resource.MustParse("1Gi"),
+			},
+		},
+	}
+
+	err := d.Default(context.Background(), cluster)
+	require.NoError(t, err)
+
+	assert.Equal(t, int32(0), cluster.Spec.ReplicasPerShard)
+}
+
 func TestDefault_MaintenanceReusePVCDefaultsToTrue(t *testing.T) {
 	d := &RedisClusterDefaulter{}
 	cluster := &redisv1.RedisCluster{

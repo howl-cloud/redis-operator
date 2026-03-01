@@ -17,6 +17,28 @@ import (
 
 // reconcileServices ensures the three Services (-leader, -replica, -any) exist.
 func (r *ClusterReconciler) reconcileServices(ctx context.Context, cluster *redisv1.RedisCluster) error {
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		if err := r.ensureClusterHeadlessService(ctx, cluster); err != nil {
+			return fmt.Errorf("cluster headless service: %w", err)
+		}
+		if err := r.ensureService(ctx, cluster, anyServiceName(cluster.Name), map[string]string{
+			redisv1.LabelCluster:  cluster.Name,
+			redisv1.LabelWorkload: redisv1.LabelWorkloadData,
+		}, 6379); err != nil {
+			return fmt.Errorf("any service: %w", err)
+		}
+		if err := r.deleteServiceIfExists(ctx, cluster.Namespace, leaderServiceName(cluster.Name)); err != nil {
+			return fmt.Errorf("deleting legacy leader service: %w", err)
+		}
+		if err := r.deleteServiceIfExists(ctx, cluster.Namespace, replicaServiceName(cluster.Name)); err != nil {
+			return fmt.Errorf("deleting legacy replica service: %w", err)
+		}
+		if err := r.deleteServiceIfExists(ctx, cluster.Namespace, sentinelServiceName(cluster.Name)); err != nil {
+			return fmt.Errorf("deleting legacy sentinel service: %w", err)
+		}
+		return nil
+	}
+
 	if err := r.ensureService(ctx, cluster, leaderServiceName(cluster.Name), map[string]string{
 		redisv1.LabelCluster: cluster.Name,
 		redisv1.LabelRole:    redisv1.LabelRolePrimary,
@@ -56,6 +78,75 @@ func (r *ClusterReconciler) reconcileServices(ctx context.Context, cluster *redi
 	}
 
 	return nil
+}
+
+func (r *ClusterReconciler) ensureClusterHeadlessService(ctx context.Context, cluster *redisv1.RedisCluster) error {
+	name := clusterHeadlessServiceName(cluster.Name)
+	selector := map[string]string{
+		redisv1.LabelCluster:  cluster.Name,
+		redisv1.LabelWorkload: redisv1.LabelWorkloadData,
+	}
+	desiredPorts := []corev1.ServicePort{
+		{
+			Name:       "redis",
+			Port:       6379,
+			TargetPort: intstr.FromInt32(6379),
+			Protocol:   corev1.ProtocolTCP,
+		},
+		{
+			Name:       "cluster-bus",
+			Port:       16379,
+			TargetPort: intstr.FromInt32(16379),
+			Protocol:   corev1.ProtocolTCP,
+		},
+	}
+
+	var existing corev1.Service
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, &existing)
+	if err == nil {
+		if reflect.DeepEqual(existing.Spec.Selector, selector) &&
+			reflect.DeepEqual(existing.Spec.Ports, desiredPorts) &&
+			existing.Spec.ClusterIP == corev1.ClusterIPNone {
+			return nil
+		}
+		patch := client.MergeFrom(existing.DeepCopy())
+		existing.Spec.Selector = selector
+		existing.Spec.Ports = desiredPorts
+		existing.Spec.ClusterIP = corev1.ClusterIPNone
+		return r.Patch(ctx, &existing, patch)
+	}
+	if !errors.IsNotFound(err) {
+		return err
+	}
+
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: cluster.Namespace,
+			Labels: map[string]string{
+				redisv1.LabelCluster: cluster.Name,
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: corev1.ClusterIPNone,
+			Selector:  selector,
+			Ports:     desiredPorts,
+		},
+	}
+
+	return r.Create(ctx, svc)
+}
+
+func (r *ClusterReconciler) deleteServiceIfExists(ctx context.Context, namespace, name string) error {
+	var svc corev1.Service
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &svc)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return r.Delete(ctx, &svc)
 }
 
 // ensureService creates or verifies a Service exists.
@@ -191,4 +282,8 @@ func anyServiceName(clusterName string) string {
 
 func sentinelServiceName(clusterName string) string {
 	return clusterName + "-sentinel"
+}
+
+func clusterHeadlessServiceName(clusterName string) string {
+	return clusterName + "-cluster"
 }
