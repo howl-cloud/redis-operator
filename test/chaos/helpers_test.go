@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -22,8 +21,6 @@ import (
 	"github.com/howl-cloud/redis-operator/test/chaos/faults"
 	"github.com/howl-cloud/redis-operator/test/chaos/invariants"
 )
-
-var benchmarkFailurePattern = regexp.MustCompile(`(?i)(^|[^a-z])(error|err|failed)([^a-z]|$)`)
 
 type backgroundCommand struct {
 	cmd    *exec.Cmd
@@ -45,6 +42,9 @@ func prepareBaseline(ctx context.Context, keyPrefix string, keyCount int) error 
 		return err
 	}
 	if err := refreshRedisPassword(ctx); err != nil {
+		return err
+	}
+	if err := waitForLeaderReachable(ctx, 2*time.Minute); err != nil {
 		return err
 	}
 	if err := invariants.FlushClusterData(ctx, k8sClient, testNamespace, clusterName, redisPassword); err != nil {
@@ -105,7 +105,57 @@ func getAnyClusterPod(ctx context.Context) (corev1.Pod, error) {
 	if len(pods) == 0 {
 		return corev1.Pod{}, fmt.Errorf("no pods found for cluster %s/%s", testNamespace, clusterName)
 	}
+	for _, pod := range pods {
+		if isPodReady(pod) {
+			return pod, nil
+		}
+	}
 	return pods[0], nil
+}
+
+func isPodReady(pod corev1.Pod) bool {
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForLeaderReachable(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	leaderHost := clusterName + "-leader"
+
+	for {
+		clientPod, err := getAnyClusterPod(ctx)
+		if err != nil {
+			lastErr = err
+		} else {
+			out, pingErr := faults.ExecRedisCLI(ctx, testNamespace, clientPod.Name, redisPassword, "-h", leaderHost, "PING")
+			if pingErr == nil && strings.TrimSpace(out) == "PONG" {
+				return nil
+			}
+			if pingErr != nil {
+				lastErr = pingErr
+			} else {
+				lastErr = fmt.Errorf("unexpected PING response from %q via pod %s: %q", leaderHost, clientPod.Name, strings.TrimSpace(out))
+			}
+		}
+
+		if time.Now().After(deadline) {
+			if lastErr == nil {
+				lastErr = fmt.Errorf("leader %q never became reachable", leaderHost)
+			}
+			return fmt.Errorf("waiting for leader service reachability: %w", lastErr)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 func ensureWorkloadClientPod(ctx context.Context) (corev1.Pod, error) {

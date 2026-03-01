@@ -550,6 +550,70 @@ func TestResolveSentinelAuthPassword_FromProjectedSecret(t *testing.T) {
 	assert.Equal(t, "my-pass", password)
 }
 
+func TestGeneratedAuthSecretName(t *testing.T) {
+	assert.Equal(t, "demo-auth", generatedAuthSecretName("demo"))
+}
+
+func TestEffectiveAuthSecretName(t *testing.T) {
+	t.Run("uses explicit spec auth secret", func(t *testing.T) {
+		cluster := &redisv1.RedisCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "demo"},
+			Spec: redisv1.RedisClusterSpec{
+				AuthSecret: &redisv1.LocalObjectReference{Name: "custom-auth"},
+			},
+		}
+		assert.Equal(t, "custom-auth", effectiveAuthSecretName(cluster))
+	})
+
+	t.Run("falls back to generated auth secret", func(t *testing.T) {
+		cluster := &redisv1.RedisCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "demo"},
+		}
+		assert.Equal(t, "demo-auth", effectiveAuthSecretName(cluster))
+	})
+
+	t.Run("returns empty when cluster has no name", func(t *testing.T) {
+		cluster := &redisv1.RedisCluster{}
+		assert.Equal(t, "", effectiveAuthSecretName(cluster))
+	})
+}
+
+func TestResolveLocalAuthPassword_FromProjectedSecret(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldProjected := projectedSecretsDir
+	projectedSecretsDir = tmpDir
+	t.Cleanup(func() {
+		projectedSecretsDir = oldProjected
+	})
+
+	secretDir := filepath.Join(tmpDir, "demo-auth")
+	require.NoError(t, os.MkdirAll(secretDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(secretDir, "password"), []byte(" local-pass \n"), 0o600))
+
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo"},
+	}
+	password, err := resolveLocalAuthPassword(cluster)
+	require.NoError(t, err)
+	assert.Equal(t, "local-pass", password)
+}
+
+func TestResolveLocalAuthPassword_MissingProjectedSecret(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldProjected := projectedSecretsDir
+	projectedSecretsDir = tmpDir
+	t.Cleanup(func() {
+		projectedSecretsDir = oldProjected
+	})
+
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo"},
+	}
+	_, err := resolveLocalAuthPassword(cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading projected auth secret demo-auth/password")
+}
+
 func TestSplitBrainGuardLogic(t *testing.T) {
 	tests := []struct {
 		name           string

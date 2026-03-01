@@ -27,7 +27,7 @@ var _ = Describe("Primary kill during writes", Label("pod-kill", "failover"), fu
 		offsetBefore, err := faults.ReplicationOffset(ctx, testNamespace, primaryPod.Name, redisPassword)
 		Expect(err).NotTo(HaveOccurred())
 
-		clientPod, err := getAnyClusterPod(ctx)
+		clientPod, err := ensureWorkloadClientPod(ctx)
 		Expect(err).NotTo(HaveOccurred())
 
 		workloadScript := fmt.Sprintf(`i=1
