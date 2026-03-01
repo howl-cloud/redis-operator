@@ -163,7 +163,7 @@ func TestBackupRestoreThroughOperatorReconciler(t *testing.T) {
 
 			restoreClusterName := newUniqueName("restored")
 			createRedisCluster(ctx, t, env.k8sClient, operatorBackupNamespace, restoreClusterName, 1, backupSecretName)
-			require.NoError(t, restorecmd.Run(ctx, restoreClusterName, backupName, operatorBackupNamespace, restoredDataDir))
+			require.NoError(t, restorecmd.Run(ctx, restoreClusterName, backupName, operatorBackupNamespace, restoredDataDir, ""))
 
 			restored := startRedisWithDataDir(ctx, t, restoredDataDir, tc.mode)
 			restoredClient := newRedisClient(ctx, t, restored, "", "")
@@ -250,7 +250,7 @@ func TestBackupFromReplicaThroughOperatorReconciler(t *testing.T) {
 	restoredDataDir := mustTempDir(t, "redis-operator-replica-restored-")
 	restoreClusterName := newUniqueName("replica-restored")
 	createRedisCluster(ctx, t, env.k8sClient, operatorBackupNamespace, restoreClusterName, 1, backupSecretName)
-	require.NoError(t, restorecmd.Run(ctx, restoreClusterName, backupName, operatorBackupNamespace, restoredDataDir))
+	require.NoError(t, restorecmd.Run(ctx, restoreClusterName, backupName, operatorBackupNamespace, restoredDataDir, ""))
 
 	restored := startRedisWithDataDir(ctx, t, restoredDataDir, persistenceRDB)
 	restoredClient := newRedisClient(ctx, t, restored, "", "")
@@ -315,8 +315,8 @@ func TestDualRestoreFromSameBackupThroughOperatorReconciler(t *testing.T) {
 	createRedisCluster(ctx, t, env.k8sClient, operatorBackupNamespace, restoreAClusterName, 1, backupSecretName)
 	createRedisCluster(ctx, t, env.k8sClient, operatorBackupNamespace, restoreBClusterName, 1, backupSecretName)
 
-	require.NoError(t, restorecmd.Run(ctx, restoreAClusterName, backupName, operatorBackupNamespace, restoreADataDir))
-	require.NoError(t, restorecmd.Run(ctx, restoreBClusterName, backupName, operatorBackupNamespace, restoreBDataDir))
+	require.NoError(t, restorecmd.Run(ctx, restoreAClusterName, backupName, operatorBackupNamespace, restoreADataDir, ""))
+	require.NoError(t, restorecmd.Run(ctx, restoreBClusterName, backupName, operatorBackupNamespace, restoreBDataDir, ""))
 
 	restoreA := startRedisWithDataDir(ctx, t, restoreADataDir, persistenceRDB)
 	restoreB := startRedisWithDataDir(ctx, t, restoreBDataDir, persistenceRDB)
@@ -395,7 +395,7 @@ func TestScheduledBackupRestoreThroughOperatorReconcilers(t *testing.T) {
 
 	restoreClusterName := newUniqueName("scheduled-restored")
 	createRedisCluster(ctx, t, env.k8sClient, operatorBackupNamespace, restoreClusterName, 1, backupSecretName)
-	require.NoError(t, restorecmd.Run(ctx, restoreClusterName, backupName, operatorBackupNamespace, restoredDataDir))
+	require.NoError(t, restorecmd.Run(ctx, restoreClusterName, backupName, operatorBackupNamespace, restoredDataDir, ""))
 
 	restored := startRedisWithDataDir(ctx, t, restoredDataDir, persistenceRDB)
 	restoredClient := newRedisClient(ctx, t, restored, "", "")
