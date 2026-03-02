@@ -7,10 +7,14 @@ A Kubernetes operator for Redis built around the same control-plane ideas used b
 - Manages Redis clusters through Kubernetes CRDs (`RedisCluster`, `RedisBackup`, `RedisScheduledBackup`)
 - Handles bootstrap, scaling, rolling updates, and failover
 - Exposes stable service endpoints per cluster:
-  - `<name>-leader` (current primary)
-  - `<name>-replica` (replicas)
-  - `<name>-any` (all data pods)
-  - `<name>-sentinel` (sentinel mode only)
+  - Standalone/sentinel modes:
+    - `<name>-leader` (current primary)
+    - `<name>-replica` (replicas)
+    - `<name>-any` (all data pods)
+    - `<name>-sentinel` (sentinel mode only)
+  - Cluster mode:
+    - `<name>-any` (all data pods)
+    - `<name>-cluster` (headless cluster discovery/bus service)
 - Supports backup and scheduled backup workflows
 - Includes operational runbooks for common failure scenarios
 
@@ -47,14 +51,14 @@ Why this matters: the operator can enforce strict pod update ordering, explicit 
 | --- | --- |
 | `standalone` | Supported |
 | `sentinel` | Supported (requires at least 3 data instances) |
-| `cluster` | Rejected by webhook (not implemented) |
+| `cluster` | Supported |
 
 ## Quick Start
 
 Set a release version once:
 
 ```bash
-VERSION="" // e.g. "v0.1.4"
+VERSION="v0.1.5"
 ```
 
 ### 1) Install the operator
