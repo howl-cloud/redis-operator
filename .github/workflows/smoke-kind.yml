@@ -3,6 +3,10 @@ name: Real Cluster Smoke Test
 on:
   pull_request:
     branches: ["main"]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - ".gitignore"
   workflow_dispatch:
 
 jobs:
