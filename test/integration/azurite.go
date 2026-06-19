@@ -41,7 +41,7 @@ func startAzuriteContainer(ctx context.Context, t *testing.T) AzuriteInfo {
 		ctx,
 		azuriteImage,
 		testcontainers.WithExposedPorts(azuritePort),
-		testcontainers.WithCmd("azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000"),
+		testcontainers.WithCmd("azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000", "--skipApiVersionCheck"),
 		testcontainers.WithWaitStrategy(
 			wait.ForListeningPort(azuritePort).WithStartupTimeout(60*time.Second),
 		),
