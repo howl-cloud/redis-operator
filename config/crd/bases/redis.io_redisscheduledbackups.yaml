@@ -109,8 +109,11 @@ spec:
                 type: object
               failedBackupsHistoryLimit:
                 default: 3
-                description: FailedBackupsHistoryLimit is the number of failed backups
-                  to retain.
+                description: |-
+                  FailedBackupsHistoryLimit is the number of failed RedisBackup resources to
+                  retain. This prunes only Kubernetes objects; the backup artifacts in object
+                  storage are NOT deleted. Configure an S3 lifecycle rule or Azure Blob
+                  lifecycle policy to expire remote artifacts.
                 format: int32
                 minimum: 0
                 type: integer
@@ -131,8 +134,11 @@ spec:
                 type: string
               successfulBackupsHistoryLimit:
                 default: 3
-                description: SuccessfulBackupsHistoryLimit is the number of successful
-                  backups to retain.
+                description: |-
+                  SuccessfulBackupsHistoryLimit is the number of successful RedisBackup
+                  resources to retain. This prunes only Kubernetes objects; the backup
+                  artifacts in object storage are NOT deleted. Configure an S3 lifecycle rule
+                  or Azure Blob lifecycle policy to expire remote artifacts.
                 format: int32
                 minimum: 0
                 type: integer
