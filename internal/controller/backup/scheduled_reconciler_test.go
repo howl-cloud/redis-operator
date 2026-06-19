@@ -209,6 +209,71 @@ func TestCleanupOldBackups_RemovesExcess(t *testing.T) {
 	assert.Equal(t, 1, failCount, "should retain only 1 failed backup")
 }
 
+func TestCleanupOldBackups_DeletesOldestByCreationTime(t *testing.T) {
+	// Names are deliberately not in chronological order: a name-based trim would
+	// keep the wrong backups. Only sorting by creation time deletes the oldest.
+	scheduled := &redisv1.RedisScheduledBackup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "daily-backup",
+			Namespace: "default",
+		},
+		Spec: redisv1.RedisScheduledBackupSpec{
+			Schedule:                      "0 0 * * *",
+			ClusterName:                   "test-cluster",
+			SuccessfulBackupsHistoryLimit: int32Ptr(2),
+		},
+	}
+
+	now := time.Now()
+	backups := []struct {
+		name string
+		age  time.Duration
+	}{
+		{"backup-aaa", 4 * time.Hour}, // oldest -> delete
+		{"backup-zzz", 3 * time.Hour}, // -> delete
+		{"backup-bbb", 2 * time.Hour}, // -> keep
+		{"backup-mmm", 1 * time.Hour}, // newest -> keep
+	}
+
+	objs := []client.Object{scheduled}
+	for _, b := range backups {
+		objs = append(objs, &redisv1.RedisBackup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              b.name,
+				Namespace:         "default",
+				CreationTimestamp: metav1.NewTime(now.Add(-b.age)),
+				Labels: map[string]string{
+					"redis.io/scheduled-backup": "daily-backup",
+				},
+			},
+			Status: redisv1.RedisBackupStatus{
+				Phase: redisv1.BackupPhaseCompleted,
+			},
+		})
+	}
+
+	r, c := newScheduledReconciler(objs...)
+	ctx := context.Background()
+
+	require.NoError(t, r.cleanupOldBackups(ctx, scheduled))
+
+	var backupList redisv1.RedisBackupList
+	require.NoError(t, c.List(ctx, &backupList, client.InNamespace("default"), client.MatchingLabels{
+		"redis.io/scheduled-backup": "daily-backup",
+	}))
+
+	remaining := make(map[string]bool, len(backupList.Items))
+	for _, b := range backupList.Items {
+		remaining[b.Name] = true
+	}
+
+	assert.Len(t, remaining, 2)
+	assert.True(t, remaining["backup-bbb"], "newest two should be kept")
+	assert.True(t, remaining["backup-mmm"], "newest two should be kept")
+	assert.False(t, remaining["backup-aaa"], "oldest should be deleted")
+	assert.False(t, remaining["backup-zzz"], "oldest should be deleted")
+}
+
 func TestCleanupOldBackups_DefaultLimits(t *testing.T) {
 	scheduled := &redisv1.RedisScheduledBackup{
 		ObjectMeta: metav1.ObjectMeta{

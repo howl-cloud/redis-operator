@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	cron "github.com/robfig/cron/v3"
@@ -237,6 +238,11 @@ func (r *ScheduledBackupReconciler) cleanupOldBackups(ctx context.Context, sched
 		}
 	}
 
+	// Sort oldest-first by creation time so we trim the oldest backups. List order
+	// is not guaranteed to be chronological, so we must not rely on it.
+	sortByCreationTime(successful)
+	sortByCreationTime(failed)
+
 	successLimit := int32(3)
 	if scheduled.Spec.SuccessfulBackupsHistoryLimit != nil {
 		successLimit = *scheduled.Spec.SuccessfulBackupsHistoryLimit
@@ -264,6 +270,18 @@ func (r *ScheduledBackupReconciler) cleanupOldBackups(ctx context.Context, sched
 	}
 
 	return nil
+}
+
+// sortByCreationTime orders backups oldest-first by creation timestamp, breaking
+// ties on name so the result is deterministic.
+func sortByCreationTime(backups []redisv1.RedisBackup) {
+	sort.Slice(backups, func(i, j int) bool {
+		ti, tj := backups[i].CreationTimestamp, backups[j].CreationTimestamp
+		if ti.Equal(&tj) {
+			return backups[i].Name < backups[j].Name
+		}
+		return ti.Before(&tj)
+	})
 }
 
 // SetupWithManager registers the ScheduledBackupReconciler.
