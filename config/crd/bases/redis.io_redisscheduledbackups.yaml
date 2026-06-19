@@ -122,7 +122,11 @@ spec:
                 - aof
                 type: string
               schedule:
-                description: Schedule is a cron expression defining when to run backups.
+                description: |-
+                  Schedule is a cron expression defining when to run backups.
+                  Standard 5-field cron syntax is supported (minute hour day-of-month month
+                  day-of-week), along with the @hourly, @daily, @weekly, @monthly, @yearly
+                  and @every <duration> descriptors. Seconds are not supported.
                 minLength: 1
                 type: string
               successfulBackupsHistoryLimit:
@@ -142,6 +146,13 @@ spec:
                 enum:
                 - primary
                 - prefer-replica
+                type: string
+              timeZone:
+                default: UTC
+                description: |-
+                  TimeZone is the IANA time zone name (e.g. "America/Chicago") in which the
+                  schedule is interpreted. Defaults to UTC. The zone database must be present
+                  in the operator image.
                 type: string
             required:
             - clusterName

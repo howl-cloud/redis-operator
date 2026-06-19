@@ -289,14 +289,16 @@ func TestScheduledReconcile_CreatesBackup_EmitsScheduledBackupTriggeredEvent(t *
 		NamespacedName: types.NamespacedName{Name: "daily", Namespace: "default"},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, requeueInterval, result.RequeueAfter)
+	// Requeue is driven by the next cron occurrence (within the next hour).
+	assert.True(t, result.RequeueAfter > 0 && result.RequeueAfter <= time.Hour)
 
 	events := drainEvents(rec)
 	assertContainsEvent(t, events, "Normal", "ScheduledBackupTriggered", "Created backup")
 }
 
 func TestScheduledReconcile_NotYetDue_NoEvent(t *testing.T) {
-	lastSchedule := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	// Just ran: the next occurrence of any schedule is strictly in the future.
+	lastSchedule := metav1.NewTime(time.Now())
 
 	cluster := &redisv1.RedisCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "cluster", Namespace: "default"},

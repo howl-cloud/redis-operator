@@ -3,9 +3,12 @@ package backup
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
+	cron "github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -63,24 +66,41 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req reconcile
 		return reconcile.Result{}, fmt.Errorf("cluster %s not found: %w", scheduled.Spec.ClusterName, err)
 	}
 
-	now := time.Now()
-	nextSchedule, err := nextScheduleTime(scheduled.Spec.Schedule, scheduled.Status.LastScheduleTime, now)
+	sched, loc, err := parseSchedule(scheduled.Spec.Schedule, scheduled.Spec.TimeZone)
 	if err != nil {
-		return reconcile.Result{}, fmt.Errorf("parsing schedule: %w", err)
+		logger.Error(err, "Invalid schedule; waiting for spec update")
+		return r.markScheduleInvalid(ctx, &scheduled, err)
 	}
 
-	nextMeta := metav1.NewTime(nextSchedule)
-	statusPatch := client.MergeFrom(scheduled.DeepCopy())
-	scheduled.Status.NextScheduleTime = &nextMeta
-	scheduled.Status.Phase = redisv1.ScheduledBackupPhaseActive
-	if err := r.Status().Patch(ctx, &scheduled, statusPatch); err != nil {
-		return reconcile.Result{}, err
+	now := time.Now()
+	next := sched.Next(baselineTime(&scheduled).In(loc))
+
+	// A syntactically valid expression can still have no reachable occurrence
+	// (e.g. "0 0 31 2 *" — February 31st). robfig/cron signals this by returning
+	// the zero time. Treat it as invalid: firing on a zero "next" would create a
+	// backup and then requeue every second forever.
+	if next.IsZero() {
+		err := fmt.Errorf("schedule %q has no upcoming occurrences", scheduled.Spec.Schedule)
+		logger.Error(err, "Unreachable schedule; waiting for spec update")
+		return r.markScheduleInvalid(ctx, &scheduled, err)
 	}
 
-	if now.Before(nextSchedule) {
-		return reconcile.Result{RequeueAfter: nextSchedule.Sub(now)}, nil
+	// Not due yet: record the next wall-clock time and requeue for it.
+	if next.After(now) {
+		patch := client.MergeFrom(scheduled.DeepCopy())
+		nextMeta := metav1.NewTime(next)
+		scheduled.Status.NextScheduleTime = &nextMeta
+		scheduled.Status.Phase = redisv1.ScheduledBackupPhaseActive
+		meta.SetStatusCondition(&scheduled.Status.Conditions, scheduleValidCondition(scheduled.Generation))
+		if err := r.Status().Patch(ctx, &scheduled, patch); err != nil {
+			return reconcile.Result{}, err
+		}
+		return reconcile.Result{RequeueAfter: requeueDelay(next, now)}, nil
 	}
 
+	// Due — including catch-up after controller downtime. Fire exactly one backup
+	// regardless of how many windows were missed, then advance the schedule past
+	// `now`, so missed runs never stack up.
 	backupName := fmt.Sprintf("%s-%d", scheduled.Name, now.Unix())
 	backup := &redisv1.RedisBackup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -106,10 +126,15 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req reconcile
 	r.Recorder.Eventf(&scheduled, corev1.EventTypeNormal, "ScheduledBackupTriggered", "Created backup %s from schedule %s", backupName, scheduled.Spec.Schedule)
 	logger.Info("Created RedisBackup", "backup", backupName)
 
-	nowMeta := metav1.Now()
+	nextRun := sched.Next(now.In(loc))
+	nowMeta := metav1.NewTime(now)
+	nextMeta := metav1.NewTime(nextRun)
 	lastPatch := client.MergeFrom(scheduled.DeepCopy())
 	scheduled.Status.LastScheduleTime = &nowMeta
 	scheduled.Status.LastBackupName = backupName
+	scheduled.Status.NextScheduleTime = &nextMeta
+	scheduled.Status.Phase = redisv1.ScheduledBackupPhaseActive
+	meta.SetStatusCondition(&scheduled.Status.Conditions, scheduleValidCondition(scheduled.Generation))
 	if err := r.Status().Patch(ctx, &scheduled, lastPatch); err != nil {
 		return reconcile.Result{}, err
 	}
@@ -118,23 +143,80 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req reconcile
 		logger.Error(err, "Failed to cleanup old backups")
 	}
 
-	return reconcile.Result{RequeueAfter: requeueInterval}, nil
+	return reconcile.Result{RequeueAfter: requeueDelay(nextRun, now)}, nil
 }
 
-// nextScheduleTime computes the next time a backup should run.
-// Uses a simplified cron parser. In production, use a proper cron library.
-func nextScheduleTime(schedule string, lastSchedule *metav1.Time, now time.Time) (time.Time, error) {
-	interval := 1 * time.Hour
-
-	if lastSchedule == nil {
-		return now, nil
+// markScheduleInvalid records that the schedule cannot be honored: it sets the
+// ScheduleValid=False condition, emits a warning event, and returns an empty
+// result so the controller stops requeuing. The schedule is part of the spec, so
+// a fix only arrives via a spec update, which re-triggers reconciliation on its
+// own. The validating webhook normally rejects these, but this guards the case
+// where the webhook is disabled.
+func (r *ScheduledBackupReconciler) markScheduleInvalid(ctx context.Context, scheduled *redisv1.RedisScheduledBackup, cause error) (reconcile.Result, error) {
+	patch := client.MergeFrom(scheduled.DeepCopy())
+	meta.SetStatusCondition(&scheduled.Status.Conditions, metav1.Condition{
+		Type:               redisv1.ScheduledBackupConditionScheduleValid,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: scheduled.Generation,
+		Reason:             "InvalidSchedule",
+		Message:            cause.Error(),
+	})
+	scheduled.Status.Phase = redisv1.ScheduledBackupPhaseActive
+	if err := r.Status().Patch(ctx, scheduled, patch); err != nil {
+		return reconcile.Result{}, err
 	}
+	r.Recorder.Eventf(scheduled, corev1.EventTypeWarning, "InvalidSchedule", "Cannot schedule backups: %v", cause)
+	return reconcile.Result{}, nil
+}
 
-	next := lastSchedule.Add(interval)
-	if next.Before(now) {
-		return now, nil
+// baselineTime returns the reference point for computing the next scheduled run:
+// the last time a backup was triggered, or the resource creation time if none
+// has run yet. Anchoring on the creation time means the first backup fires at
+// the next cron occurrence rather than immediately on creation.
+func baselineTime(scheduled *redisv1.RedisScheduledBackup) time.Time {
+	if scheduled.Status.LastScheduleTime != nil {
+		return scheduled.Status.LastScheduleTime.Time
 	}
-	return next, nil
+	return scheduled.CreationTimestamp.Time
+}
+
+// parseSchedule parses the cron expression and resolves the time zone (defaulting
+// to UTC). Standard 5-field cron and the @hourly/@daily/@weekly/@monthly/@yearly
+// and @every <duration> descriptors are supported; seconds are not.
+func parseSchedule(schedule, timeZone string) (cron.Schedule, *time.Location, error) {
+	tz := timeZone
+	if tz == "" {
+		tz = "UTC"
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid timeZone %q: %w", tz, err)
+	}
+	sched, err := cron.ParseStandard(schedule)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid schedule %q: %w", schedule, err)
+	}
+	return sched, loc, nil
+}
+
+// requeueDelay returns how long to wait before the next reconcile, clamped to a
+// one-second minimum so a sub-second @every schedule cannot spin the controller.
+func requeueDelay(next, now time.Time) time.Duration {
+	if d := next.Sub(now); d > time.Second {
+		return d
+	}
+	return time.Second
+}
+
+// scheduleValidCondition reports that the schedule parsed successfully.
+func scheduleValidCondition(generation int64) metav1.Condition {
+	return metav1.Condition{
+		Type:               redisv1.ScheduledBackupConditionScheduleValid,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: generation,
+		Reason:             "ScheduleParsed",
+		Message:            "Schedule parsed successfully",
+	}
 }
 
 // cleanupOldBackups removes excess backups beyond the history limits.
@@ -155,6 +237,11 @@ func (r *ScheduledBackupReconciler) cleanupOldBackups(ctx context.Context, sched
 			failed = append(failed, b)
 		}
 	}
+
+	// Sort oldest-first by creation time so we trim the oldest backups. List order
+	// is not guaranteed to be chronological, so we must not rely on it.
+	sortByCreationTime(successful)
+	sortByCreationTime(failed)
 
 	successLimit := int32(3)
 	if scheduled.Spec.SuccessfulBackupsHistoryLimit != nil {
@@ -183,6 +270,18 @@ func (r *ScheduledBackupReconciler) cleanupOldBackups(ctx context.Context, sched
 	}
 
 	return nil
+}
+
+// sortByCreationTime orders backups oldest-first by creation timestamp, breaking
+// ties on name so the result is deterministic.
+func sortByCreationTime(backups []redisv1.RedisBackup) {
+	sort.Slice(backups, func(i, j int) bool {
+		ti, tj := backups[i].CreationTimestamp, backups[j].CreationTimestamp
+		if ti.Equal(&tj) {
+			return backups[i].Name < backups[j].Name
+		}
+		return ti.Before(&tj)
+	})
 }
 
 // SetupWithManager registers the ScheduledBackupReconciler.
