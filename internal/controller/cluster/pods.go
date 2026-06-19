@@ -409,12 +409,8 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 			},
 			Volumes: []corev1.Volume{
 				{
-					Name: redisDataVolumeName,
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: pvcNameForIndex(cluster.Name, index),
-						},
-					},
+					Name:         redisDataVolumeName,
+					VolumeSource: dataVolumeSource(cluster, index),
 				},
 				{
 					Name: controllerVolumeName,
@@ -755,6 +751,23 @@ func pvcNameForIndex(clusterName string, index int) string {
 	return fmt.Sprintf("%s-data-%d", clusterName, index)
 }
 
+// dataVolumeSource builds the /data volume source: a PVC for durable storage,
+// or a sizeLimit-bounded emptyDir for ephemeral clusters.
+func dataVolumeSource(cluster *redisv1.RedisCluster, index int) corev1.VolumeSource {
+	if cluster.Spec.Storage.IsEphemeral() {
+		emptyDir := &corev1.EmptyDirVolumeSource{}
+		if size := cluster.Spec.Storage.Size; !size.IsZero() {
+			emptyDir.SizeLimit = &size
+		}
+		return corev1.VolumeSource{EmptyDir: emptyDir}
+	}
+	return corev1.VolumeSource{
+		PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+			ClaimName: pvcNameForIndex(cluster.Name, index),
+		},
+	}
+}
+
 func getPodSpecHash(pod *corev1.Pod) string {
 	if pod.Annotations != nil {
 		if hash, ok := pod.Annotations[specHashAnnotation]; ok {
@@ -815,6 +828,16 @@ func (r *ClusterReconciler) computeSpecHash(cluster *redisv1.RedisCluster) strin
 		builder.WriteString(key)
 		builder.WriteString("=")
 		builder.WriteString(cluster.Spec.Redis[key])
+		builder.WriteString("\n")
+	}
+
+	// Ephemeral storage is part of the pod template (an emptyDir with a sizeLimit),
+	// so a size change must roll pods for the new limit to take effect. PVC-backed
+	// storage is intentionally excluded: resizes flow through the PVC resize path.
+	if cluster.Spec.Storage.IsEphemeral() {
+		builder.WriteString("storage.type=emptyDir\n")
+		builder.WriteString("storage.size=")
+		builder.WriteString(cluster.Spec.Storage.Size.String())
 		builder.WriteString("\n")
 	}
 

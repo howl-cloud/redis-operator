@@ -43,6 +43,9 @@ const (
 	replicaModeHostRequiredMessage   = "source.host is required when replicaMode.enabled=true"
 	replicaModePromoteMessage        = "replicaMode.promote=true requires replicaMode.enabled=true"
 	replicaModeDisableMessage        = "replicaMode.enabled cannot be disabled directly; set replicaMode.promote=true first"
+	ephemeralBootstrapMessage        = "bootstrap is not supported with ephemeral storage (storage.type=emptyDir); restored data would be lost when pods are recreated"
+	ephemeralStorageClassMessage     = "storageClassName has no effect with ephemeral storage (storage.type=emptyDir); remove it"
+	storageTypeImmutableMessage      = "storage.type is immutable after creation; switching between pvc and emptyDir would destroy or migrate data"
 )
 
 // SetupValidatingWebhookWithManager registers the validating webhook with the manager.
@@ -215,6 +218,34 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 		allErrs = append(allErrs, v.validateReplicaMode(ctx, cluster)...)
 	}
 	allErrs = append(allErrs, v.validateBootstrapReference(ctx, cluster)...)
+	allErrs = append(allErrs, validateStorage(cluster)...)
+
+	return allErrs
+}
+
+// validateStorage checks ephemeral-storage constraints. Fields that only make
+// sense for PVC-backed storage are rejected when storage.type=emptyDir.
+func validateStorage(cluster *redisv1.RedisCluster) field.ErrorList {
+	if !cluster.Spec.Storage.IsEphemeral() {
+		return nil
+	}
+
+	var allErrs field.ErrorList
+	storagePath := field.NewPath("spec", "storage")
+
+	if cluster.Spec.Bootstrap != nil && cluster.Spec.Bootstrap.BackupName != "" {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "bootstrap"),
+			ephemeralBootstrapMessage,
+		))
+	}
+
+	if cluster.Spec.Storage.StorageClassName != nil && *cluster.Spec.Storage.StorageClassName != "" {
+		allErrs = append(allErrs, field.Forbidden(
+			storagePath.Child("storageClassName"),
+			ephemeralStorageClassMessage,
+		))
+	}
 
 	return allErrs
 }
@@ -225,45 +256,57 @@ func (v *RedisClusterValidator) validateUpdate(ctx context.Context, oldCluster, 
 	specPath := field.NewPath("spec")
 	storageSizePath := specPath.Child("storage", "size")
 
-	switch oldCluster.Spec.Storage.Size.Cmp(newCluster.Spec.Storage.Size) {
-	case 1:
-		// Allow rollbacks only when they do not shrink any already-requested PVC.
-		if v.Reader == nil {
-			allErrs = append(allErrs, field.Forbidden(
-				storageSizePath,
-				"storage size cannot be decreased after creation; only increases are allowed",
-			))
-			break
-		}
-		pvcs, err := v.listClusterPVCs(ctx, newCluster)
-		if err != nil {
-			allErrs = append(allErrs, field.InternalError(storageSizePath, fmt.Errorf("listing cluster PVCs: %w", err)))
-			break
-		}
-		maxRequestedStorage := resource.Quantity{}
-		for i := range pvcs {
-			requested := pvcs[i].Spec.Resources.Requests[corev1.ResourceStorage]
-			if requested.Cmp(maxRequestedStorage) > 0 {
-				maxRequestedStorage = requested
+	// storage.type is immutable: switching backends would destroy or migrate data.
+	if oldCluster.Spec.Storage.Type != newCluster.Spec.Storage.Type {
+		allErrs = append(allErrs, field.Forbidden(
+			specPath.Child("storage", "type"),
+			storageTypeImmutableMessage,
+		))
+	}
+
+	// PVC resize/expansion rules apply only to PVC-backed storage. For ephemeral
+	// clusters a size change simply re-bounds the emptyDir on pod recreation.
+	if !newCluster.Spec.Storage.IsEphemeral() {
+		switch oldCluster.Spec.Storage.Size.Cmp(newCluster.Spec.Storage.Size) {
+		case 1:
+			// Allow rollbacks only when they do not shrink any already-requested PVC.
+			if v.Reader == nil {
+				allErrs = append(allErrs, field.Forbidden(
+					storageSizePath,
+					"storage size cannot be decreased after creation; only increases are allowed",
+				))
+				break
 			}
-		}
-		if maxRequestedStorage.Cmp(newCluster.Spec.Storage.Size) > 0 {
-			allErrs = append(allErrs, field.Forbidden(
-				storageSizePath,
-				fmt.Sprintf(
-					"storage size cannot be decreased below currently requested PVC size %q",
-					maxRequestedStorage.String(),
-				),
-			))
-		}
-	case -1:
-		expandable, reason, err := v.validateStorageClassExpansion(ctx, newCluster)
-		if err != nil {
-			allErrs = append(allErrs, field.InternalError(storageSizePath, err))
-			break
-		}
-		if !expandable {
-			allErrs = append(allErrs, field.Forbidden(storageSizePath, reason))
+			pvcs, err := v.listClusterPVCs(ctx, newCluster)
+			if err != nil {
+				allErrs = append(allErrs, field.InternalError(storageSizePath, fmt.Errorf("listing cluster PVCs: %w", err)))
+				break
+			}
+			maxRequestedStorage := resource.Quantity{}
+			for i := range pvcs {
+				requested := pvcs[i].Spec.Resources.Requests[corev1.ResourceStorage]
+				if requested.Cmp(maxRequestedStorage) > 0 {
+					maxRequestedStorage = requested
+				}
+			}
+			if maxRequestedStorage.Cmp(newCluster.Spec.Storage.Size) > 0 {
+				allErrs = append(allErrs, field.Forbidden(
+					storageSizePath,
+					fmt.Sprintf(
+						"storage size cannot be decreased below currently requested PVC size %q",
+						maxRequestedStorage.String(),
+					),
+				))
+			}
+		case -1:
+			expandable, reason, err := v.validateStorageClassExpansion(ctx, newCluster)
+			if err != nil {
+				allErrs = append(allErrs, field.InternalError(storageSizePath, err))
+				break
+			}
+			if !expandable {
+				allErrs = append(allErrs, field.Forbidden(storageSizePath, reason))
+			}
 		}
 	}
 

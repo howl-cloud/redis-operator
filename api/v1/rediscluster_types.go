@@ -16,6 +16,17 @@ const (
 	ClusterModeCluster    ClusterMode = "cluster"
 )
 
+// StorageType defines how Redis data volumes are backed.
+// +kubebuilder:validation:Enum=pvc;emptyDir
+type StorageType string
+
+const (
+	// StorageTypePVC backs /data with a PersistentVolumeClaim (durable across pod recreation).
+	StorageTypePVC StorageType = "pvc"
+	// StorageTypeEmptyDir backs /data with pod-local emptyDir storage (data is lost on pod recreation).
+	StorageTypeEmptyDir StorageType = "emptyDir"
+)
+
 // PrimaryUpdateStrategy defines how the primary is updated during rolling updates.
 // +kubebuilder:validation:Enum=unsupervised;supervised
 type PrimaryUpdateStrategy string
@@ -121,7 +132,7 @@ type RedisClusterSpec struct {
 	// +kubebuilder:default="redis:7.2"
 	ImageName string `json:"imageName,omitempty"`
 
-	// Storage defines the PVC template for /data volumes.
+	// Storage defines how /data volumes are backed (PVC or ephemeral emptyDir).
 	Storage StorageSpec `json:"storage"`
 
 	// Redis contains redis.conf configuration parameters.
@@ -200,15 +211,28 @@ type RedisClusterSpec struct {
 	ReplicaMode *ReplicaModeSpec `json:"replicaMode,omitempty"`
 }
 
-// StorageSpec defines PVC storage for Redis data.
+// StorageSpec defines storage for Redis data.
 type StorageSpec struct {
-	// Size is the requested storage size.
+	// Type selects how /data is backed: "pvc" for a PersistentVolumeClaim (durable),
+	// or "emptyDir" for pod-local ephemeral storage (data is lost when a pod is recreated).
+	// StorageClassName, resize, and PVC lifecycle handling apply only to "pvc".
+	// +kubebuilder:default=pvc
+	// +optional
+	Type StorageType `json:"type,omitempty"`
+
+	// Size is the requested storage size. For "pvc" it is the PVC request;
+	// for "emptyDir" it is the volume's sizeLimit (the pod is evicted if exceeded).
 	// +kubebuilder:default="1Gi"
 	Size resource.Quantity `json:"size"`
 
-	// StorageClassName is the name of the StorageClass.
+	// StorageClassName is the name of the StorageClass. Ignored for "emptyDir".
 	// +optional
 	StorageClassName *string `json:"storageClassName,omitempty"`
+}
+
+// IsEphemeral reports whether data is backed by pod-local ephemeral storage.
+func (s StorageSpec) IsEphemeral() bool {
+	return s.Type == StorageTypeEmptyDir
 }
 
 // LocalObjectReference is a reference to a Secret in the same namespace.

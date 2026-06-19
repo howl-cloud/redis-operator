@@ -54,6 +54,10 @@ func (d *RedisClusterDefaulter) Default(_ context.Context, obj runtime.Object) e
 		cluster.Spec.PrimaryUpdateStrategy = redisv1.PrimaryUpdateStrategyUnsupervised
 	}
 
+	if cluster.Spec.Storage.Type == "" {
+		cluster.Spec.Storage.Type = redisv1.StorageTypePVC
+	}
+
 	if cluster.Spec.Storage.Size.IsZero() {
 		cluster.Spec.Storage.Size = resource.MustParse("1Gi")
 	}
