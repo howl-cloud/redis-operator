@@ -39,6 +39,20 @@ After each evaluation the controller writes `status.nextScheduleTime` (the next 
 
 Missed runs are handled with **at-most-one catch-up**: if the controller was down across one or more scheduled windows, exactly one backup fires on recovery and the schedule then advances past the current time. Missed windows never stack into a burst of backups.
 
+### Retention
+
+`spec.successfulBackupsHistoryLimit` and `spec.failedBackupsHistoryLimit` (both default `3`) cap how many `RedisBackup` **resources** are kept per schedule. When the count exceeds a limit, the oldest resources — by `metadata.creationTimestamp` — are deleted.
+
+**These limits prune Kubernetes objects only. They do NOT delete the backup artifacts in object storage.** This mirrors Kubernetes CronJob's `successfulJobsHistoryLimit`/`failedJobsHistoryLimit`, which prune Job objects without touching whatever the jobs produced. Deleting the remote artifact — the actual disaster-recovery data — is intentionally out of the operator's scope:
+
+- The default limit is small (`3`); coupling artifact deletion to it would make a low resource count silently destroy real backups.
+- The controller holds no object-storage credentials. Artifacts are written by the in-pod instance manager (which projects `spec.backupCredentialsSecret`); the operator process has no client or delete permission for the bucket, and granting it one would expand its blast radius and conflict with Object Lock / immutability policies.
+
+**Manage remote-artifact lifecycle outside the operator**, using the object store's native tooling, scoped to the prefix you configured in `spec.destination.s3.path` (or `azure.path`):
+
+- **S3 / S3-compatible** — an [S3 Lifecycle](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html) expiration rule on the prefix.
+- **Azure Blob** — an [Azure Blob lifecycle management](https://learn.microsoft.com/azure/storage/blobs/lifecycle-management-overview) policy on the prefix.
+
 ## Key Files
 
 | File | Description |

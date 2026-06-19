@@ -51,13 +51,19 @@ type RedisScheduledBackupSpec struct {
 	// +optional
 	Suspend *bool `json:"suspend,omitempty"`
 
-	// SuccessfulBackupsHistoryLimit is the number of successful backups to retain.
+	// SuccessfulBackupsHistoryLimit is the number of successful RedisBackup
+	// resources to retain. This prunes only Kubernetes objects; the backup
+	// artifacts in object storage are NOT deleted. Configure an S3 lifecycle rule
+	// or Azure Blob lifecycle policy to expire remote artifacts.
 	// +kubebuilder:default=3
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	SuccessfulBackupsHistoryLimit *int32 `json:"successfulBackupsHistoryLimit,omitempty"`
 
-	// FailedBackupsHistoryLimit is the number of failed backups to retain.
+	// FailedBackupsHistoryLimit is the number of failed RedisBackup resources to
+	// retain. This prunes only Kubernetes objects; the backup artifacts in object
+	// storage are NOT deleted. Configure an S3 lifecycle rule or Azure Blob
+	// lifecycle policy to expire remote artifacts.
 	// +kubebuilder:default=3
 	// +kubebuilder:validation:Minimum=0
 	// +optional
