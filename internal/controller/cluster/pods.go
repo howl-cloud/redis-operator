@@ -278,8 +278,8 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 		if backup.Status.Phase != redisv1.BackupPhaseCompleted {
 			return fmt.Errorf("bootstrap backup %s/%s is not completed (phase=%s)", backup.Namespace, backup.Name, backup.Status.Phase)
 		}
-		if backup.Spec.Destination == nil || backup.Spec.Destination.S3 == nil {
-			return fmt.Errorf("bootstrap backup %s/%s has no S3 destination", backup.Namespace, backup.Name)
+		if err := backup.Spec.Destination.Validate(); err != nil {
+			return fmt.Errorf("bootstrap backup %s/%s has invalid destination: %w", backup.Namespace, backup.Name, err)
 		}
 		if backup.Status.BackupPath == "" {
 			return fmt.Errorf("bootstrap backup %s/%s has empty status.backupPath", backup.Namespace, backup.Name)

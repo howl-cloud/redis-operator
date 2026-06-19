@@ -64,6 +64,29 @@ spec:
               destination:
                 description: Destination defines where to store the backup.
                 properties:
+                  azure:
+                    description: Azure defines an Azure Blob Storage destination.
+                    properties:
+                      accountName:
+                        description: |-
+                          AccountName is the storage account name. Used to build the service URL
+                          for shared-key and SAS auth. If empty, it falls back to AZURE_STORAGE_ACCOUNT
+                          in the credentials secret. Ignored when a connection string is supplied.
+                        type: string
+                      container:
+                        description: Container is the Azure Blob container name.
+                        type: string
+                      endpoint:
+                        description: |-
+                          Endpoint overrides the blob service URL (for Azurite or sovereign clouds).
+                          When unset, https://{accountName}.blob.core.windows.net is used.
+                        type: string
+                      path:
+                        description: Path is the prefix/path within the container.
+                        type: string
+                    required:
+                    - container
+                    type: object
                   s3:
                     description: S3 defines an S3-compatible storage destination.
                     properties:

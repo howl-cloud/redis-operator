@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -71,8 +72,8 @@ func Run(ctx context.Context, clusterName, backupName, backupNamespace, dataDir,
 	if backup.Status.Phase != redisv1.BackupPhaseCompleted {
 		return fmt.Errorf("RedisBackup %s/%s is not completed (phase=%s)", backupNamespace, backupName, backup.Status.Phase)
 	}
-	if backup.Spec.Destination == nil || backup.Spec.Destination.S3 == nil {
-		return fmt.Errorf("RedisBackup %s/%s has no S3 destination", backupNamespace, backupName)
+	if err := backup.Spec.Destination.Validate(); err != nil {
+		return fmt.Errorf("RedisBackup %s/%s has invalid destination: %w", backupNamespace, backupName, err)
 	}
 	var cluster redisv1.RedisCluster
 	if err := k8sClient.Get(ctx, types.NamespacedName{
@@ -115,10 +116,6 @@ func Run(ctx context.Context, clusterName, backupName, backupNamespace, dataDir,
 		return fmt.Errorf("RedisBackup %s/%s has empty status.backupPath", backupNamespace, backupName)
 	}
 
-	bucket, key, err := resolveBackupLocation(backup.Spec.Destination.S3.Bucket, backupPath)
-	if err != nil {
-		return fmt.Errorf("resolving backup location: %w", err)
-	}
 	if cluster.Spec.BackupCredentialsSecret == nil {
 		return fmt.Errorf("RedisCluster %s/%s has no backupCredentialsSecret configured", backupNamespace, cluster.Name)
 	}
@@ -131,31 +128,79 @@ func Run(ctx context.Context, clusterName, backupName, backupNamespace, dataDir,
 		return fmt.Errorf("fetching backup credentials secret %s/%s: %w", backupNamespace, cluster.Spec.BackupCredentialsSecret.Name, err)
 	}
 
-	accessKeyID, secretAccessKey, sessionToken, err := readAWSCredentials(&secret)
+	download, err := newBackupDownloader(ctx, &backup, backupPath, &secret)
 	if err != nil {
-		return fmt.Errorf("reading AWS credentials from secret %s/%s: %w", backupNamespace, secret.Name, err)
-	}
-
-	s3Client, err := newS3Client(ctx, backup.Spec.Destination.S3, accessKeyID, secretAccessKey, sessionToken)
-	if err != nil {
-		return fmt.Errorf("creating S3 client: %w", err)
+		return err
 	}
 
 	switch artifactType {
 	case redisv1.BackupArtifactTypeRDB:
 		targetPath := filepath.Join(dataDir, defaultBackupFilename)
-		if err := downloadObjectToFile(ctx, s3Client, bucket, key, targetPath); err != nil {
-			return fmt.Errorf("downloading s3://%s/%s to %s: %w", bucket, key, targetPath, err)
+		if err := download(ctx, targetPath); err != nil {
+			return fmt.Errorf("downloading backup %q to %s: %w", backupPath, targetPath, err)
 		}
 	case redisv1.BackupArtifactTypeAOFArchive:
-		if err := downloadAndExtractAOFArchive(ctx, s3Client, bucket, key, dataDir); err != nil {
-			return fmt.Errorf("restoring AOF archive from s3://%s/%s: %w", bucket, key, err)
+		if err := downloadAndExtractAOFArchive(ctx, download, dataDir); err != nil {
+			return fmt.Errorf("restoring AOF archive from %q: %w", backupPath, err)
 		}
 	default:
 		return fmt.Errorf("unsupported artifact type %q", artifactType)
 	}
 
 	return nil
+}
+
+// objectDownloader downloads a single backup artifact to outputPath.
+type objectDownloader func(ctx context.Context, outputPath string) error
+
+// newBackupDownloader resolves credentials and the object location for the
+// backup's configured destination and returns a backend-specific downloader.
+func newBackupDownloader(
+	ctx context.Context,
+	backup *redisv1.RedisBackup,
+	backupPath string,
+	secret *corev1.Secret,
+) (objectDownloader, error) {
+	switch {
+	case backup.Spec.Destination.S3 != nil:
+		bucket, key, err := resolveBackupLocation(backup.Spec.Destination.S3.Bucket, backupPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolving backup location: %w", err)
+		}
+
+		accessKeyID, secretAccessKey, sessionToken, err := readAWSCredentials(secret)
+		if err != nil {
+			return nil, fmt.Errorf("reading AWS credentials from secret %s: %w", secret.Name, err)
+		}
+
+		s3Client, err := newS3Client(ctx, backup.Spec.Destination.S3, accessKeyID, secretAccessKey, sessionToken)
+		if err != nil {
+			return nil, fmt.Errorf("creating S3 client: %w", err)
+		}
+
+		return func(ctx context.Context, outputPath string) error {
+			return downloadObjectToFile(ctx, s3Client, bucket, key, outputPath)
+		}, nil
+
+	case backup.Spec.Destination.Azure != nil:
+		container, blob, err := resolveAzureBlobLocation(backup.Spec.Destination.Azure.Container, backupPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolving backup location: %w", err)
+		}
+
+		connectionString, accountName, accountKey, sasToken := readAzureCredentials(secret)
+		azClient, err := newAzureBlobClient(backup.Spec.Destination.Azure, connectionString, accountName, accountKey, sasToken)
+		if err != nil {
+			return nil, fmt.Errorf("creating Azure client: %w", err)
+		}
+
+		return func(ctx context.Context, outputPath string) error {
+			return downloadAzureBlobToFile(ctx, azClient, container, blob, outputPath)
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("backup has no supported destination")
+	}
 }
 
 func clusterShardFromPod(clusterName string, replicasPerShard int32, podName string) (string, bool, error) {
@@ -204,7 +249,7 @@ func resolveArtifactType(backup *redisv1.RedisBackup) (redisv1.BackupArtifactTyp
 	}
 }
 
-func downloadAndExtractAOFArchive(ctx context.Context, s3Client *s3.Client, bucket, key, dataDir string) error {
+func downloadAndExtractAOFArchive(ctx context.Context, download objectDownloader, dataDir string) error {
 	archiveFile, err := os.CreateTemp(dataDir, "aof-archive-*.tar.gz")
 	if err != nil {
 		return fmt.Errorf("creating temporary AOF archive file: %w", err)
@@ -216,7 +261,7 @@ func downloadAndExtractAOFArchive(ctx context.Context, s3Client *s3.Client, buck
 	}
 	defer func() { _ = os.Remove(archivePath) }()
 
-	if err := downloadObjectToFile(ctx, s3Client, bucket, key, archivePath); err != nil {
+	if err := download(ctx, archivePath); err != nil {
 		return fmt.Errorf("downloading archive to %s: %w", archivePath, err)
 	}
 
@@ -533,6 +578,151 @@ func downloadObjectToFile(ctx context.Context, s3Client *s3.Client, bucket, key,
 		_ = file.Close()
 		_ = os.Remove(tempPath)
 		return fmt.Errorf("writing backup file: %w", err)
+	}
+
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("closing output file %s: %w", tempPath, err)
+	}
+
+	if err := os.Rename(tempPath, outputPath); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("renaming %s to %s: %w", tempPath, outputPath, err)
+	}
+
+	return nil
+}
+
+func readAzureCredentials(secret *corev1.Secret) (connectionString, accountName, accountKey, sasToken string) {
+	connectionString = secretValue(secret, "AZURE_STORAGE_CONNECTION_STRING", "azureStorageConnectionString", "connectionString")
+	accountName = secretValue(secret, "AZURE_STORAGE_ACCOUNT", "azureStorageAccount", "accountName")
+	accountKey = secretValue(secret, "AZURE_STORAGE_KEY", "azureStorageKey", "accountKey")
+	sasToken = secretValue(secret, "AZURE_STORAGE_SAS_TOKEN", "azureStorageSasToken", "sasToken")
+	return connectionString, accountName, accountKey, sasToken
+}
+
+// newAzureBlobClient builds an azblob client from whichever credential mode is
+// supplied, in priority order: connection string, shared key, then SAS token.
+func newAzureBlobClient(
+	destination *redisv1.AzureBlobDestination,
+	connectionString, accountName, accountKey, sasToken string,
+) (*azblob.Client, error) {
+	if connectionString != "" {
+		client, err := azblob.NewClientFromConnectionString(connectionString, nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating azure client from connection string: %w", err)
+		}
+		return client, nil
+	}
+
+	// A spec-level accountName takes precedence; otherwise fall back to the
+	// AZURE_STORAGE_ACCOUNT value resolved from the credentials secret.
+	effectiveAccount := destination.AccountName
+	if effectiveAccount == "" {
+		effectiveAccount = accountName
+	}
+
+	serviceURL, err := azureServiceURL(effectiveAccount, destination.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	if accountKey != "" {
+		if effectiveAccount == "" {
+			return nil, fmt.Errorf("azure shared-key auth requires an account name (set destination.azure.accountName or AZURE_STORAGE_ACCOUNT in the credentials secret)")
+		}
+		cred, err := azblob.NewSharedKeyCredential(effectiveAccount, accountKey)
+		if err != nil {
+			return nil, fmt.Errorf("creating azure shared key credential: %w", err)
+		}
+		client, err := azblob.NewClientWithSharedKeyCredential(serviceURL, cred, nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating azure client with shared key: %w", err)
+		}
+		return client, nil
+	}
+
+	if sasToken != "" {
+		client, err := azblob.NewClientWithNoCredential(appendSASToken(serviceURL, sasToken), nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating azure client with SAS token: %w", err)
+		}
+		return client, nil
+	}
+
+	return nil, fmt.Errorf("azure backup credentials must include one of AZURE_STORAGE_CONNECTION_STRING, AZURE_STORAGE_KEY, or AZURE_STORAGE_SAS_TOKEN")
+}
+
+func azureServiceURL(accountName, endpoint string) (string, error) {
+	if endpoint != "" {
+		return endpoint, nil
+	}
+	if accountName == "" {
+		return "", fmt.Errorf("azure destination requires accountName or endpoint when not using a connection string")
+	}
+	return fmt.Sprintf("https://%s.blob.core.windows.net/", accountName), nil
+}
+
+func appendSASToken(serviceURL, sasToken string) string {
+	return strings.TrimSuffix(serviceURL, "/") + "/?" + strings.TrimPrefix(sasToken, "?")
+}
+
+func resolveAzureBlobLocation(configuredContainer, backupPath string) (string, string, error) {
+	trimmedPath := strings.TrimSpace(backupPath)
+	if trimmedPath == "" {
+		return "", "", fmt.Errorf("backup path is empty")
+	}
+
+	if strings.HasPrefix(trimmedPath, "azblob://") {
+		parsedURL, err := url.Parse(trimmedPath)
+		if err != nil {
+			return "", "", fmt.Errorf("parsing azblob backup path %q: %w", trimmedPath, err)
+		}
+		if parsedURL.Host == "" {
+			return "", "", fmt.Errorf("azblob backup path %q is missing container", trimmedPath)
+		}
+
+		container := configuredContainer
+		if container == "" {
+			container = parsedURL.Host
+		}
+		if configuredContainer != "" && configuredContainer != parsedURL.Host {
+			return "", "", fmt.Errorf("backup path container %q does not match configured container %q", parsedURL.Host, configuredContainer)
+		}
+
+		blob := strings.TrimPrefix(parsedURL.Path, "/")
+		if blob == "" {
+			return "", "", fmt.Errorf("azblob backup path %q is missing blob name", trimmedPath)
+		}
+		return container, blob, nil
+	}
+
+	if configuredContainer == "" {
+		return "", "", fmt.Errorf("backup path %q is not an azblob:// URL and no destination container is configured", trimmedPath)
+	}
+
+	blob := strings.TrimPrefix(trimmedPath, "/")
+	if blob == "" {
+		return "", "", fmt.Errorf("backup path %q is missing blob name", trimmedPath)
+	}
+	return configuredContainer, blob, nil
+}
+
+func downloadAzureBlobToFile(ctx context.Context, client *azblob.Client, container, blob, outputPath string) error {
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("creating output directory: %w", err)
+	}
+
+	tempPath := outputPath + ".tmp"
+	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("opening output file %s: %w", tempPath, err)
+	}
+
+	if _, err := client.DownloadFile(ctx, container, blob, file, nil); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("downloading azure container %q blob %q: %w", container, blob, err)
 	}
 
 	if err := file.Close(); err != nil {

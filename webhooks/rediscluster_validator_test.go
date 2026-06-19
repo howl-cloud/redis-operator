@@ -730,7 +730,7 @@ func TestValidateCreate_BootstrapBackupIncomplete(t *testing.T) {
 	assert.Contains(t, err.Error(), "must be in phase")
 }
 
-func TestValidateCreate_BootstrapBackupMissingS3Destination(t *testing.T) {
+func TestValidateCreate_BootstrapBackupMissingDestination(t *testing.T) {
 	backup := completedBackup("missing-destination", "default")
 	backup.Spec.Destination = nil
 
@@ -740,7 +740,23 @@ func TestValidateCreate_BootstrapBackupMissingS3Destination(t *testing.T) {
 
 	_, err := v.ValidateCreate(context.Background(), cluster)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "must define an S3 destination")
+	assert.Contains(t, err.Error(), "invalid destination")
+}
+
+func TestValidateCreate_BootstrapBackupAzureDestinationAccepted(t *testing.T) {
+	backup := completedBackup("azure-backup", "default")
+	backup.Spec.Destination = &redisv1.BackupDestination{
+		Azure: &redisv1.AzureBlobDestination{Container: "redis-backups"},
+	}
+	backup.Status.BackupPath = "azblob://redis-backups/backups/source-cluster.rdb"
+
+	v := validatorWithReader(t, backup)
+	cluster := validCluster()
+	cluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: backup.Name}
+
+	warnings, err := v.ValidateCreate(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
 }
 
 func TestValidateCreate_BootstrapBackupAOFAccepted(t *testing.T) {

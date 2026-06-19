@@ -26,3 +26,94 @@ Watches `RedisScheduledBackup` objects and creates `RedisBackup` objects on the 
 | `reconciler.go` | `BackupReconciler.Reconcile()` |
 | `scheduled_reconciler.go` | `ScheduledBackupReconciler.Reconcile()`, cron scheduling logic |
 | `executor.go` | HTTP call to instance manager to trigger backup and parse artifact metadata |
+
+## Backup destinations
+
+`spec.destination` selects the object-storage backend. Exactly one of `s3` or
+`azure` must be set; the webhook-free validation in `reconciler.go` rejects
+empty or ambiguous destinations and marks the backup `Failed`.
+
+Credentials for both backends are read from the `RedisCluster`'s
+`spec.backupCredentialsSecret`. The keys present in that Secret determine the
+auth mode — no separate mode field is required.
+
+### S3 (and S3-compatible stores)
+
+```yaml
+destination:
+  s3:
+    bucket: my-redis-backups
+    path: prod/redis        # optional key prefix
+    endpoint: ""            # set for MinIO/Garage/other S3-compatible stores
+    region: us-east-1
+```
+
+Secret keys: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
+`AWS_SESSION_TOKEN`.
+
+### Azure Blob Storage
+
+```yaml
+destination:
+  azure:
+    container: my-redis-backups
+    path: prod/redis        # optional blob-name prefix
+    accountName: mystorageacct   # required for shared-key / SAS auth
+    endpoint: ""            # override for Azurite or sovereign clouds
+```
+
+Credentials are auto-detected from the Secret in priority order:
+
+| Auth mode | Secret key(s) |
+|-----------|---------------|
+| Connection string | `AZURE_STORAGE_CONNECTION_STRING` |
+| Shared key | `AZURE_STORAGE_ACCOUNT` + `AZURE_STORAGE_KEY` |
+| SAS token | `AZURE_STORAGE_SAS_TOKEN` (with `AZURE_STORAGE_ACCOUNT` or `endpoint`) |
+
+The account name is resolved from `spec.destination.azure.accountName` if set,
+otherwise from `AZURE_STORAGE_ACCOUNT` in the credentials secret — so shared-key
+and SAS users only need it in one place. When a connection string is supplied it
+takes precedence and carries its own endpoint/account, so `accountName`/`endpoint`
+are ignored. Backup artifacts are recorded in `status.backupPath` as
+`azblob://{container}/{blob}`.
+
+### Example: on-demand backup to Azure
+
+```yaml
+apiVersion: redis.io/v1
+kind: RedisBackup
+metadata:
+  name: cache-backup-now
+spec:
+  clusterName: cache
+  target: prefer-replica
+  method: rdb
+  destination:
+    azure:
+      container: redis-backups
+      path: cache
+      accountName: mystorageacct
+```
+
+### Example: scheduled backup to Azure
+
+```yaml
+apiVersion: redis.io/v1
+kind: RedisScheduledBackup
+metadata:
+  name: cache-nightly
+spec:
+  schedule: "0 2 * * *"
+  clusterName: cache
+  method: rdb
+  destination:
+    azure:
+      container: redis-backups
+      path: cache/nightly
+      accountName: mystorageacct
+```
+
+The referenced `RedisCluster` must set `spec.backupCredentialsSecret` to a Secret
+containing the Azure credential keys above. Restore/bootstrap
+(`spec.bootstrap.backupName`) downloads from whichever backend produced the
+backup, using the same Secret.

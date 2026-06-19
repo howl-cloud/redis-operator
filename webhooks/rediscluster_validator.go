@@ -514,11 +514,11 @@ func (v *RedisClusterValidator) validateBootstrapReference(ctx context.Context, 
 		))
 	}
 
-	if backup.Spec.Destination == nil || backup.Spec.Destination.S3 == nil {
+	if err := backup.Spec.Destination.Validate(); err != nil {
 		allErrs = append(allErrs, field.Invalid(
 			backupNamePath,
 			backupName,
-			"referenced RedisBackup must define an S3 destination",
+			fmt.Sprintf("referenced RedisBackup has an invalid destination: %v", err),
 		))
 	}
 
