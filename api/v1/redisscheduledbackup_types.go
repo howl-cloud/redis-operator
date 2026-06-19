@@ -12,11 +12,25 @@ const (
 	ScheduledBackupPhaseSuspended ScheduledBackupPhase = "Suspended"
 )
 
+// ScheduledBackupConditionScheduleValid is the condition type reporting whether
+// spec.schedule (and spec.timeZone) parsed successfully.
+const ScheduledBackupConditionScheduleValid = "ScheduleValid"
+
 // RedisScheduledBackupSpec defines the desired state of a RedisScheduledBackup.
 type RedisScheduledBackupSpec struct {
 	// Schedule is a cron expression defining when to run backups.
+	// Standard 5-field cron syntax is supported (minute hour day-of-month month
+	// day-of-week), along with the @hourly, @daily, @weekly, @monthly, @yearly
+	// and @every <duration> descriptors. Seconds are not supported.
 	// +kubebuilder:validation:MinLength=1
 	Schedule string `json:"schedule"`
+
+	// TimeZone is the IANA time zone name (e.g. "America/Chicago") in which the
+	// schedule is interpreted. Defaults to UTC. The zone database must be present
+	// in the operator image.
+	// +kubebuilder:default="UTC"
+	// +optional
+	TimeZone string `json:"timeZone,omitempty"`
 
 	// ClusterName is the name of the RedisCluster to back up.
 	ClusterName string `json:"clusterName"`

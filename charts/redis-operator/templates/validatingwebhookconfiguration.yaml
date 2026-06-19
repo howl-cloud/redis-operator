@@ -28,4 +28,26 @@ webhooks:
         scope: Namespaced
     sideEffects: None
     timeoutSeconds: 10
+  - name: vredisscheduledbackup.redis.io
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      # caBundle is intentionally empty — the operator's self-managed PKI controller
+      # (internal/cmd/manager/controller/pki.go) rotates the CA and injects the
+      # caBundle into this field via a PATCH on startup and on cert rotation.
+      caBundle: ""
+      service:
+        name: {{ include "redis-operator.fullname" . }}-webhook-service
+        namespace: {{ .Release.Namespace }}
+        path: /validate-redis-io-v1-redisscheduledbackup
+        port: 443
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    rules:
+      - apiGroups: [redis.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [redisscheduledbackups]
+        scope: Namespaced
+    sideEffects: None
+    timeoutSeconds: 10
 {{- end }}

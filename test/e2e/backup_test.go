@@ -522,7 +522,9 @@ var _ = Describe("RedisBackup", func() {
 					Namespace: namespace,
 				},
 				Spec: redisv1.RedisScheduledBackupSpec{
-					Schedule:    "* * * * *",
+					// @every 2s makes the first occurrence due within seconds, so the
+					// test doesn't idle until the next wall-clock minute boundary.
+					Schedule:    "@every 2s",
 					ClusterName: clusterName,
 					Target:      redisv1.BackupTargetPreferReplica,
 					Method:      redisv1.BackupMethodRDB,

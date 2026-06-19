@@ -19,6 +19,26 @@ Handles on-demand backup requests. When a `RedisBackup` object is created:
 
 Watches `RedisScheduledBackup` objects and creates `RedisBackup` objects on the configured cron schedule. Tracks `status.lastScheduleTime` and `status.nextScheduleTime`.
 
+### Schedule syntax
+
+`spec.schedule` is parsed by [`robfig/cron`](https://pkg.go.dev/github.com/robfig/cron/v3) using the standard Kubernetes CronJob dialect:
+
+- **Five fields** — `minute hour day-of-month month day-of-week` (e.g. `0 2 * * *` = 02:00 every day). Ranges (`1-5`), lists (`1,15`), steps (`*/10`), and names (`MON`, `JAN`) are supported.
+- **Descriptors** — `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`/`@annually`, and `@every <duration>` (e.g. `@every 6h`).
+- **Seconds are not supported.** A six-field expression is rejected. The smallest standard granularity is one minute.
+
+Invalid expressions are rejected at apply time by the validating webhook. If the webhook is disabled, the controller still guards against them: it sets a `ScheduleValid=False` status condition, emits an `InvalidSchedule` warning event, and stops requeuing until the spec is corrected.
+
+### Timezone behavior
+
+`spec.timeZone` is an IANA zone name (e.g. `America/Chicago`) and **defaults to `UTC`**. The schedule is evaluated in this zone, independent of where the controller pod runs, so `0 2 * * *` with `timeZone: America/Chicago` fires at 02:00 Chicago wall-clock time (handling DST shifts via the zone database). The zone database must be present in the operator image (it ships in the base image). An unknown zone name is rejected the same way an invalid schedule is.
+
+### Next run and missed runs
+
+After each evaluation the controller writes `status.nextScheduleTime` (the next wall-clock fire time) and requeues for that instant. The next run is computed from `status.lastScheduleTime`, or from the resource's creation time if it has never run — so a freshly created schedule waits for its next occurrence rather than firing immediately.
+
+Missed runs are handled with **at-most-one catch-up**: if the controller was down across one or more scheduled windows, exactly one backup fires on recovery and the schedule then advances past the current time. Missed windows never stack into a burst of backups.
+
 ## Key Files
 
 | File | Description |
@@ -104,6 +124,7 @@ metadata:
   name: cache-nightly
 spec:
   schedule: "0 2 * * *"
+  timeZone: America/Chicago   # optional; defaults to UTC
   clusterName: cache
   method: rdb
   destination:

@@ -369,7 +369,9 @@ func TestScheduledBackupRestoreThroughOperatorReconcilers(t *testing.T) {
 			Namespace: operatorBackupNamespace,
 		},
 		Spec: redisv1.RedisScheduledBackupSpec{
-			Schedule:    "* * * * *",
+			// @every 1s makes the first occurrence due almost immediately so the
+			// test doesn't have to wait for the next wall-clock minute boundary.
+			Schedule:    "@every 1s",
 			ClusterName: clusterName,
 			Target:      redisv1.BackupTargetPrimary,
 			Method:      redisv1.BackupMethodRDB,
@@ -385,8 +387,7 @@ func TestScheduledBackupRestoreThroughOperatorReconcilers(t *testing.T) {
 	}
 	require.NoError(t, env.k8sClient.Create(ctx, scheduled))
 
-	reconcileScheduledBackupOnce(ctx, t, env, operatorBackupNamespace, scheduledName)
-	backupName := waitForScheduledBackupName(ctx, t, env.k8sClient, operatorBackupNamespace, scheduledName)
+	backupName := waitForScheduledBackupName(ctx, t, env, operatorBackupNamespace, scheduledName)
 
 	completed := reconcileBackupUntilCompleted(ctx, t, env, operatorBackupNamespace, backupName)
 	require.Equal(t, redisv1.BackupPhaseCompleted, completed.Status.Phase)
@@ -687,7 +688,7 @@ func reconcileScheduledBackupOnce(
 func waitForScheduledBackupName(
 	ctx context.Context,
 	t *testing.T,
-	k8sClient ctrlclient.Client,
+	env *operatorBackupEnvironment,
 	namespace, scheduledName string,
 ) string {
 	t.Helper()
@@ -696,8 +697,12 @@ func waitForScheduledBackupName(
 	deadline := time.Now().Add(backupPollTimeout)
 
 	for time.Now().Before(deadline) {
+		// Drive the reconciler each iteration: the real controller requeues
+		// itself, but this harness invokes Reconcile explicitly.
+		reconcileScheduledBackupOnce(ctx, t, env, namespace, scheduledName)
+
 		var scheduled redisv1.RedisScheduledBackup
-		require.NoError(t, k8sClient.Get(ctx, target, &scheduled))
+		require.NoError(t, env.k8sClient.Get(ctx, target, &scheduled))
 		if scheduled.Status.LastBackupName != "" {
 			return scheduled.Status.LastBackupName
 		}

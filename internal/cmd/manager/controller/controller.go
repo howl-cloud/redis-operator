@@ -105,6 +105,11 @@ func RunController(
 			return fmt.Errorf("setting up RedisCluster validator webhook: %w", err)
 		}
 
+		scheduledBackupValidator := &webhooks.RedisScheduledBackupValidator{}
+		if err := scheduledBackupValidator.SetupValidatingWebhookWithManager(mgr); err != nil {
+			return fmt.Errorf("setting up RedisScheduledBackup validator webhook: %w", err)
+		}
+
 		apiClient, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
 		if err != nil {
 			return fmt.Errorf("creating direct API client for periodic webhook PKI reconciliation: %w", err)

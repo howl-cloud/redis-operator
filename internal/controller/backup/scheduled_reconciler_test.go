@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -35,33 +36,101 @@ func newScheduledReconciler(objs ...client.Object) (*ScheduledBackupReconciler, 
 	return NewScheduledBackupReconciler(c, scheme, recorder), c
 }
 
-func TestNextScheduleTime_NeverRun(t *testing.T) {
-	now := time.Now()
-	next, err := nextScheduleTime("0 * * * *", nil, now)
-	require.NoError(t, err)
-	assert.Equal(t, now, next, "should return now for never-run schedule")
+func TestParseSchedule_Valid(t *testing.T) {
+	tests := []struct {
+		name     string
+		schedule string
+		timeZone string
+	}{
+		{"hourly", "0 * * * *", ""},
+		{"daily", "0 2 * * *", "UTC"},
+		{"weekly", "0 3 * * 0", "America/Chicago"},
+		{"descriptor hourly", "@hourly", ""},
+		{"descriptor every", "@every 15m", ""},
+		{"empty timezone defaults to utc", "0 0 * * *", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sched, loc, err := parseSchedule(tt.schedule, tt.timeZone)
+			require.NoError(t, err)
+			require.NotNil(t, sched)
+			require.NotNil(t, loc)
+		})
+	}
 }
 
-func TestNextScheduleTime_Overdue(t *testing.T) {
-	now := time.Now()
-	lastSchedule := metav1.NewTime(now.Add(-2 * time.Hour))
-
-	next, err := nextScheduleTime("0 * * * *", &lastSchedule, now)
-	require.NoError(t, err)
-	// Last was 2h ago, interval is 1h, so next would be 1h ago = overdue = now.
-	assert.Equal(t, now, next)
+func TestParseSchedule_Invalid(t *testing.T) {
+	tests := []struct {
+		name     string
+		schedule string
+		timeZone string
+	}{
+		{"garbage", "not-a-cron", ""},
+		{"too few fields", "0 0", ""},
+		{"seconds not supported", "0 0 * * * *", ""},
+		{"out of range", "99 0 * * *", ""},
+		{"unknown timezone", "0 * * * *", "Mars/Phobos"},
+		// Note: "0 0 31 2 *" parses successfully but never fires; that zero-time
+		// case is rejected by the reconciler and webhook, not by parseSchedule.
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := parseSchedule(tt.schedule, tt.timeZone)
+			require.Error(t, err)
+		})
+	}
 }
 
-func TestNextScheduleTime_NotYetDue(t *testing.T) {
-	now := time.Now()
-	lastSchedule := metav1.NewTime(now.Add(-30 * time.Minute))
-
-	next, err := nextScheduleTime("0 * * * *", &lastSchedule, now)
+func TestNextScheduleTime_Computes(t *testing.T) {
+	chicago, err := time.LoadLocation("America/Chicago")
 	require.NoError(t, err)
-	// Last was 30min ago, interval is 1h, so next is 30min from now.
-	expected := lastSchedule.Add(1 * time.Hour)
-	assert.Equal(t, expected, next)
-	assert.True(t, next.After(now))
+
+	tests := []struct {
+		name     string
+		schedule string
+		timeZone string
+		after    time.Time
+		want     time.Time
+	}{
+		{
+			name:     "hourly rolls to next top of hour",
+			schedule: "0 * * * *",
+			timeZone: "UTC",
+			after:    time.Date(2026, 1, 1, 10, 30, 0, 0, time.UTC),
+			want:     time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC),
+		},
+		{
+			name:     "daily 2am rolls to next day",
+			schedule: "0 2 * * *",
+			timeZone: "UTC",
+			after:    time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
+			want:     time.Date(2026, 1, 2, 2, 0, 0, 0, time.UTC),
+		},
+		{
+			name:     "weekly sunday 3am",
+			schedule: "0 3 * * 0",
+			timeZone: "UTC",
+			// 2026-01-01 is a Thursday; next Sunday is the 4th.
+			after: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			want:  time.Date(2026, 1, 4, 3, 0, 0, 0, time.UTC),
+		},
+		{
+			name:     "daily honors timezone, not controller clock",
+			schedule: "0 2 * * *",
+			timeZone: "America/Chicago",
+			// 10:00 UTC on Jan 1 is 04:00 CST; next 2am CST is Jan 2 (08:00 UTC).
+			after: time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
+			want:  time.Date(2026, 1, 2, 2, 0, 0, 0, chicago),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sched, loc, err := parseSchedule(tt.schedule, tt.timeZone)
+			require.NoError(t, err)
+			got := sched.Next(tt.after.In(loc))
+			assert.Truef(t, got.Equal(tt.want), "got %s, want %s", got, tt.want)
+		})
+	}
 }
 
 func TestCleanupOldBackups_RemovesExcess(t *testing.T) {
@@ -313,8 +382,8 @@ func TestScheduledReconcile_ClusterNotFound(t *testing.T) {
 }
 
 func TestScheduledReconcile_NotYetDue(t *testing.T) {
-	// Last schedule was 10 minutes ago, interval is 1 hour, so next is in 50 min.
-	lastSchedule := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	// Just ran; the next daily occurrence is in the future, so nothing fires.
+	lastSchedule := metav1.NewTime(time.Now())
 
 	cluster := &redisv1.RedisCluster{
 		ObjectMeta: metav1.ObjectMeta{
@@ -329,7 +398,7 @@ func TestScheduledReconcile_NotYetDue(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: redisv1.RedisScheduledBackupSpec{
-			Schedule:    "0 * * * *",
+			Schedule:    "0 2 * * *",
 			ClusterName: "cluster",
 		},
 		Status: redisv1.RedisScheduledBackupStatus{
@@ -344,19 +413,27 @@ func TestScheduledReconcile_NotYetDue(t *testing.T) {
 		NamespacedName: types.NamespacedName{Name: "daily", Namespace: "default"},
 	})
 	require.NoError(t, err)
-	// Should requeue with a delay (approximately 50 minutes).
+	// Should requeue for the next occurrence, at most ~24h out.
 	assert.True(t, result.RequeueAfter > 0, "should requeue with a delay")
-	assert.True(t, result.RequeueAfter <= 51*time.Minute, "requeue should be within ~50 min")
+	assert.True(t, result.RequeueAfter <= 24*time.Hour, "requeue should be within ~24h")
 
-	// Verify status phase is Active.
+	// No backup should have been created.
+	var backupList redisv1.RedisBackupList
+	require.NoError(t, c.List(ctx, &backupList, client.InNamespace("default")))
+	assert.Empty(t, backupList.Items)
+
 	var updated redisv1.RedisScheduledBackup
-	err = c.Get(ctx, types.NamespacedName{Name: "daily", Namespace: "default"}, &updated)
-	require.NoError(t, err)
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "daily", Namespace: "default"}, &updated))
 	assert.Equal(t, redisv1.ScheduledBackupPhaseActive, updated.Status.Phase)
+	require.NotNil(t, updated.Status.NextScheduleTime)
+	assert.True(t, updated.Status.NextScheduleTime.After(time.Now()), "next schedule time should be in the future")
+	cond := meta.FindStatusCondition(updated.Status.Conditions, redisv1.ScheduledBackupConditionScheduleValid)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 }
 
 func TestScheduledReconcile_CreateBackup(t *testing.T) {
-	// Last schedule was 2 hours ago, interval is 1 hour, so it's overdue.
+	// Last schedule was 2h ago on an hourly schedule, so an occurrence is due.
 	lastSchedule := metav1.NewTime(time.Now().Add(-2 * time.Hour))
 
 	cluster := &redisv1.RedisCluster{
@@ -388,7 +465,9 @@ func TestScheduledReconcile_CreateBackup(t *testing.T) {
 		NamespacedName: types.NamespacedName{Name: "daily", Namespace: "default"},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, requeueInterval, result.RequeueAfter)
+	// Requeue is now driven by the next cron occurrence (within the next hour).
+	assert.True(t, result.RequeueAfter > 0, "should requeue for the next occurrence")
+	assert.True(t, result.RequeueAfter <= time.Hour, "next hourly occurrence is within an hour")
 
 	// Verify a RedisBackup was created.
 	var backupList redisv1.RedisBackupList
@@ -402,16 +481,95 @@ func TestScheduledReconcile_CreateBackup(t *testing.T) {
 	assert.Contains(t, backup.Labels, "redis.io/scheduled-backup")
 	assert.Equal(t, "daily", backup.Labels["redis.io/scheduled-backup"])
 
-	// Verify status was updated with last schedule time and backup name.
+	// Verify status was updated with last/next schedule time and backup name.
 	var updated redisv1.RedisScheduledBackup
 	err = c.Get(ctx, types.NamespacedName{Name: "daily", Namespace: "default"}, &updated)
 	require.NoError(t, err)
 	assert.NotNil(t, updated.Status.LastScheduleTime)
 	assert.NotEmpty(t, updated.Status.LastBackupName)
+	require.NotNil(t, updated.Status.NextScheduleTime)
+	assert.True(t, updated.Status.NextScheduleTime.After(time.Now()), "next schedule time should be in the future")
 }
 
-func TestScheduledReconcile_FirstRun(t *testing.T) {
-	// No last schedule time -- should run immediately.
+func TestScheduledReconcile_FirstRunWaitsForNextTick(t *testing.T) {
+	// Freshly created (creationTimestamp ~now): the first backup should wait for
+	// the next cron occurrence rather than firing immediately.
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cluster",
+			Namespace: "default",
+		},
+	}
+
+	scheduled := &redisv1.RedisScheduledBackup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "daily",
+			Namespace:         "default",
+			CreationTimestamp: metav1.Now(),
+		},
+		Spec: redisv1.RedisScheduledBackupSpec{
+			Schedule:    "0 2 * * *",
+			ClusterName: "cluster",
+		},
+	}
+
+	r, c := newScheduledReconciler(cluster, scheduled)
+	ctx := context.Background()
+
+	result, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "daily", Namespace: "default"},
+	})
+	require.NoError(t, err)
+	assert.True(t, result.RequeueAfter > 0)
+
+	// No backup yet.
+	var backupList redisv1.RedisBackupList
+	require.NoError(t, c.List(ctx, &backupList, client.InNamespace("default")))
+	assert.Empty(t, backupList.Items)
+}
+
+func TestScheduledReconcile_CatchUpAfterDowntime(t *testing.T) {
+	// Created two days ago, never run (controller was down). At-most-one catch-up:
+	// exactly one backup fires, regardless of how many windows were missed.
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cluster",
+			Namespace: "default",
+		},
+	}
+
+	scheduled := &redisv1.RedisScheduledBackup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "daily",
+			Namespace:         "default",
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-48 * time.Hour)),
+		},
+		Spec: redisv1.RedisScheduledBackupSpec{
+			Schedule:    "0 2 * * *",
+			ClusterName: "cluster",
+		},
+	}
+
+	r, c := newScheduledReconciler(cluster, scheduled)
+	ctx := context.Background()
+
+	result, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "daily", Namespace: "default"},
+	})
+	require.NoError(t, err)
+	assert.True(t, result.RequeueAfter > 0)
+
+	var backupList redisv1.RedisBackupList
+	require.NoError(t, c.List(ctx, &backupList, client.InNamespace("default")))
+	assert.Len(t, backupList.Items, 1, "exactly one catch-up backup, not one per missed window")
+
+	var updated redisv1.RedisScheduledBackup
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "daily", Namespace: "default"}, &updated))
+	require.NotNil(t, updated.Status.NextScheduleTime)
+	assert.True(t, updated.Status.NextScheduleTime.After(time.Now()))
+}
+
+func TestScheduledReconcile_InvalidSchedule(t *testing.T) {
 	cluster := &redisv1.RedisCluster{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "cluster",
@@ -425,7 +583,7 @@ func TestScheduledReconcile_FirstRun(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: redisv1.RedisScheduledBackupSpec{
-			Schedule:    "0 * * * *",
+			Schedule:    "not-a-cron",
 			ClusterName: "cluster",
 		},
 	}
@@ -436,12 +594,65 @@ func TestScheduledReconcile_FirstRun(t *testing.T) {
 	result, err := r.Reconcile(ctx, reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: "daily", Namespace: "default"},
 	})
+	// No error and no requeue: a static bad value won't fix itself by retrying.
 	require.NoError(t, err)
-	assert.Equal(t, requeueInterval, result.RequeueAfter)
+	assert.Equal(t, reconcile.Result{}, result)
 
-	// Verify a RedisBackup was created.
+	// No backup created.
 	var backupList redisv1.RedisBackupList
-	err = c.List(ctx, &backupList, client.InNamespace("default"))
+	require.NoError(t, c.List(ctx, &backupList, client.InNamespace("default")))
+	assert.Empty(t, backupList.Items)
+
+	// ScheduleValid=False condition surfaced.
+	var updated redisv1.RedisScheduledBackup
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "daily", Namespace: "default"}, &updated))
+	cond := meta.FindStatusCondition(updated.Status.Conditions, redisv1.ScheduledBackupConditionScheduleValid)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "InvalidSchedule", cond.Reason)
+}
+
+func TestScheduledReconcile_UnreachableSchedule(t *testing.T) {
+	// "0 0 31 2 *" parses but never fires (February 31st). robfig/cron returns
+	// the zero time, which must not be treated as "due".
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cluster",
+			Namespace: "default",
+		},
+	}
+
+	scheduled := &redisv1.RedisScheduledBackup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "daily",
+			Namespace: "default",
+		},
+		Spec: redisv1.RedisScheduledBackupSpec{
+			Schedule:    "0 0 31 2 *",
+			ClusterName: "cluster",
+		},
+	}
+
+	r, c := newScheduledReconciler(cluster, scheduled)
+	ctx := context.Background()
+
+	result, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "daily", Namespace: "default"},
+	})
+	// No error, no requeue, and crucially no backup — otherwise this would loop
+	// every second forever.
 	require.NoError(t, err)
-	require.Len(t, backupList.Items, 1)
+	assert.Equal(t, reconcile.Result{}, result)
+
+	var backupList redisv1.RedisBackupList
+	require.NoError(t, c.List(ctx, &backupList, client.InNamespace("default")))
+	assert.Empty(t, backupList.Items)
+
+	var updated redisv1.RedisScheduledBackup
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "daily", Namespace: "default"}, &updated))
+	assert.Nil(t, updated.Status.NextScheduleTime, "must not record a zero next schedule time")
+	cond := meta.FindStatusCondition(updated.Status.Conditions, redisv1.ScheduledBackupConditionScheduleValid)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "InvalidSchedule", cond.Reason)
 }
