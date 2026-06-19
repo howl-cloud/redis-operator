@@ -127,6 +127,30 @@ kubectl port-forward svc/my-redis-leader 6379:6379 -n default
 redis-cli -a "$PASSWORD" -h 127.0.0.1 -p 6379 ping
 ```
 
+## Storage
+
+`spec.storage.type` selects how each data pod backs `/data`:
+
+- **`pvc`** (default) — a PersistentVolumeClaim per pod. Data survives pod recreation, rescheduling, and rolling updates. `storage.size` is the PVC request and `storage.storageClassName` selects the StorageClass. This is the right choice for any cluster that holds state you care about.
+- **`emptyDir`** — pod-local ephemeral storage. Use this for caches and disposable queue backends where data loss on pod recreation is acceptable. `storage.size` is applied as the emptyDir `sizeLimit` (the pod is evicted if it exceeds it); `storageClassName` is not allowed.
+
+```yaml
+spec:
+  instances: 3
+  mode: standalone
+  storage:
+    type: emptyDir
+    size: 1Gi
+```
+
+**Data-loss semantics for `emptyDir`:** an `emptyDir` volume lives and dies with its pod. Any event that recreates a pod — node drain or failure, eviction (including exceeding `size`), a rolling update, or a manual delete — **permanently discards that pod's Redis data**. In sentinel mode a recreated replica re-syncs from the current primary, but if all pods are lost at once (or the standalone pod is recreated) the dataset is gone. Because the data is disposable:
+
+- PVCs are never created, and PVC resize, dangling-PVC accounting, and PVC health status do not apply.
+- `storage.type` is immutable after creation (switching backends would destroy or migrate data).
+- `spec.bootstrap` (restore-from-backup) is rejected — restored data would not survive the first pod recreation.
+
+On-demand and scheduled backups still work for `emptyDir` clusters (they snapshot a live pod), but a backup only captures the data present at backup time.
+
 ## APIs
 
 - `RedisCluster`: cluster lifecycle, topology, resources, secrets, scheduling rules

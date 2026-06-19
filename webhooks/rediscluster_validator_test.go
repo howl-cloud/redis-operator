@@ -786,3 +786,77 @@ func TestValidateUpdate_BootstrapBackupNameImmutable(t *testing.T) {
 	assert.Contains(t, err.Error(), "bootstrap")
 	assert.Contains(t, err.Error(), "immutable")
 }
+
+// ephemeralCluster returns a valid standalone cluster backed by emptyDir storage.
+func ephemeralCluster() *redisv1.RedisCluster {
+	cluster := validCluster()
+	cluster.Spec.Storage.Type = redisv1.StorageTypeEmptyDir
+	return cluster
+}
+
+func TestValidateCreate_EphemeralStorageValid(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := ephemeralCluster()
+
+	warnings, err := v.ValidateCreate(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
+func TestValidateCreate_EphemeralSentinelValid(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := ephemeralCluster()
+	cluster.Spec.Mode = redisv1.ClusterModeSentinel
+	cluster.Spec.Instances = 3
+
+	warnings, err := v.ValidateCreate(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
+func TestValidateCreate_EphemeralRejectsBootstrap(t *testing.T) {
+	backup := completedBackup("seed", "default")
+	v := validatorWithReader(t, backup)
+	cluster := ephemeralCluster()
+	cluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: backup.Name}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bootstrap")
+	assert.Contains(t, err.Error(), "ephemeral")
+}
+
+func TestValidateCreate_EphemeralRejectsStorageClass(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := ephemeralCluster()
+	className := "fast-ssd"
+	cluster.Spec.Storage.StorageClassName = &className
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "storageClassName")
+}
+
+func TestValidateUpdate_StorageTypeImmutable(t *testing.T) {
+	v := &RedisClusterValidator{}
+	old := validCluster()
+	old.Spec.Storage.Type = redisv1.StorageTypePVC
+	new := ephemeralCluster()
+
+	_, err := v.ValidateUpdate(context.Background(), old, new)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "storage.type")
+	assert.Contains(t, err.Error(), "immutable")
+}
+
+func TestValidateUpdate_EphemeralSizeDecreaseAllowed(t *testing.T) {
+	v := &RedisClusterValidator{}
+	old := ephemeralCluster()
+	old.Spec.Storage.Size = resource.MustParse("10Gi")
+	new := ephemeralCluster()
+	new.Spec.Storage.Size = resource.MustParse("1Gi")
+
+	warnings, err := v.ValidateUpdate(context.Background(), old, new)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}

@@ -1235,18 +1235,32 @@ spec:
                 minimum: 3
                 type: integer
               storage:
-                description: Storage defines the PVC template for /data volumes.
+                description: Storage defines how /data volumes are backed (PVC or
+                  ephemeral emptyDir).
                 properties:
                   size:
                     anyOf:
                     - type: integer
                     - type: string
                     default: 1Gi
-                    description: Size is the requested storage size.
+                    description: |-
+                      Size is the requested storage size. For "pvc" it is the PVC request;
+                      for "emptyDir" it is the volume's sizeLimit (the pod is evicted if exceeded).
                     pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                     x-kubernetes-int-or-string: true
                   storageClassName:
                     description: StorageClassName is the name of the StorageClass.
+                      Ignored for "emptyDir".
+                    type: string
+                  type:
+                    default: pvc
+                    description: |-
+                      Type selects how /data is backed: "pvc" for a PersistentVolumeClaim (durable),
+                      or "emptyDir" for pod-local ephemeral storage (data is lost when a pod is recreated).
+                      StorageClassName, resize, and PVC lifecycle handling apply only to "pvc".
+                    enum:
+                    - pvc
+                    - emptyDir
                     type: string
                 required:
                 - size

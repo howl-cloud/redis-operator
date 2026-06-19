@@ -3,10 +3,19 @@ name: Real Cluster Smoke Test
 on:
   pull_request:
     branches: ["main"]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - ".gitignore"
+    paths:
+      - ".github/workflows/smoke-kind.yml"
+      - "api/**"
+      - "charts/**"
+      - "cmd/**"
+      - "config/**"
+      - "internal/**"
+      - "test/smoke/**"
+      - "webhooks/**"
+      - "Dockerfile"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
   workflow_dispatch:
 
 jobs:

@@ -174,17 +174,22 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 		return reconcile.Result{RequeueAfter: requeueInterval}, nil
 	}
 
+	ephemeralStorage := cluster.Spec.Storage.IsEphemeral()
+
 	maintenanceReplace := maintenance && !maintenanceReusePVC(cluster)
-	if maintenanceReplace {
+	if maintenanceReplace && !ephemeralStorage {
 		if err := r.recyclePVCsForMissingPods(ctx, cluster); err != nil {
 			return reconcile.Result{}, fmt.Errorf("recycling PVCs during maintenance replacement: %w", err)
 		}
 	}
 
-	// Step 7: PVC reconciliation.
-	pendingResizePVCs, err := r.reconcilePVCs(ctx, cluster)
-	if err != nil {
-		return reconcile.Result{}, fmt.Errorf("reconciling PVCs: %w", err)
+	// Step 7: PVC reconciliation. Skipped for ephemeral clusters, which have no PVCs.
+	var pendingResizePVCs map[string]struct{}
+	if !ephemeralStorage {
+		pendingResizePVCs, err = r.reconcilePVCs(ctx, cluster)
+		if err != nil {
+			return reconcile.Result{}, fmt.Errorf("reconciling PVCs: %w", err)
+		}
 	}
 
 	stop := false

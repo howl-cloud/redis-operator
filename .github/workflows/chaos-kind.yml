@@ -1,18 +1,48 @@
 name: Chaos and Fault Injection Test
 
 on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/chaos-kind.yml"
+      - "api/**"
+      - "charts/**"
+      - "cmd/**"
+      - "config/**"
+      - "internal/controller/cluster/**"
+      - "internal/instance-manager/**"
+      - "test/chaos/**"
+      - "webhooks/**"
+      - "Dockerfile"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
   pull_request:
     branches: ["main"]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - ".gitignore"
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - ".github/workflows/chaos-kind.yml"
+      - "api/**"
+      - "charts/**"
+      - "cmd/**"
+      - "config/**"
+      - "internal/controller/cluster/**"
+      - "internal/instance-manager/**"
+      - "test/chaos/**"
+      - "webhooks/**"
+      - "Dockerfile"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
+  schedule:
+    - cron: "0 10 * * *"
   workflow_dispatch:
 
 jobs:
   chaos-kind:
     name: kind + helm chaos
     runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-chaos')
     timeout-minutes: 90
 
     steps:
