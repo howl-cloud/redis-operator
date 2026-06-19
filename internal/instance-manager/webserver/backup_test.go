@@ -137,12 +137,13 @@ func TestHandleBackup_RDB(t *testing.T) {
 		backupUploader: func(
 			_ context.Context,
 			backupName string,
-			destination *redisv1.S3Destination,
+			destination *redisv1.BackupDestination,
 			artifactPath string,
 			artifactType redisv1.BackupArtifactType,
 		) (*backupResponse, error) {
 			assert.Equal(t, "backup-rdb", backupName)
-			assert.Equal(t, "test-bucket", destination.Bucket)
+			require.NotNil(t, destination.S3)
+			assert.Equal(t, "test-bucket", destination.S3.Bucket)
 			assert.Equal(t, redisv1.BackupArtifactTypeRDB, artifactType)
 			assert.Equal(t, filepath.Join(dataDir, defaultBackupFilename), artifactPath)
 			return &backupResponse{
@@ -193,12 +194,13 @@ func TestHandleBackup_AOF(t *testing.T) {
 		backupUploader: func(
 			_ context.Context,
 			backupName string,
-			destination *redisv1.S3Destination,
+			destination *redisv1.BackupDestination,
 			artifactPath string,
 			artifactType redisv1.BackupArtifactType,
 		) (*backupResponse, error) {
 			assert.Equal(t, "backup-aof", backupName)
-			assert.Equal(t, "test-bucket", destination.Bucket)
+			require.NotNil(t, destination.S3)
+			assert.Equal(t, "test-bucket", destination.S3.Bucket)
 			assert.Equal(t, redisv1.BackupArtifactTypeAOFArchive, artifactType)
 			assert.True(t, strings.HasSuffix(artifactPath, ".tar.gz"))
 			_, err := os.Stat(artifactPath)

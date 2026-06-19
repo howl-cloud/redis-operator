@@ -1,6 +1,8 @@
 package v1
 
 import (
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -60,10 +62,15 @@ type RedisBackupSpec struct {
 }
 
 // BackupDestination defines the object storage destination for backups.
+// Exactly one backend (s3 or azure) must be set.
 type BackupDestination struct {
 	// S3 defines an S3-compatible storage destination.
 	// +optional
 	S3 *S3Destination `json:"s3,omitempty"`
+
+	// Azure defines an Azure Blob Storage destination.
+	// +optional
+	Azure *AzureBlobDestination `json:"azure,omitempty"`
 }
 
 // S3Destination defines S3-compatible storage parameters.
@@ -82,6 +89,62 @@ type S3Destination struct {
 	// Region is the AWS region.
 	// +optional
 	Region string `json:"region,omitempty"`
+}
+
+// Validate checks that exactly one backend is configured with its required fields.
+func (d *BackupDestination) Validate() error {
+	if d == nil {
+		return fmt.Errorf("destination is required")
+	}
+
+	configured := 0
+	if d.S3 != nil {
+		configured++
+	}
+	if d.Azure != nil {
+		configured++
+	}
+	switch {
+	case configured == 0:
+		return fmt.Errorf("destination requires exactly one of s3 or azure")
+	case configured > 1:
+		return fmt.Errorf("destination must set exactly one of s3 or azure")
+	}
+
+	if d.S3 != nil && d.S3.Bucket == "" {
+		return fmt.Errorf("destination.s3.bucket is required")
+	}
+	if d.Azure != nil && d.Azure.Container == "" {
+		return fmt.Errorf("destination.azure.container is required")
+	}
+	return nil
+}
+
+// AzureBlobDestination defines Azure Blob Storage parameters.
+//
+// Credentials are resolved from the cluster's backupCredentialsSecret and are
+// auto-detected by key presence, in priority order:
+//   - AZURE_STORAGE_CONNECTION_STRING (full connection string)
+//   - AZURE_STORAGE_ACCOUNT + AZURE_STORAGE_KEY (shared key)
+//   - AZURE_STORAGE_SAS_TOKEN (SAS, combined with accountName/endpoint)
+type AzureBlobDestination struct {
+	// Container is the Azure Blob container name.
+	Container string `json:"container"`
+
+	// Path is the prefix/path within the container.
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// AccountName is the storage account name. Used to build the service URL
+	// for shared-key and SAS auth. If empty, it falls back to AZURE_STORAGE_ACCOUNT
+	// in the credentials secret. Ignored when a connection string is supplied.
+	// +optional
+	AccountName string `json:"accountName,omitempty"`
+
+	// Endpoint overrides the blob service URL (for Azurite or sovereign clouds).
+	// When unset, https://{accountName}.blob.core.windows.net is used.
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
 }
 
 // RedisBackupStatus defines the observed state of a RedisBackup.

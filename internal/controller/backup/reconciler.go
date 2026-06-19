@@ -86,8 +86,8 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req reconcile.Request)
 		return reconcile.Result{RequeueAfter: requeueInterval}, nil
 	}
 
-	if backup.Spec.Destination == nil || backup.Spec.Destination.S3 == nil || backup.Spec.Destination.S3.Bucket == "" {
-		return reconcile.Result{}, r.setBackupFailed(ctx, &backup, "backup destination.s3.bucket is required")
+	if err := backup.Spec.Destination.Validate(); err != nil {
+		return reconcile.Result{}, r.setBackupFailed(ctx, &backup, fmt.Sprintf("invalid backup destination: %v", err))
 	}
 
 	currentPhase := backup.Status.Phase

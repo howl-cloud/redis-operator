@@ -63,6 +63,7 @@ type backupEndpointSource struct {
 	container   testcontainers.Container
 	redisClient *redis.Client
 	garageInfo  GarageInfo
+	azuriteInfo *AzuriteInfo
 }
 
 type backupAPIRequest struct {
@@ -731,8 +732,8 @@ func startBackupAPIServer(ctx context.Context, t *testing.T, source backupEndpoi
 			http.Error(w, "backupName is required", http.StatusBadRequest)
 			return
 		}
-		if request.Destination == nil || request.Destination.S3 == nil || request.Destination.S3.Bucket == "" {
-			http.Error(w, "destination.s3.bucket is required", http.StatusBadRequest)
+		if err := request.Destination.Validate(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
@@ -741,7 +742,7 @@ func startBackupAPIServer(ctx context.Context, t *testing.T, source backupEndpoi
 			method = redisv1.BackupMethodRDB
 		}
 
-		response, err := buildBackupArtifactResponse(r.Context(), source, request.BackupName, method, request.Destination.S3)
+		response, err := buildBackupArtifactResponse(r.Context(), source, request.BackupName, method, request.Destination)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("failed to build backup artifact: %v", err), http.StatusInternalServerError)
 			return
@@ -784,10 +785,10 @@ func buildBackupArtifactResponse(
 	source backupEndpointSource,
 	backupName string,
 	method redisv1.BackupMethod,
-	destination *redisv1.S3Destination,
+	destination *redisv1.BackupDestination,
 ) (*backupAPIResponse, error) {
-	if destination == nil || destination.Bucket == "" {
-		return nil, fmt.Errorf("destination bucket is required")
+	if err := destination.Validate(); err != nil {
+		return nil, err
 	}
 
 	var artifactType redisv1.BackupArtifactType
@@ -833,17 +834,35 @@ func buildBackupArtifactResponse(
 		}
 	}()
 
-	objectKey := buildBackupObjectKey(destination.Path, backupName, artifactType)
-	uploadTarget := source.garageInfo
-	uploadTarget.Bucket = destination.Bucket
-	if destination.Endpoint != "" {
-		uploadTarget.Endpoint = destination.Endpoint
-	}
-	if destination.Region != "" {
-		uploadTarget.Region = destination.Region
-	}
-	if err := uploadFileToS3(ctx, uploadTarget, objectKey, localArtifactPath); err != nil {
-		return nil, err
+	var backupPath string
+	switch {
+	case destination.S3 != nil:
+		objectKey := buildBackupObjectKey(destination.S3.Path, backupName, artifactType)
+		uploadTarget := source.garageInfo
+		uploadTarget.Bucket = destination.S3.Bucket
+		if destination.S3.Endpoint != "" {
+			uploadTarget.Endpoint = destination.S3.Endpoint
+		}
+		if destination.S3.Region != "" {
+			uploadTarget.Region = destination.S3.Region
+		}
+		if err := uploadFileToS3(ctx, uploadTarget, objectKey, localArtifactPath); err != nil {
+			return nil, err
+		}
+		backupPath = fmt.Sprintf("s3://%s/%s", destination.S3.Bucket, objectKey)
+
+	case destination.Azure != nil:
+		if source.azuriteInfo == nil {
+			return nil, fmt.Errorf("azurite info is required for azure destination")
+		}
+		blobName := buildBackupObjectKey(destination.Azure.Path, backupName, artifactType)
+		if err := uploadFileToAzure(ctx, *source.azuriteInfo, destination.Azure.Container, blobName, localArtifactPath); err != nil {
+			return nil, err
+		}
+		backupPath = fmt.Sprintf("azblob://%s/%s", destination.Azure.Container, blobName)
+
+	default:
+		return nil, fmt.Errorf("no supported destination configured")
 	}
 
 	info, err := os.Stat(localArtifactPath)
@@ -853,7 +872,7 @@ func buildBackupArtifactResponse(
 
 	return &backupAPIResponse{
 		ArtifactType: artifactType,
-		BackupPath:   fmt.Sprintf("s3://%s/%s", destination.Bucket, objectKey),
+		BackupPath:   backupPath,
 		BackupSize:   info.Size(),
 	}, nil
 }

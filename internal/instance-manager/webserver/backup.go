@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -40,7 +41,7 @@ const (
 type backupUploaderFunc func(
 	ctx context.Context,
 	backupName string,
-	destination *redisv1.S3Destination,
+	destination *redisv1.BackupDestination,
 	artifactPath string,
 	artifactType redisv1.BackupArtifactType,
 ) (*backupResponse, error)
@@ -80,8 +81,8 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "backupName is required", http.StatusBadRequest)
 		return
 	}
-	if req.Destination == nil || req.Destination.S3 == nil || req.Destination.S3.Bucket == "" {
-		http.Error(w, "destination.s3.bucket is required", http.StatusBadRequest)
+	if err := req.Destination.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -104,10 +105,10 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 
 	uploader := s.backupUploader
 	if uploader == nil {
-		uploader = s.uploadBackupToS3
+		uploader = s.uploadBackup
 	}
 
-	result, err := uploader(ctx, req.BackupName, req.Destination.S3, artifactPath, artifactType)
+	result, err := uploader(ctx, req.BackupName, req.Destination, artifactPath, artifactType)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("uploading backup artifact: %v", err), http.StatusInternalServerError)
 		return
@@ -320,6 +321,24 @@ func writeTarGz(sourceDir, archivePath string) error {
 	return nil
 }
 
+// uploadBackup dispatches to the backend uploader for the configured destination.
+func (s *Server) uploadBackup(
+	ctx context.Context,
+	backupName string,
+	destination *redisv1.BackupDestination,
+	artifactPath string,
+	artifactType redisv1.BackupArtifactType,
+) (*backupResponse, error) {
+	switch {
+	case destination.S3 != nil:
+		return s.uploadBackupToS3(ctx, backupName, destination.S3, artifactPath, artifactType)
+	case destination.Azure != nil:
+		return s.uploadBackupToAzure(ctx, backupName, destination.Azure, artifactPath, artifactType)
+	default:
+		return nil, fmt.Errorf("no backup destination configured")
+	}
+}
+
 func (s *Server) uploadBackupToS3(
 	ctx context.Context,
 	backupName string,
@@ -366,6 +385,53 @@ func (s *Server) uploadBackupToS3(
 		ArtifactType:   artifactType,
 		BackupPath:     fmt.Sprintf("s3://%s/%s", destination.Bucket, objectKey),
 		ObjectKey:      objectKey,
+		BackupSize:     info.Size(),
+		ChecksumSHA256: checksum,
+	}, nil
+}
+
+func (s *Server) uploadBackupToAzure(
+	ctx context.Context,
+	backupName string,
+	destination *redisv1.AzureBlobDestination,
+	artifactPath string,
+	artifactType redisv1.BackupArtifactType,
+) (*backupResponse, error) {
+	connectionString, accountName, accountKey, sasToken, err := readAzureCredentialsFromDir(s.backupCredentialsMountDir())
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := newAzureBlobClient(destination, connectionString, accountName, accountKey, sasToken)
+	if err != nil {
+		return nil, err
+	}
+
+	artifactFile, err := os.Open(artifactPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening artifact %s: %w", artifactPath, err)
+	}
+	defer func() { _ = artifactFile.Close() }()
+
+	blobName := buildObjectKey(destination.Path, backupName, artifactType)
+	if _, err := client.UploadFile(ctx, destination.Container, blobName, artifactFile, nil); err != nil {
+		return nil, fmt.Errorf("uploading to azure container %q blob %q: %w", destination.Container, blobName, err)
+	}
+
+	info, err := os.Stat(artifactPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading artifact metadata for %s: %w", artifactPath, err)
+	}
+
+	checksum, err := fileChecksumSHA256(artifactPath)
+	if err != nil {
+		return nil, fmt.Errorf("computing checksum for %s: %w", artifactPath, err)
+	}
+
+	return &backupResponse{
+		ArtifactType:   artifactType,
+		BackupPath:     fmt.Sprintf("azblob://%s/%s", destination.Container, blobName),
+		ObjectKey:      blobName,
 		BackupSize:     info.Size(),
 		ChecksumSHA256: checksum,
 	}, nil
@@ -485,6 +551,116 @@ func newS3Client(
 			options.UsePathStyle = true
 		}
 	}), nil
+}
+
+// newAzureBlobClient builds an azblob client from whichever credential mode is
+// supplied, in priority order: connection string, shared key, then SAS token.
+func newAzureBlobClient(
+	destination *redisv1.AzureBlobDestination,
+	connectionString, accountName, accountKey, sasToken string,
+) (*azblob.Client, error) {
+	if connectionString != "" {
+		client, err := azblob.NewClientFromConnectionString(connectionString, nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating azure client from connection string: %w", err)
+		}
+		return client, nil
+	}
+
+	// A spec-level accountName takes precedence; otherwise fall back to the
+	// AZURE_STORAGE_ACCOUNT value resolved from the credentials secret.
+	effectiveAccount := destination.AccountName
+	if effectiveAccount == "" {
+		effectiveAccount = accountName
+	}
+
+	serviceURL, err := azureServiceURL(effectiveAccount, destination.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	if accountKey != "" {
+		if effectiveAccount == "" {
+			return nil, fmt.Errorf("azure shared-key auth requires an account name (set destination.azure.accountName or AZURE_STORAGE_ACCOUNT in the credentials secret)")
+		}
+		cred, err := azblob.NewSharedKeyCredential(effectiveAccount, accountKey)
+		if err != nil {
+			return nil, fmt.Errorf("creating azure shared key credential: %w", err)
+		}
+		client, err := azblob.NewClientWithSharedKeyCredential(serviceURL, cred, nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating azure client with shared key: %w", err)
+		}
+		return client, nil
+	}
+
+	if sasToken != "" {
+		client, err := azblob.NewClientWithNoCredential(appendSASToken(serviceURL, sasToken), nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating azure client with SAS token: %w", err)
+		}
+		return client, nil
+	}
+
+	return nil, fmt.Errorf("azure backup credentials must include one of AZURE_STORAGE_CONNECTION_STRING, AZURE_STORAGE_KEY, or AZURE_STORAGE_SAS_TOKEN")
+}
+
+// azureServiceURL resolves the blob service URL, preferring an explicit endpoint
+// (Azurite or sovereign clouds) and falling back to the public account URL.
+func azureServiceURL(accountName, endpoint string) (string, error) {
+	if endpoint != "" {
+		return endpoint, nil
+	}
+	if accountName == "" {
+		return "", fmt.Errorf("azure destination requires accountName or endpoint when not using a connection string")
+	}
+	return fmt.Sprintf("https://%s.blob.core.windows.net/", accountName), nil
+}
+
+// appendSASToken attaches a SAS token to a blob service URL as its query string.
+func appendSASToken(serviceURL, sasToken string) string {
+	return strings.TrimSuffix(serviceURL, "/") + "/?" + strings.TrimPrefix(sasToken, "?")
+}
+
+func readAzureCredentialsFromDir(mountDir string) (connectionString, accountName, accountKey, sasToken string, err error) {
+	connectionString, err = firstCredentialValue(
+		mountDir,
+		"AZURE_STORAGE_CONNECTION_STRING",
+		"azureStorageConnectionString",
+		"connectionString",
+	)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	accountName, err = firstCredentialValue(
+		mountDir,
+		"AZURE_STORAGE_ACCOUNT",
+		"azureStorageAccount",
+		"accountName",
+	)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	accountKey, err = firstCredentialValue(
+		mountDir,
+		"AZURE_STORAGE_KEY",
+		"azureStorageKey",
+		"accountKey",
+	)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	sasToken, err = firstCredentialValue(
+		mountDir,
+		"AZURE_STORAGE_SAS_TOKEN",
+		"azureStorageSasToken",
+		"sasToken",
+	)
+	if err != nil {
+		return "", "", "", "", err
+	}
+
+	return connectionString, accountName, accountKey, sasToken, nil
 }
 
 func fileChecksumSHA256(path string) (string, error) {

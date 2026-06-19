@@ -154,8 +154,10 @@ On-demand and scheduled backups still work for `emptyDir` clusters (they snapsho
 ## APIs
 
 - `RedisCluster`: cluster lifecycle, topology, resources, secrets, scheduling rules
-- `RedisBackup`: one-off backup execution
+- `RedisBackup`: one-off backup execution (S3-compatible or Azure Blob destinations)
 - `RedisScheduledBackup`: cron-driven backup scheduling
+
+Backup destinations, credential secret keys, and example manifests are documented in `internal/controller/backup/README.md`.
 
 ## Docs
 
