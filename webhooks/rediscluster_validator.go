@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -231,6 +232,7 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 	if cluster.Spec.Mode != redisv1.ClusterModeCluster {
 		allErrs = append(allErrs, v.validateReplicaMode(ctx, cluster)...)
 	}
+	allErrs = append(allErrs, validateConnectionSecret(cluster)...)
 	allErrs = append(allErrs, v.validateBootstrapReference(ctx, cluster)...)
 	allErrs = append(allErrs, validateStorage(cluster)...)
 	allErrs = append(allErrs, validateMemory(cluster)...)
@@ -322,6 +324,26 @@ func hasRawMaxMemory(cluster *redisv1.RedisCluster) bool {
 		}
 	}
 	return false
+}
+
+// validateConnectionSecret checks that the published connection Secret name, when
+// set, is a valid Kubernetes object name (DNS-1123 subdomain).
+func validateConnectionSecret(cluster *redisv1.RedisCluster) field.ErrorList {
+	if cluster.Spec.ConnectionSecret == nil {
+		return nil
+	}
+
+	namePath := field.NewPath("spec", "connectionSecret", "name")
+	name := strings.TrimSpace(cluster.Spec.ConnectionSecret.Name)
+	if name == "" {
+		return field.ErrorList{field.Required(namePath, "name is required when connectionSecret is set")}
+	}
+
+	var allErrs field.ErrorList
+	for _, msg := range validation.IsDNS1123Subdomain(name) {
+		allErrs = append(allErrs, field.Invalid(namePath, name, msg))
+	}
+	return allErrs
 }
 
 // validateStorage checks ephemeral-storage constraints. Fields that only make

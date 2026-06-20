@@ -215,6 +215,26 @@ type RedisClusterSpec struct {
 	// ReplicaMode configures a full-cluster external replication topology for DR.
 	// +optional
 	ReplicaMode *ReplicaModeSpec `json:"replicaMode,omitempty"`
+
+	// ConnectionSecret, when set, makes the operator publish and maintain a Secret
+	// containing ready-to-use connection details for this cluster (host, port,
+	// url, leader/replica endpoints, and mode-specific discovery values). The
+	// generated Secret embeds the password and a full redis:// URL, so it is
+	// credential-bearing and lives under the same RBAC as the auth Secret. Leave
+	// unset to skip publishing it.
+	// +optional
+	ConnectionSecret *ConnectionSecretSpec `json:"connectionSecret,omitempty"`
+}
+
+// ConnectionSecretSpec configures the operator-published connection Secret.
+type ConnectionSecretSpec struct {
+	// Name of the Secret to create and maintain in the cluster's namespace. The
+	// operator owns this Secret: it is updated on auth rotation or service
+	// changes and garbage-collected when the RedisCluster is deleted. If a Secret
+	// with this name already exists and is not owned by this RedisCluster, the
+	// operator refuses to overwrite it.
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
 }
 
 // StorageSpec defines storage for Redis data.

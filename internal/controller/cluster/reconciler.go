@@ -119,6 +119,11 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 		return reconcile.Result{}, fmt.Errorf("reconciling services: %w", err)
 	}
 
+	// Step 3.5: Connection Secret (optional projection of services + auth password).
+	if err := r.reconcileConnectionSecret(ctx, cluster); err != nil {
+		return reconcile.Result{}, fmt.Errorf("reconciling connection secret: %w", err)
+	}
+
 	// Step 4: HTTP status poll.
 	instanceStatuses, err := r.pollInstanceStatuses(ctx, cluster)
 	if err != nil {

@@ -135,6 +135,7 @@ Follow existing patterns:
 1. Global resources — ServiceAccount, RBAC, ConfigMap, PDB
 2. Secret resolution — resolves spec secret refs, updates `status.secretsResourceVersion`
 3. Services — `-leader`, `-replica`, `-any`
+3.5. Connection Secret — optional `spec.connectionSecret` projection of services + auth password (`connection_secret.go`); no-op when unset
 4. HTTP status poll — `GET /v1/status` on every live pod IP
 5. Status update
 6. Reachability check — requeue if any expected pod unreachable
