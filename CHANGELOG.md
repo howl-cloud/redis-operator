@@ -6,16 +6,24 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 
 ## [Unreleased]
 
-### Changed
-- Operator upgrades now use a deterministic pod spec hash and the existing rolling update flow to update Redis data pods one at a time (replicas first, primary last via switchover).
-- The `redis-operator controller` command now enables leader election by default (`--leader-elect=true`).
+## [0.2.0]
 
 ### Added
-- Upgrade and migration guide in `docs/upgrade.md`, including a `helm upgrade` validation procedure for clusters with existing `RedisCluster` resources.
+- Ephemeral Redis data volumes via `spec.storage.type: emptyDir` for pod-local storage (data is lost when a pod is recreated).
+- Azure Blob Storage backup and restore support (`spec.destination.azure` on `RedisBackup` and bootstrap restore).
+- `spec.memory` on `RedisCluster` for first-class `maxmemory` and eviction policy configuration, kept consistent with container memory limits.
+- In-place `standalone` → `sentinel` migration by editing `spec.mode` (requires at least 3 instances); see `docs/runbooks/standalone-to-sentinel-migration.md`.
+- Optional operator-published connection Secret via `spec.connectionSecret`, with rendered host, URL, password, and mode-specific endpoints.
+- Cron schedule validation for `RedisScheduledBackup` resources at admission time.
+- Service contract documentation in `docs/service-contract.md` describing operator-managed Services, labels, and internal annotations.
+
+### Changed
+- `RedisScheduledBackup` history limits (`successfulBackupsHistoryLimit`, `failedBackupsHistoryLimit`) now document that they prune `RedisBackup` Kubernetes resources only, not remote backup artifacts.
 
 ### Migration Notes
-- If your deployment intentionally ran the controller with leader election disabled, pass `--leader-elect=false` explicitly after upgrading.
-- Operator image changes now trigger controlled rolling updates of Redis data pods because the init container image is part of the pod spec hash.
+- Prefer `spec.memory` over setting `maxmemory` / `maxmemory-policy` directly in `spec.redis` so the operator can keep memory settings aligned with container limits.
+- To upgrade a running `standalone` cluster to `sentinel`, scale `spec.instances` to at least 3 and set `spec.mode: sentinel`; other mode transitions remain unsupported.
+- Remote backup artifact retention is outside the operator; use S3 or Azure Blob lifecycle policies to expire old objects.
 - No CRD schema fields were removed in this release; existing `redis.io/v1` resources remain compatible.
 
 ## [0.1.0]
