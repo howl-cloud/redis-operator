@@ -574,16 +574,119 @@ func TestValidateUpdate_StorageSizeDecreaseRejectedWhenBelowCurrentPVCRequest(t 
 	assert.Contains(t, err.Error(), "currently requested PVC size")
 }
 
-func TestValidateUpdate_ModeImmutable(t *testing.T) {
+func TestValidateUpdate_StandaloneToSentinelAllowed(t *testing.T) {
+	v := &RedisClusterValidator{}
+	old := validCluster() // standalone, 3 instances
+	new := validCluster()
+	new.Spec.Mode = redisv1.ClusterModeSentinel
+	new.Status.CurrentPrimary = "test-cluster-0"
+
+	warnings, err := v.ValidateUpdate(context.Background(), old, new)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
+func TestValidateUpdate_StandaloneToSentinelScalesInstances(t *testing.T) {
+	v := &RedisClusterValidator{}
+	old := validCluster()
+	old.Spec.Instances = 1
+	new := validCluster()
+	new.Spec.Mode = redisv1.ClusterModeSentinel
+	new.Spec.Instances = 3
+	new.Status.CurrentPrimary = "test-cluster-0"
+
+	warnings, err := v.ValidateUpdate(context.Background(), old, new)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
+func TestValidateUpdate_StandaloneToSentinelRejectedWithoutPrimary(t *testing.T) {
 	v := &RedisClusterValidator{}
 	old := validCluster()
 	new := validCluster()
-	new.Spec.Mode = redisv1.ClusterModeCluster
+	new.Spec.Mode = redisv1.ClusterModeSentinel
+	new.Status.CurrentPrimary = ""
 
 	_, err := v.ValidateUpdate(context.Background(), old, new)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "mode")
-	assert.Contains(t, err.Error(), "immutable")
+	assert.Contains(t, err.Error(), "currentPrimary")
+}
+
+func TestValidateUpdate_StandaloneToSentinelRejectsTooFewInstances(t *testing.T) {
+	v := &RedisClusterValidator{}
+	old := validCluster()
+	old.Spec.Instances = 1
+	new := validCluster()
+	new.Spec.Mode = redisv1.ClusterModeSentinel
+	new.Spec.Instances = 1
+	new.Status.CurrentPrimary = "test-cluster-0"
+
+	_, err := v.ValidateUpdate(context.Background(), old, new)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), sentinelInstancesMinMessage)
+}
+
+func TestValidateUpdate_StandaloneToSentinelRejectsTLS(t *testing.T) {
+	v := &RedisClusterValidator{}
+	old := validCluster()
+	old.Spec.TLSSecret = &redisv1.LocalObjectReference{Name: "tls"}
+	old.Spec.CASecret = &redisv1.LocalObjectReference{Name: "ca"}
+	new := validCluster()
+	new.Spec.Mode = redisv1.ClusterModeSentinel
+	new.Spec.TLSSecret = &redisv1.LocalObjectReference{Name: "tls"}
+	new.Spec.CASecret = &redisv1.LocalObjectReference{Name: "ca"}
+	new.Status.CurrentPrimary = "test-cluster-0"
+
+	_, err := v.ValidateUpdate(context.Background(), old, new)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), sentinelTLSUnsupported)
+}
+
+func TestValidateUpdate_StandaloneToSentinelRejectsClearingTLS(t *testing.T) {
+	// A TLS-enabled standalone cluster that clears TLS in the same patch as the
+	// mode flip must still be rejected: the new spec passes the target TLS check,
+	// so we must also inspect the old spec's TLS fields.
+	v := &RedisClusterValidator{}
+	old := validCluster()
+	old.Spec.TLSSecret = &redisv1.LocalObjectReference{Name: "tls"}
+	old.Spec.CASecret = &redisv1.LocalObjectReference{Name: "ca"}
+	new := validCluster()
+	new.Spec.Mode = redisv1.ClusterModeSentinel
+	new.Spec.TLSSecret = nil
+	new.Spec.CASecret = nil
+	new.Status.CurrentPrimary = "test-cluster-0"
+
+	_, err := v.ValidateUpdate(context.Background(), old, new)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), modeMigrationTLSMessage)
+}
+
+func TestValidateUpdate_UnsupportedModeTransitionsRejected(t *testing.T) {
+	tests := []struct {
+		name string
+		from redisv1.ClusterMode
+		to   redisv1.ClusterMode
+	}{
+		{"sentinel to standalone", redisv1.ClusterModeSentinel, redisv1.ClusterModeStandalone},
+		{"standalone to cluster", redisv1.ClusterModeStandalone, redisv1.ClusterModeCluster},
+		{"sentinel to cluster", redisv1.ClusterModeSentinel, redisv1.ClusterModeCluster},
+		{"cluster to standalone", redisv1.ClusterModeCluster, redisv1.ClusterModeStandalone},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := &RedisClusterValidator{}
+			old := validCluster()
+			old.Spec.Mode = tt.from
+			new := validCluster()
+			new.Spec.Mode = tt.to
+			new.Status.CurrentPrimary = "test-cluster-0"
+
+			_, err := v.ValidateUpdate(context.Background(), old, new)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unsupported mode transition")
+		})
+	}
 }
 
 func TestValidateUpdate_WrongOldType(t *testing.T) {
