@@ -102,6 +102,53 @@ func TestDefault_PreservesExistingValues(t *testing.T) {
 	assert.Equal(t, 13*time.Second, cluster.Spec.PrimaryIsolation.PeerTimeout.Duration)
 }
 
+func TestDefault_MemoryPolicyDefaultsToNoEviction(t *testing.T) {
+	d := &RedisClusterDefaulter{}
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		Spec: redisv1.RedisClusterSpec{
+			Memory: &redisv1.MemorySpec{MaxMemory: ptrQuantity("256Mi")},
+		},
+	}
+
+	require.NoError(t, d.Default(context.Background(), cluster))
+	assert.Equal(t, redisv1.MaxMemoryPolicyNoEviction, cluster.Spec.Memory.MaxMemoryPolicy)
+}
+
+func TestDefault_MemoryPolicyPreservesExplicitValue(t *testing.T) {
+	d := &RedisClusterDefaulter{}
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		Spec: redisv1.RedisClusterSpec{
+			Memory: &redisv1.MemorySpec{
+				MaxMemoryPercent: ptrInt32(75),
+				MaxMemoryPolicy:  redisv1.MaxMemoryPolicy("allkeys-lru"),
+			},
+		},
+	}
+
+	require.NoError(t, d.Default(context.Background(), cluster))
+	assert.Equal(t, redisv1.MaxMemoryPolicy("allkeys-lru"), cluster.Spec.Memory.MaxMemoryPolicy)
+}
+
+func TestDefault_NoMemorySpecLeavesMemoryNil(t *testing.T) {
+	d := &RedisClusterDefaulter{}
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		Spec:       redisv1.RedisClusterSpec{},
+	}
+
+	require.NoError(t, d.Default(context.Background(), cluster))
+	assert.Nil(t, cluster.Spec.Memory)
+}
+
+func ptrQuantity(s string) *resource.Quantity {
+	q := resource.MustParse(s)
+	return &q
+}
+
+func ptrInt32(v int32) *int32 { return &v }
+
 func TestDefault_NonRedisClusterReturnsNil(t *testing.T) {
 	d := &RedisClusterDefaulter{}
 	err := d.Default(context.Background(), &redisv1.RedisBackup{})

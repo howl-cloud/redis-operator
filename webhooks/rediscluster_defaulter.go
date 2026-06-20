@@ -88,6 +88,13 @@ func (d *RedisClusterDefaulter) Default(_ context.Context, obj runtime.Object) e
 		cluster.Spec.PrimaryIsolation.PeerTimeout = &metav1.Duration{Duration: 5 * time.Second}
 	}
 
+	// When memory is configured but no eviction policy is given, default to
+	// noeviction (Redis' own default): writes are rejected at the limit instead of
+	// keys being silently evicted. Users opt into eviction explicitly.
+	if cluster.Spec.Memory != nil && cluster.Spec.Memory.MaxMemoryPolicy == "" {
+		cluster.Spec.Memory.MaxMemoryPolicy = redisv1.MaxMemoryPolicyNoEviction
+	}
+
 	if cluster.Spec.NodeMaintenanceWindow != nil && cluster.Spec.NodeMaintenanceWindow.ReusePVC == nil {
 		t := true
 		cluster.Spec.NodeMaintenanceWindow.ReusePVC = &t

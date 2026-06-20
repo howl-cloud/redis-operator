@@ -965,6 +965,30 @@ func TestReconcileConfigMap_Creates(t *testing.T) {
 	assert.Contains(t, cm.Data["redis.conf"], "maxmemory-policy allkeys-lru")
 }
 
+func TestReconcileConfigMap_RendersMemorySpec(t *testing.T) {
+	cluster := newTestCluster("test", "default", 1)
+	cluster.Spec.Resources.Limits = corev1.ResourceList{
+		corev1.ResourceMemory: resource.MustParse("1Gi"),
+	}
+	percent := int32(75)
+	cluster.Spec.Memory = &redisv1.MemorySpec{
+		MaxMemoryPercent: &percent,
+		MaxMemoryPolicy:  redisv1.MaxMemoryPolicyNoEviction,
+	}
+	r, c := newReconciler(cluster)
+	ctx := context.Background()
+
+	err := r.reconcileConfigMap(ctx, cluster)
+	require.NoError(t, err)
+
+	var cm corev1.ConfigMap
+	err = c.Get(ctx, types.NamespacedName{Name: "test-config", Namespace: "default"}, &cm)
+	require.NoError(t, err)
+	// 75% of 1Gi rendered as bytes.
+	assert.Contains(t, cm.Data["redis.conf"], "maxmemory 805306368")
+	assert.Contains(t, cm.Data["redis.conf"], "maxmemory-policy noeviction")
+}
+
 func TestReconcilePVCs_DetectsDangling(t *testing.T) {
 	cluster := newTestCluster("test", "default", 1)
 	cluster.Status.CurrentPrimary = "test-0"

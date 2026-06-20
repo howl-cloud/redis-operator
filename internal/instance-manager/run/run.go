@@ -261,6 +261,16 @@ func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective, masterAut
 		lines = append(lines, fmt.Sprintf("%s %s", key, val))
 	}
 
+	// First-class memory policy (spec.memory) is rendered after the raw spec.redis
+	// keys. The webhook forbids setting maxmemory/maxmemory-policy in both places,
+	// so there is no conflict here.
+	if bytes, ok := cluster.Spec.ResolveMaxMemoryBytes(); ok {
+		lines = append(lines, fmt.Sprintf("maxmemory %d", bytes))
+	}
+	if policy := cluster.Spec.EffectiveMaxMemoryPolicy(); policy != "" {
+		lines = append(lines, fmt.Sprintf("maxmemory-policy %s", policy))
+	}
+
 	if cluster.Spec.ACLConfigSecret != nil {
 		lines = append(lines, fmt.Sprintf("aclfile %s", filepath.Join(dataDir, "users.acl")))
 	}

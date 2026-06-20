@@ -831,6 +831,21 @@ func (r *ClusterReconciler) computeSpecHash(cluster *redisv1.RedisCluster) strin
 		builder.WriteString("\n")
 	}
 
+	if mem := cluster.Spec.Memory; mem != nil {
+		builder.WriteString("memory.maxMemory=")
+		if mem.MaxMemory != nil {
+			builder.WriteString(mem.MaxMemory.String())
+		}
+		builder.WriteString("\n")
+		builder.WriteString("memory.maxMemoryPercent=")
+		if mem.MaxMemoryPercent != nil {
+			builder.WriteString(strconv.Itoa(int(*mem.MaxMemoryPercent)))
+		}
+		builder.WriteString("\nmemory.maxMemoryPolicy=")
+		builder.WriteString(string(mem.MaxMemoryPolicy))
+		builder.WriteString("\n")
+	}
+
 	// Ephemeral storage is part of the pod template (an emptyDir with a sizeLimit),
 	// so a size change must roll pods for the new limit to take effect. PVC-backed
 	// storage is intentionally excluded: resizes flow through the PVC resize path.
@@ -953,6 +968,12 @@ func (r *ClusterReconciler) reconcileConfigMap(ctx context.Context, cluster *red
 	conf := "port 6379\nbind 0.0.0.0\nappendonly yes\naof-use-rdb-preamble yes\nappenddirname appendonlydir\n"
 	for key, val := range cluster.Spec.Redis {
 		conf += fmt.Sprintf("%s %s\n", key, val)
+	}
+	if bytes, ok := cluster.Spec.ResolveMaxMemoryBytes(); ok {
+		conf += fmt.Sprintf("maxmemory %d\n", bytes)
+	}
+	if policy := cluster.Spec.EffectiveMaxMemoryPolicy(); policy != "" {
+		conf += fmt.Sprintf("maxmemory-policy %s\n", policy)
 	}
 
 	cm := &corev1.ConfigMap{

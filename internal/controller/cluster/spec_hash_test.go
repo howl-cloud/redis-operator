@@ -93,6 +93,16 @@ func TestComputeSpecHash_ChangesWhenTrackedFieldsChange(t *testing.T) {
 				c.Spec.Redis["maxmemory-policy"] = "volatile-lru"
 			},
 		},
+		{
+			name: "memory spec added changes hash",
+			mutateCluster: func(c *redisv1.RedisCluster) {
+				percent := int32(75)
+				c.Spec.Memory = &redisv1.MemorySpec{
+					MaxMemoryPercent: &percent,
+					MaxMemoryPolicy:  redisv1.MaxMemoryPolicyNoEviction,
+				}
+			},
+		},
 	}
 
 	for _, tc := range testCases {

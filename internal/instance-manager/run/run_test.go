@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -225,6 +226,61 @@ func TestWriteRedisConf_WithRedisParams(t *testing.T) {
 	content := string(data)
 
 	assert.Contains(t, content, "maxmemory 256mb")
+	assert.Contains(t, content, "maxmemory-policy allkeys-lru")
+}
+
+func int32Ptr(v int32) *int32 { return &v }
+
+func quantityPtr(s string) *resource.Quantity {
+	q := resource.MustParse(s)
+	return &q
+}
+
+func TestWriteRedisConf_WithMemorySpecExplicit(t *testing.T) {
+	overrideDataDir(t)
+
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			Memory: &redisv1.MemorySpec{
+				MaxMemory:       quantityPtr("256Mi"),
+				MaxMemoryPolicy: redisv1.MaxMemoryPolicyNoEviction,
+			},
+		},
+	}
+	require.NoError(t, writeRedisConf(cluster, "", "", ""))
+
+	data, err := os.ReadFile(redisConfPath)
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "maxmemory 268435456")
+	assert.Contains(t, content, "maxmemory-policy noeviction")
+}
+
+func TestWriteRedisConf_WithMemorySpecPercent(t *testing.T) {
+	overrideDataDir(t)
+
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			Resources: corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("1Gi"),
+				},
+			},
+			Memory: &redisv1.MemorySpec{
+				MaxMemoryPercent: int32Ptr(75),
+				MaxMemoryPolicy:  redisv1.MaxMemoryPolicy("allkeys-lru"),
+			},
+		},
+	}
+	require.NoError(t, writeRedisConf(cluster, "", "", ""))
+
+	data, err := os.ReadFile(redisConfPath)
+	require.NoError(t, err)
+	content := string(data)
+
+	// 75% of 1Gi.
+	assert.Contains(t, content, "maxmemory 805306368")
 	assert.Contains(t, content, "maxmemory-policy allkeys-lru")
 }
 

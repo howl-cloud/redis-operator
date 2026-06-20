@@ -75,6 +75,17 @@ The chart creates the following alerts:
 - `RedisBackupMissing`
 - `RedisInstanceDown`
 
+> **`RedisMemoryUsageHigh` requires `maxmemory`.** This alert is gated on
+> `redis_maxmemory_bytes > 0` and fires on
+> `redis_used_memory_bytes / redis_maxmemory_bytes > memoryUsageThresholdRatio`.
+> A cluster with a container memory limit but **no** Redis `maxmemory` reports
+> `redis_maxmemory_bytes = 0`, so the ratio is undefined and the alert never
+> fires — the pod can be OOM-killed unalerted. Configure `spec.memory` (see
+> [memory.md](memory.md)) so this alert is meaningful. If you cannot set
+> `maxmemory`, alert on the container instead via
+> `container_memory_working_set_bytes / kube_pod_container_resource_limits` from
+> kube-state-metrics/cAdvisor.
+
 ### Tuning global thresholds
 
 ```yaml
