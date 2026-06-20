@@ -53,6 +53,12 @@ Why this matters: the operator can enforce strict pod update ordering, explicit 
 | `sentinel` | Supported (requires at least 3 data instances) |
 | `cluster` | Supported |
 
+A running `standalone` cluster can be upgraded to `sentinel` (HA) in place by
+editing `spec.mode` (and scaling `spec.instances` to at least 3) — the existing
+primary and its data are preserved, with no backup/restore needed. Only
+`standalone -> sentinel` is supported in place; see
+[docs/runbooks/standalone-to-sentinel-migration.md](docs/runbooks/standalone-to-sentinel-migration.md).
+
 ## Quick Start
 
 Set a release version once:

@@ -51,6 +51,9 @@ const (
 	memoryPercentRequiresLimit       = "spec.memory.maxMemoryPercent requires spec.resources.limits.memory to be set"
 	memoryExceedsLimitMessage        = "spec.memory.maxMemory must not exceed spec.resources.limits.memory"
 	memoryNonPositiveMessage         = "spec.memory.maxMemory must be greater than 0"
+	modeTransitionUnsupportedMessage = "unsupported mode transition; only standalone->sentinel is supported as an in-place migration (set instances>=3 and do not enable TLS). See docs/runbooks/standalone-to-sentinel-migration.md"
+	modeMigrationNotReadyMessage     = "cannot migrate standalone->sentinel until status.currentPrimary is set; wait for the cluster to become Healthy before changing mode"
+	modeMigrationTLSMessage          = "cannot migrate standalone->sentinel in place for a TLS-enabled cluster (sentinel mode does not support TLS yet); clearing tlsSecret/caSecret in the same change would strand the migration. Use the backup/recreate path. See docs/runbooks/standalone-to-sentinel-migration.md"
 )
 
 // SetupValidatingWebhookWithManager registers the validating webhook with the manager.
@@ -408,12 +411,10 @@ func (v *RedisClusterValidator) validateUpdate(ctx context.Context, oldCluster, 
 		}
 	}
 
-	// Mode is immutable after creation.
+	// Mode transitions are restricted. Only standalone->sentinel is supported as
+	// an in-place upgrade to high availability; every other change is rejected.
 	if oldCluster.Spec.Mode != newCluster.Spec.Mode {
-		allErrs = append(allErrs, field.Forbidden(
-			specPath.Child("mode"),
-			"mode is immutable after creation",
-		))
+		allErrs = append(allErrs, validateModeTransition(oldCluster, newCluster, specPath)...)
 	}
 
 	if bootstrapBackupName(oldCluster.Spec.Bootstrap) != bootstrapBackupName(newCluster.Spec.Bootstrap) {
@@ -444,6 +445,30 @@ func (v *RedisClusterValidator) validateUpdate(ctx context.Context, oldCluster, 
 	}
 
 	return allErrs
+}
+
+// validateModeTransition allows only the supported standalone->sentinel in-place
+// migration. The target sentinel invariants (instances >= 3, no TLS) are enforced
+// by validate(); here we gate on a transition allowlist and require an established
+// primary so sentinel has a master to monitor on startup.
+func validateModeTransition(oldCluster, newCluster *redisv1.RedisCluster, specPath *field.Path) field.ErrorList {
+	modePath := specPath.Child("mode")
+	if oldCluster.Spec.Mode == redisv1.ClusterModeStandalone &&
+		newCluster.Spec.Mode == redisv1.ClusterModeSentinel {
+		if newCluster.Status.CurrentPrimary == "" {
+			return field.ErrorList{field.Forbidden(modePath, modeMigrationNotReadyMessage)}
+		}
+		// A TLS-enabled source cannot migrate in place: sentinel mode has no TLS
+		// support, and clearing TLS in the same change would leave the running
+		// primary on TLS while new replicas/sentinels come up without it. Checking
+		// the old spec (not just the new one) closes the clear-TLS-in-same-patch
+		// bypass of the target-spec TLS validation.
+		if oldCluster.Spec.TLSSecret != nil || oldCluster.Spec.CASecret != nil {
+			return field.ErrorList{field.Forbidden(modePath, modeMigrationTLSMessage)}
+		}
+		return nil
+	}
+	return field.ErrorList{field.Forbidden(modePath, modeTransitionUnsupportedMessage)}
 }
 
 func (v *RedisClusterValidator) validateReplicaMode(ctx context.Context, cluster *redisv1.RedisCluster) field.ErrorList {

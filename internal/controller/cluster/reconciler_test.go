@@ -1729,6 +1729,80 @@ func TestReconcile_SentinelModeContinuesWhenRollingUpdateStops(t *testing.T) {
 	assert.Len(t, sentinelPods.Items, redisv1.SentinelInstances)
 }
 
+// TestMigration_StandaloneToSentinel covers the operator-side behavior of an
+// in-place standalone->sentinel migration: the existing primary and its PVC are
+// preserved, data pods scale up to the sentinel minimum with the new pods joining
+// as replicas, and the fixed sentinel set is provisioned.
+func TestMigration_StandaloneToSentinel(t *testing.T) {
+	// Cluster has already been running standalone (currentPrimary set) and is now
+	// flipped to sentinel mode with instances scaled to 3.
+	cluster := newTestCluster("test", "default", 3)
+	cluster.Spec.Mode = redisv1.ClusterModeSentinel
+	cluster.Status.CurrentPrimary = "test-0"
+
+	r, c := newReconciler(cluster)
+	ctx := context.Background()
+
+	// Existing primary data pod from the standalone deployment.
+	primary := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				redisv1.LabelCluster:  "test",
+				redisv1.LabelInstance: "test-0",
+				redisv1.LabelRole:     redisv1.LabelRolePrimary,
+			},
+		},
+	}
+	require.NoError(t, c.Create(ctx, primary))
+	primaryUID := primary.UID
+
+	// Pre-create PVCs so data pods can reference them.
+	for i := 0; i < 3; i++ {
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pvcNameForIndex("test", i),
+				Namespace: "default",
+				Labels:    map[string]string{redisv1.LabelCluster: "test"},
+			},
+		}
+		require.NoError(t, c.Create(ctx, pvc))
+	}
+
+	// Data-pod scale-up: existing primary is preserved, replicas are added.
+	require.NoError(t, r.reconcilePods(ctx, cluster))
+
+	var pod0 corev1.Pod
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "test-0", Namespace: "default"}, &pod0))
+	assert.Equal(t, primaryUID, pod0.UID, "existing primary pod must not be recreated")
+	assert.Equal(t, redisv1.LabelRolePrimary, pod0.Labels[redisv1.LabelRole])
+
+	for _, name := range []string{"test-1", "test-2"} {
+		var replica corev1.Pod
+		require.NoError(t, c.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, &replica))
+		assert.Equal(t, redisv1.LabelRoleReplica, replica.Labels[redisv1.LabelRole])
+	}
+
+	// currentPrimary is unchanged by the migration.
+	var updated redisv1.RedisCluster
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updated))
+	assert.Equal(t, "test-0", updated.Status.CurrentPrimary)
+
+	// Sentinel provisioning creates the fixed sentinel set.
+	require.NoError(t, r.reconcileSentinelPods(ctx, cluster))
+
+	var sentinelPods corev1.PodList
+	require.NoError(t, c.List(ctx, &sentinelPods,
+		client.InNamespace("default"),
+		client.MatchingLabels{
+			redisv1.LabelCluster: "test",
+			redisv1.LabelRole:    redisv1.LabelRoleSentinel,
+		},
+	))
+	assert.Len(t, sentinelPods.Items, redisv1.SentinelInstances)
+}
+
 func TestReconcileReplicaModePromotion_FinalizesPromotion(t *testing.T) {
 	cluster := newTestCluster("test", "default", 2)
 	cluster.Status.CurrentPrimary = "test-0"

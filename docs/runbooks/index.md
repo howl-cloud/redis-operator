@@ -13,6 +13,7 @@ These runbooks are for incident response and production operations of `RedisClus
 | Suspected split-brain (two primaries) | [split-brain-recovery.md](split-brain-recovery.md) |
 | Rotate `authSecret` without pod restarts | [secret-rotation.md](secret-rotation.md) |
 | Upgrade operator safely | [operator-upgrade.md](operator-upgrade.md) |
+| Migrate standalone to sentinel (HA) | [standalone-to-sentinel-migration.md](standalone-to-sentinel-migration.md) |
 
 ## Shared Conventions
 
