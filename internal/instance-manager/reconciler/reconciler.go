@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -253,6 +254,19 @@ func (r *InstanceReconciler) reconcileConfig(ctx context.Context, cluster *redis
 		}
 		if err := r.redisClient.ConfigSet(ctx, key, val).Err(); err != nil {
 			return fmt.Errorf("CONFIG SET %s: %w", key, err)
+		}
+	}
+
+	// First-class memory policy (spec.memory). Both maxmemory and maxmemory-policy
+	// are live-settable, so apply them here instead of requiring a restart.
+	if bytes, ok := cluster.Spec.ResolveMaxMemoryBytes(); ok {
+		if err := r.redisClient.ConfigSet(ctx, "maxmemory", strconv.FormatInt(bytes, 10)).Err(); err != nil {
+			return fmt.Errorf("CONFIG SET maxmemory: %w", err)
+		}
+	}
+	if policy := cluster.Spec.EffectiveMaxMemoryPolicy(); policy != "" {
+		if err := r.redisClient.ConfigSet(ctx, "maxmemory-policy", policy).Err(); err != nil {
+			return fmt.Errorf("CONFIG SET maxmemory-policy: %w", err)
 		}
 	}
 	return nil

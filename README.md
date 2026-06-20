@@ -151,6 +151,28 @@ spec:
 
 On-demand and scheduled backups still work for `emptyDir` clusters (they snapshot a live pod), but a backup only captures the data present at backup time.
 
+## Memory
+
+A Kubernetes memory **limit** and Redis **`maxmemory`** are enforced by different layers. If a pod has `spec.resources.limits.memory` but Redis has no `maxmemory`, Redis keeps allocating until the kernel OOM-kills the container — an abrupt, unpredictable failure. Setting `maxmemory` makes Redis itself enforce a ceiling *below* the container limit, so it applies its eviction policy (or rejects writes) instead of being killed.
+
+Configure this with first-class fields under `spec.memory` rather than raw `spec.redis` keys, so the operator can keep `maxmemory` consistent with the container limit and validate unsafe combinations:
+
+```yaml
+spec:
+  resources:
+    limits:
+      memory: 1Gi
+  memory:
+    maxMemoryPercent: 75      # maxmemory = 75% of the container limit (768Mi)
+    maxMemoryPolicy: allkeys-lru
+```
+
+- **`maxMemory`** — an explicit value (e.g. `512Mi`). Mutually exclusive with `maxMemoryPercent`.
+- **`maxMemoryPercent`** — derives `maxmemory` as a percent (1–100) of `spec.resources.limits.memory`. Requires that limit. Leave headroom (≈75%) for replication buffers, copy-on-write during persistence (`BGSAVE`/AOF rewrite), and fragmentation; using the full limit risks OOM despite `maxmemory`.
+- **`maxMemoryPolicy`** — the eviction policy. Defaults to **`noeviction`**, which rejects writes at the limit instead of silently dropping data. Choose `allkeys-lru`/`allkeys-lfu` for caches, or a `volatile-*` policy to evict only keys with a TTL.
+
+Both fields are applied live (via `CONFIG SET`) and persisted to the rendered `redis.conf`. The webhook rejects setting `maxmemory`/`maxmemory-policy` in both `spec.memory` and `spec.redis`, and warns when a memory limit is set with no `maxmemory` configured. See [`docs/memory.md`](docs/memory.md) for the full interaction model.
+
 ## APIs
 
 - `RedisCluster`: cluster lifecycle, topology, resources, secrets, scheduling rules
@@ -162,6 +184,8 @@ Backup destinations, credential secret keys, and example manifests are documente
 ## Docs
 
 - Architecture and component docs: `internal/controller/cluster/README.md`, `internal/instance-manager/README.md`
+- Memory and eviction: `docs/memory.md`
+- Monitoring and alerting: `docs/monitoring.md`
 - Runbooks: `docs/runbooks/index.md`
 - Upgrade guidance: `docs/upgrade.md`
 - Contributor guide: `CONTRIBUTING.md`

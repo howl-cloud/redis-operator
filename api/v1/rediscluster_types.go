@@ -143,6 +143,12 @@ type RedisClusterSpec struct {
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
+	// Memory configures Redis maxmemory and the eviction policy. Use this instead
+	// of setting "maxmemory"/"maxmemory-policy" directly in spec.redis so the
+	// operator can keep them consistent with the container memory limit.
+	// +optional
+	Memory *MemorySpec `json:"memory,omitempty"`
+
 	// MinSyncReplicas is the minimum number of synchronous replicas.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
@@ -233,6 +239,40 @@ type StorageSpec struct {
 // IsEphemeral reports whether data is backed by pod-local ephemeral storage.
 func (s StorageSpec) IsEphemeral() bool {
 	return s.Type == StorageTypeEmptyDir
+}
+
+// MaxMemoryPolicy is the Redis eviction policy applied when maxmemory is reached.
+// +kubebuilder:validation:Enum=noeviction;allkeys-lru;allkeys-lfu;volatile-lru;volatile-lfu;allkeys-random;volatile-random;volatile-ttl
+type MaxMemoryPolicy string
+
+const (
+	// MaxMemoryPolicyNoEviction rejects writes once maxmemory is reached. This is
+	// the Redis default and the operator default: it turns container OOM-kills into
+	// predictable write errors without silently evicting data.
+	MaxMemoryPolicyNoEviction MaxMemoryPolicy = "noeviction"
+)
+
+// MemorySpec configures Redis memory limits and eviction behavior. It is the
+// first-class alternative to setting maxmemory/maxmemory-policy in spec.redis.
+type MemorySpec struct {
+	// MaxMemory sets an explicit Redis maxmemory (e.g. "256Mi", "2Gi"). It is
+	// rendered as a byte count. Mutually exclusive with MaxMemoryPercent.
+	// +optional
+	MaxMemory *resource.Quantity `json:"maxMemory,omitempty"`
+
+	// MaxMemoryPercent derives maxmemory as a percent of the container memory limit
+	// (spec.resources.limits.memory). It requires that limit to be set and is
+	// mutually exclusive with MaxMemory. Leave headroom (e.g. 75) for replication
+	// buffers, copy-on-write during persistence, and fragmentation.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	MaxMemoryPercent *int32 `json:"maxMemoryPercent,omitempty"`
+
+	// MaxMemoryPolicy sets the eviction policy (maxmemory-policy). Defaults to
+	// noeviction, which rejects writes at the limit instead of evicting keys.
+	// +optional
+	MaxMemoryPolicy MaxMemoryPolicy `json:"maxMemoryPolicy,omitempty"`
 }
 
 // LocalObjectReference is a reference to a Secret in the same namespace.
@@ -466,4 +506,51 @@ func (s RedisClusterSpec) DesiredDataInstances() int32 {
 		replicasPerShard = 0
 	}
 	return shards * (1 + replicasPerShard)
+}
+
+// MemoryLimitBytes returns the container memory limit in bytes, or 0 if unset.
+func (s RedisClusterSpec) MemoryLimitBytes() int64 {
+	if s.Resources.Limits == nil {
+		return 0
+	}
+	q, ok := s.Resources.Limits[corev1.ResourceMemory]
+	if !ok {
+		return 0
+	}
+	return q.Value()
+}
+
+// ResolveMaxMemoryBytes computes the effective Redis maxmemory in bytes from
+// spec.memory. It returns (bytes, true) when maxmemory should be configured, or
+// (0, false) when it is not configured (or cannot be resolved). A percent is
+// resolved against the container memory limit in spec.resources.limits.memory.
+func (s RedisClusterSpec) ResolveMaxMemoryBytes() (int64, bool) {
+	if s.Memory == nil {
+		return 0, false
+	}
+	if s.Memory.MaxMemory != nil {
+		if v := s.Memory.MaxMemory.Value(); v > 0 {
+			return v, true
+		}
+		return 0, false
+	}
+	if s.Memory.MaxMemoryPercent != nil {
+		pct := *s.Memory.MaxMemoryPercent
+		limit := s.MemoryLimitBytes()
+		if pct <= 0 || limit <= 0 {
+			return 0, false
+		}
+		if bytes := limit * int64(pct) / 100; bytes > 0 {
+			return bytes, true
+		}
+	}
+	return 0, false
+}
+
+// EffectiveMaxMemoryPolicy returns the configured eviction policy, or "" if unset.
+func (s RedisClusterSpec) EffectiveMaxMemoryPolicy() string {
+	if s.Memory == nil {
+		return ""
+	}
+	return string(s.Memory.MaxMemoryPolicy)
 }

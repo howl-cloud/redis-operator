@@ -1083,6 +1083,42 @@ func TestReconcile_FullCycle_WithConfig(t *testing.T) {
 	assert.True(t, ok)
 }
 
+func int32Ptr(v int32) *int32 { return &v }
+
+func TestReconcile_AppliesMemorySpecLive(t *testing.T) {
+	srv, redisClient := newFakeRedisServer(t)
+
+	cluster := newTestCluster("test", "default")
+	cluster.Status.CurrentPrimary = "test-0"
+	cluster.Spec.Resources.Limits = corev1.ResourceList{
+		corev1.ResourceMemory: resource.MustParse("1Gi"),
+	}
+	cluster.Spec.Memory = &redisv1.MemorySpec{
+		MaxMemoryPercent: int32Ptr(75),
+		MaxMemoryPolicy:  redisv1.MaxMemoryPolicy("allkeys-lru"),
+	}
+
+	scheme := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cluster).
+		WithStatusSubresource(&redisv1.RedisCluster{}).
+		Build()
+
+	rec := NewInstanceReconciler(fakeClient, redisClient, record.NewFakeRecorder(100), "test", "test-0", "default")
+
+	_, err := rec.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "test", Namespace: "default"},
+	})
+	require.NoError(t, err)
+
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	// 75% of 1Gi, set as a byte count via CONFIG SET.
+	assert.Equal(t, "805306368", srv.configValues["maxmemory"])
+	assert.Equal(t, "allkeys-lru", srv.configValues["maxmemory-policy"])
+}
+
 func TestReconcile_FallbackAuthSecretMissingIsFatal(t *testing.T) {
 	_, redisClient := newFakeRedisServer(t)
 	projectedDir := t.TempDir()

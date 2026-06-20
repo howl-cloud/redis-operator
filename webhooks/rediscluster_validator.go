@@ -46,6 +46,11 @@ const (
 	ephemeralBootstrapMessage        = "bootstrap is not supported with ephemeral storage (storage.type=emptyDir); restored data would be lost when pods are recreated"
 	ephemeralStorageClassMessage     = "storageClassName has no effect with ephemeral storage (storage.type=emptyDir); remove it"
 	storageTypeImmutableMessage      = "storage.type is immutable after creation; switching between pvc and emptyDir would destroy or migrate data"
+	memoryRedisConflictMessage       = "configure Redis memory via spec.memory; remove maxmemory/maxmemory-policy from spec.redis"
+	memoryMutualExclusiveMessage     = "spec.memory.maxMemory and spec.memory.maxMemoryPercent are mutually exclusive; set only one"
+	memoryPercentRequiresLimit       = "spec.memory.maxMemoryPercent requires spec.resources.limits.memory to be set"
+	memoryExceedsLimitMessage        = "spec.memory.maxMemory must not exceed spec.resources.limits.memory"
+	memoryNonPositiveMessage         = "spec.memory.maxMemory must be greater than 0"
 )
 
 // SetupValidatingWebhookWithManager registers the validating webhook with the manager.
@@ -62,7 +67,10 @@ func (v *RedisClusterValidator) ValidateCreate(ctx context.Context, obj runtime.
 	if !ok {
 		return nil, fmt.Errorf("expected RedisCluster, got %T", obj)
 	}
-	return nil, v.validate(ctx, cluster).ToAggregate()
+	if err := v.validate(ctx, cluster).ToAggregate(); err != nil {
+		return nil, err
+	}
+	return memoryWarnings(cluster), nil
 }
 
 // ValidateUpdate validates a RedisCluster on update.
@@ -78,7 +86,10 @@ func (v *RedisClusterValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 
 	allErrs := v.validate(ctx, newCluster)
 	allErrs = append(allErrs, v.validateUpdate(ctx, oldCluster, newCluster)...)
-	return nil, allErrs.ToAggregate()
+	if err := allErrs.ToAggregate(); err != nil {
+		return nil, err
+	}
+	return memoryWarnings(newCluster), nil
 }
 
 // ValidateDelete validates a RedisCluster on deletion.
@@ -219,8 +230,95 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 	}
 	allErrs = append(allErrs, v.validateBootstrapReference(ctx, cluster)...)
 	allErrs = append(allErrs, validateStorage(cluster)...)
+	allErrs = append(allErrs, validateMemory(cluster)...)
 
 	return allErrs
+}
+
+// validateMemory checks spec.memory for unsafe or inconsistent combinations.
+func validateMemory(cluster *redisv1.RedisCluster) field.ErrorList {
+	var allErrs field.ErrorList
+	mem := cluster.Spec.Memory
+
+	// Raw spec.redis keys must not coexist with first-class spec.memory.
+	if mem != nil {
+		redisPath := field.NewPath("spec", "redis")
+		for key := range cluster.Spec.Redis {
+			normalized := strings.ToLower(strings.TrimSpace(key))
+			if normalized == "maxmemory" || normalized == "maxmemory-policy" {
+				allErrs = append(allErrs, field.Forbidden(redisPath.Key(key), memoryRedisConflictMessage))
+			}
+		}
+	}
+
+	if mem == nil {
+		return allErrs
+	}
+
+	memPath := field.NewPath("spec", "memory")
+	limit := cluster.Spec.MemoryLimitBytes()
+
+	if mem.MaxMemory != nil && mem.MaxMemoryPercent != nil {
+		allErrs = append(allErrs, field.Forbidden(memPath.Child("maxMemoryPercent"), memoryMutualExclusiveMessage))
+	}
+
+	if mem.MaxMemoryPercent != nil && limit <= 0 {
+		allErrs = append(allErrs, field.Invalid(
+			memPath.Child("maxMemoryPercent"), *mem.MaxMemoryPercent, memoryPercentRequiresLimit))
+	}
+
+	if mem.MaxMemory != nil {
+		switch v := mem.MaxMemory.Value(); {
+		case v <= 0:
+			allErrs = append(allErrs, field.Invalid(
+				memPath.Child("maxMemory"), mem.MaxMemory.String(), memoryNonPositiveMessage))
+		case limit > 0 && v > limit:
+			allErrs = append(allErrs, field.Invalid(
+				memPath.Child("maxMemory"), mem.MaxMemory.String(), memoryExceedsLimitMessage))
+		}
+	}
+
+	return allErrs
+}
+
+// memoryWarnings surfaces non-fatal memory configuration risks: a container
+// memory limit with no maxmemory (OOM-kill risk), or a maxmemory left with too
+// little headroom under the limit.
+func memoryWarnings(cluster *redisv1.RedisCluster) admission.Warnings {
+	limit := cluster.Spec.MemoryLimitBytes()
+	if limit <= 0 {
+		return nil
+	}
+
+	bytes, ok := cluster.Spec.ResolveMaxMemoryBytes()
+	if !ok {
+		if hasRawMaxMemory(cluster) {
+			return nil
+		}
+		return admission.Warnings{fmt.Sprintf(
+			"spec.resources.limits.memory is set (%d bytes) but no Redis maxmemory is configured; "+
+				"Redis may be OOM-killed at the container limit instead of applying eviction. "+
+				"Set spec.memory.maxMemory or spec.memory.maxMemoryPercent.", limit)}
+	}
+
+	if bytes*10 >= limit*9 {
+		return admission.Warnings{fmt.Sprintf(
+			"spec.memory resolves maxmemory to %d bytes, at least 90%% of the %d byte container limit; "+
+				"leave headroom for replication buffers, copy-on-write during persistence, and fragmentation.",
+			bytes, limit)}
+	}
+
+	return nil
+}
+
+// hasRawMaxMemory reports whether a non-empty maxmemory is set via spec.redis.
+func hasRawMaxMemory(cluster *redisv1.RedisCluster) bool {
+	for key, val := range cluster.Spec.Redis {
+		if strings.EqualFold(strings.TrimSpace(key), "maxmemory") && strings.TrimSpace(val) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // validateStorage checks ephemeral-storage constraints. Fields that only make

@@ -1052,6 +1052,46 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              memory:
+                description: |-
+                  Memory configures Redis maxmemory and the eviction policy. Use this instead
+                  of setting "maxmemory"/"maxmemory-policy" directly in spec.redis so the
+                  operator can keep them consistent with the container memory limit.
+                properties:
+                  maxMemory:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      MaxMemory sets an explicit Redis maxmemory (e.g. "256Mi", "2Gi"). It is
+                      rendered as a byte count. Mutually exclusive with MaxMemoryPercent.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  maxMemoryPercent:
+                    description: |-
+                      MaxMemoryPercent derives maxmemory as a percent of the container memory limit
+                      (spec.resources.limits.memory). It requires that limit to be set and is
+                      mutually exclusive with MaxMemory. Leave headroom (e.g. 75) for replication
+                      buffers, copy-on-write during persistence, and fragmentation.
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  maxMemoryPolicy:
+                    description: |-
+                      MaxMemoryPolicy sets the eviction policy (maxmemory-policy). Defaults to
+                      noeviction, which rejects writes at the limit instead of evicting keys.
+                    enum:
+                    - noeviction
+                    - allkeys-lru
+                    - allkeys-lfu
+                    - volatile-lru
+                    - volatile-lfu
+                    - allkeys-random
+                    - volatile-random
+                    - volatile-ttl
+                    type: string
+                type: object
               minSyncReplicas:
                 description: MinSyncReplicas is the minimum number of synchronous
                   replicas.
