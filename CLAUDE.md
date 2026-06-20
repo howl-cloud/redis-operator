@@ -22,7 +22,7 @@ A Kubernetes operator for Redis 7.2 clusters (wire-compatible with Valkey 7.x/8.
 - Status is updated via `status` subresource only (separate from spec). Per-pod state lives in a map keyed by pod name, never a slice (avoids strategic-merge-patch ordering bugs).
 - Rolling updates: replicas always before the primary (highest ordinal first). The primary is last, promoted out via switchover, not killed directly.
 - Secrets are injected as projected volumes, never env vars.
-- `cluster` mode (`spec.mode: cluster`) is reserved and intentionally not implemented. The webhook rejects it. Don't implement it without a dedicated issue.
+- `cluster` mode (`spec.mode: cluster`) is implemented (sharded Redis Cluster). The webhook accepts it and validates cluster-specific constraints (`spec.shards >= 3`; `instances`/`minSyncReplicas`/`maxSyncReplicas`/`replicaMode` are forbidden). It uses `spec.shards` + `spec.replicasPerShard`, not `spec.instances`. See `cluster_bootstrap.go`, `cluster_reshard.go`, and `ensureClusterHeadlessService`.
 
 **Run codegen after editing API types.** Any change to `api/v1/*_types.go` requires:
 ```bash
@@ -147,7 +147,7 @@ Follow existing patterns:
 
 | Kind | Modes | Notes |
 |---|---|---|
-| `RedisCluster` | `standalone`, `sentinel` | `cluster` mode reserved/unimplemented |
+| `RedisCluster` | `standalone`, `sentinel`, `cluster` | `cluster` = sharded Redis Cluster (`spec.shards`/`replicasPerShard`) |
 | `RedisBackup` | — | On-demand RDB/AOF to object storage |
 | `RedisScheduledBackup` | — | Cron-based; delegates to `RedisBackup` |
 
@@ -160,4 +160,3 @@ Phase values: `Creating`, `Healthy`, `Degraded`, `FailingOver`, `Scaling`, `Upda
 - **No cert-manager** — webhook PKI is self-managed in `internal/cmd/manager/controller/pki.go`.
 - **No StatefulSets** — Pods and PVCs are managed directly for full lifecycle control.
 - **No env-var secret injection** — projected volumes only.
-- **No cluster mode** — not yet; webhook rejects it.
