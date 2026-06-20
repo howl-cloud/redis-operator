@@ -15,6 +15,7 @@ A Kubernetes operator for Redis built around the same control-plane ideas used b
   - Cluster mode:
     - `<name>-any` (all data pods)
     - `<name>-cluster` (headless cluster discovery/bus service)
+  - See [docs/service-contract.md](docs/service-contract.md) for the full service/label integration contract (which to use for writes, reads, and discovery)
 - Supports backup and scheduled backup workflows
 - Includes operational runbooks for common failure scenarios
 
