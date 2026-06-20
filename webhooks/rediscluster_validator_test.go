@@ -95,6 +95,35 @@ func TestValidateCreate_ValidCluster(t *testing.T) {
 	assert.Nil(t, warnings)
 }
 
+func TestValidateCreate_ConnectionSecretValidName(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.ConnectionSecret = &redisv1.ConnectionSecretSpec{Name: "my-app-redis"}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	assert.NoError(t, err)
+}
+
+func TestValidateCreate_ConnectionSecretInvalidName(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.ConnectionSecret = &redisv1.ConnectionSecretSpec{Name: "Bad_Name"}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connectionSecret")
+}
+
+func TestValidateCreate_ConnectionSecretEmptyName(t *testing.T) {
+	v := &RedisClusterValidator{}
+	cluster := validCluster()
+	cluster.Spec.ConnectionSecret = &redisv1.ConnectionSecretSpec{Name: "  "}
+
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "name is required")
+}
+
 func TestValidateCreate_InstancesTooLow(t *testing.T) {
 	v := &RedisClusterValidator{}
 	cluster := validCluster()

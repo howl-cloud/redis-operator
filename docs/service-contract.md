@@ -12,7 +12,10 @@ below changes, that test fails and this document must change in the same commit.
 
 > Scope: this contract covers the resources the operator creates. Connection
 > credentials live in the cluster's auth Secret (`spec.authSecret`, or the
-> generated `<name>-auth` if omitted); see the README for secret handling.
+> generated `<name>-auth` if omitted); see the README for secret handling. For a
+> ready-to-use, operator-maintained Secret bundling host/port/url/password and
+> per-role endpoints, see [Connection Secret](connection-secret.md)
+> (`spec.connectionSecret`).
 
 ---
 

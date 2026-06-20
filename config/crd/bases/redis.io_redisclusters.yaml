@@ -1030,6 +1030,27 @@ spec:
                 required:
                 - name
                 type: object
+              connectionSecret:
+                description: |-
+                  ConnectionSecret, when set, makes the operator publish and maintain a Secret
+                  containing ready-to-use connection details for this cluster (host, port,
+                  url, leader/replica endpoints, and mode-specific discovery values). The
+                  generated Secret embeds the password and a full redis:// URL, so it is
+                  credential-bearing and lives under the same RBAC as the auth Secret. Leave
+                  unset to skip publishing it.
+                properties:
+                  name:
+                    description: |-
+                      Name of the Secret to create and maintain in the cluster's namespace. The
+                      operator owns this Secret: it is updated on auth rotation or service
+                      changes and garbage-collected when the RedisCluster is deleted. If a Secret
+                      with this name already exists and is not owned by this RedisCluster, the
+                      operator refuses to overwrite it.
+                    maxLength: 253
+                    type: string
+                required:
+                - name
+                type: object
               enablePodDisruptionBudget:
                 default: true
                 description: EnablePodDisruptionBudget controls whether a PDB is created.

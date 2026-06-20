@@ -16,6 +16,7 @@ A Kubernetes operator for Redis built around the same control-plane ideas used b
     - `<name>-any` (all data pods)
     - `<name>-cluster` (headless cluster discovery/bus service)
   - See [docs/service-contract.md](docs/service-contract.md) for the full service/label integration contract (which to use for writes, reads, and discovery)
+- Optionally publishes a connection Secret (`spec.connectionSecret`) with ready-to-use host/port/url/password and per-role endpoints; see [docs/connection-secret.md](docs/connection-secret.md)
 - Supports backup and scheduled backup workflows
 - Includes operational runbooks for common failure scenarios
 
@@ -192,6 +193,7 @@ Backup destinations, credential secret keys, and example manifests are documente
 
 - Architecture and component docs: `internal/controller/cluster/README.md`, `internal/instance-manager/README.md`
 - Memory and eviction: `docs/memory.md`
+- Connection Secret: `docs/connection-secret.md`
 - Monitoring and alerting: `docs/monitoring.md`
 - Runbooks: `docs/runbooks/index.md`
 - Upgrade guidance: `docs/upgrade.md`

@@ -21,7 +21,7 @@ rules:
     verbs: [get, list, watch, create]
   - apiGroups: [""]
     resources: [secrets]
-    verbs: [get, list, watch, create, update]
+    verbs: [get, list, watch, create, update, delete]
   - apiGroups: [""]
     resources: [serviceaccounts]
     verbs: [get, list, watch, create]
