@@ -88,6 +88,30 @@ func TestBuildConnectionSecretData(t *testing.T) {
 			},
 		},
 		{
+			name:     "sentinel with TLS uses rediss scheme and keeps discovery keys",
+			password: "pw",
+			mutate: func(c *redisv1.RedisCluster) {
+				c.Spec.Mode = redisv1.ClusterModeSentinel
+				c.Spec.Instances = 3
+				c.Spec.TLSSecret = &redisv1.LocalObjectReference{Name: "tls"}
+				c.Spec.CASecret = &redisv1.LocalObjectReference{Name: "ca"}
+			},
+			wantKeys: []string{
+				"cluster_name", "namespace", "mode", "host", "port", "username", "password",
+				"url", "leader_host", "leader_url", "replica_host", "replica_url",
+				"sentinel_host", "sentinel_port", "master_name",
+			},
+			want: map[string]string{
+				"mode":          "sentinel",
+				"url":           "rediss://default:pw@rc-leader.ns.svc:6379",
+				"leader_url":    "rediss://default:pw@rc-leader.ns.svc:6379",
+				"replica_url":   "rediss://default:pw@rc-replica.ns.svc:6379",
+				"sentinel_host": "rc-sentinel.ns.svc",
+				"sentinel_port": "26379",
+				"master_name":   "rc",
+			},
+		},
+		{
 			name:     "cluster mode uses headless service and omits leader/replica",
 			password: "pw",
 			mutate: func(c *redisv1.RedisCluster) {

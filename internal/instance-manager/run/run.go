@@ -71,10 +71,6 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 	}, &cluster); err != nil {
 		return fmt.Errorf("fetching RedisCluster %s/%s: %w", namespace, clusterName, err)
 	}
-	if err := validateTLSMode(&cluster); err != nil {
-		return err
-	}
-
 	var replicaOfDirective string
 	var masterAuth string
 	if isReplicaModeEnabled(&cluster) {
@@ -335,19 +331,8 @@ func hasTLSSpec(cluster *redisv1.RedisCluster) bool {
 	return cluster.Spec.TLSSecret != nil && cluster.Spec.CASecret != nil
 }
 
-func hasAnyTLSSpecReference(cluster *redisv1.RedisCluster) bool {
-	return cluster.Spec.TLSSecret != nil || cluster.Spec.CASecret != nil
-}
-
 func isTLSEnabled(cluster *redisv1.RedisCluster) bool {
-	return hasTLSSpec(cluster) && cluster.Spec.Mode != redisv1.ClusterModeSentinel
-}
-
-func validateTLSMode(cluster *redisv1.RedisCluster) error {
-	if cluster.Spec.Mode == redisv1.ClusterModeSentinel && hasAnyTLSSpecReference(cluster) {
-		return fmt.Errorf("TLS is not supported in sentinel mode yet")
-	}
-	return nil
+	return hasTLSSpec(cluster)
 }
 
 func redisTLSConfig(cluster *redisv1.RedisCluster) (*tls.Config, error) {

@@ -132,4 +132,88 @@ var _ = Describe("TLS cluster wiring", func() {
 			g.Expect(currentPod.UID).To(Equal(originalUID))
 		}, reconcileTimeout, helpers.DefaultPollingInterval).Should(Succeed())
 	})
+
+	It("projects TLS secrets into sentinel-mode data and sentinel pods", func() {
+		name := uniqueName("tls-sentinel")
+		tlsSecretName := name + "-tls"
+		caSecretName := name + "-ca"
+
+		tlsSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: tlsSecretName, Namespace: namespace},
+			Type:       corev1.SecretTypeTLS,
+			Data: map[string][]byte{
+				"tls.crt": []byte("cert-v1"),
+				"tls.key": []byte("key-v1"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, tlsSecret)).To(Succeed())
+
+		caSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: caSecretName, Namespace: namespace},
+			Type:       corev1.SecretTypeOpaque,
+			Data:       map[string][]byte{"ca.crt": []byte("ca-v1")},
+		}
+		Expect(k8sClient.Create(ctx, caSecret)).To(Succeed())
+
+		spec := helpers.MakeBasicClusterSpec(3)
+		spec.Mode = redisv1.ClusterModeSentinel
+		spec.TLSSecret = &redisv1.LocalObjectReference{Name: tlsSecretName}
+		spec.CASecret = &redisv1.LocalObjectReference{Name: caSecretName}
+
+		cluster, err := helpers.CreateRedisCluster(ctx, k8sClient, namespace, name, spec)
+		Expect(err).NotTo(HaveOccurred())
+
+		DeferCleanup(func() {
+			_ = helpers.DeleteRedisCluster(ctx, k8sClient, cluster)
+			_ = k8sClient.Delete(ctx, tlsSecret)
+			_ = k8sClient.Delete(ctx, caSecret)
+		})
+
+		Expect(helpers.WaitForPodCount(ctx, k8sClient, cluster, 3, reconcileTimeout)).To(Succeed())
+
+		// Data pods serve TLS just like standalone/cluster mode.
+		var dataPod corev1.Pod
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-0", Namespace: namespace}, &dataPod)).To(Succeed())
+		expectTLSCertsProjected(dataPod, tlsSecretName, caSecretName)
+
+		// Sentinel pods mount the same certs so they can monitor over TLS and the
+		// operator can query them over TLS.
+		Eventually(func(g Gomega) {
+			var sentinelPod corev1.Pod
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-sentinel-0", Namespace: namespace}, &sentinelPod)).To(Succeed())
+			expectTLSCertsProjectedG(g, sentinelPod, tlsSecretName, caSecretName)
+		}, reconcileTimeout, helpers.DefaultPollingInterval).Should(Succeed())
+	})
 })
+
+// expectTLSCertsProjected asserts a pod has the tls-certs projected volume and a
+// read-only /tls mount referencing the given TLS and CA secrets.
+func expectTLSCertsProjected(pod corev1.Pod, tlsSecretName, caSecretName string) {
+	expectTLSCertsProjectedG(Default, pod, tlsSecretName, caSecretName)
+}
+
+func expectTLSCertsProjectedG(g Gomega, pod corev1.Pod, tlsSecretName, caSecretName string) {
+	foundVolume := false
+	for _, volume := range pod.Spec.Volumes {
+		if volume.Name != "tls-certs" {
+			continue
+		}
+		foundVolume = true
+		g.Expect(volume.Projected).NotTo(BeNil())
+		g.Expect(volume.Projected.Sources).To(HaveLen(2))
+		g.Expect(volume.Projected.Sources[0].Secret).NotTo(BeNil())
+		g.Expect(volume.Projected.Sources[0].Secret.Name).To(Equal(tlsSecretName))
+		g.Expect(volume.Projected.Sources[1].Secret).NotTo(BeNil())
+		g.Expect(volume.Projected.Sources[1].Secret.Name).To(Equal(caSecretName))
+	}
+	g.Expect(foundVolume).To(BeTrue(), "expected tls-certs projected volume on pod %s", pod.Name)
+
+	foundMount := false
+	for _, mount := range pod.Spec.Containers[0].VolumeMounts {
+		if mount.Name == "tls-certs" && mount.MountPath == "/tls" && mount.ReadOnly {
+			foundMount = true
+			break
+		}
+	}
+	g.Expect(foundMount).To(BeTrue(), "expected read-only /tls mount on pod %s", pod.Name)
+}

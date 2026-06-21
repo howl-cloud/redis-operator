@@ -2,11 +2,13 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -24,6 +26,12 @@ import (
 var sentinelConfPath = "/data/sentinel.conf"
 
 const envProjectedSecretsDir = "REDIS_OPERATOR_PROJECTED_SECRETS_DIR"
+
+// sentinelTLSReloadInterval is how often a TLS-enabled sentinel pod checks its
+// projected cert files for changes. Sentinel pods do not run the instance
+// reconciler, so this loop provides the live cert-reload parity that data pods
+// get from reconcileTLSCerts.
+var sentinelTLSReloadInterval = 30 * time.Second
 
 var projectedSecretsDir = "/projected"
 
@@ -79,8 +87,13 @@ func RunSentinel(ctx context.Context, clusterName, podName, namespace string) er
 	}
 	logger.Info("redis-sentinel started", "pid", sentinelCmd.Process.Pid)
 
+	tlsConfig, err := redisTLSConfig(&cluster)
+	if err != nil {
+		return fmt.Errorf("building sentinel client TLS config: %w", err)
+	}
 	sentinelClient := redis.NewClient(&redis.Options{
-		Addr: fmt.Sprintf("127.0.0.1:%d", redisv1.SentinelPort),
+		Addr:      fmt.Sprintf("127.0.0.1:%d", redisv1.SentinelPort),
+		TLSConfig: tlsConfig,
 	})
 	defer func() { _ = sentinelClient.Close() }()
 
@@ -90,6 +103,10 @@ func RunSentinel(ctx context.Context, clusterName, podName, namespace string) er
 			logger.Error(err, "HTTP server stopped with error")
 		}
 	}()
+
+	if isTLSEnabled(&cluster) {
+		go watchSentinelTLSCerts(ctx, sentinelClient)
+	}
 
 	if err := sentinelCmd.Wait(); err != nil {
 		return fmt.Errorf("redis-sentinel exited: %w", err)
@@ -105,14 +122,31 @@ func writeSentinelConf(cluster *redisv1.RedisCluster, primaryIP, authPass string
 	}
 
 	lines := []string{
-		fmt.Sprintf("port %d", redisv1.SentinelPort),
 		"bind 0.0.0.0",
 		fmt.Sprintf("dir %s", dataDir),
+	}
+	if isTLSEnabled(cluster) {
+		// Sentinel listens on the TLS port only (port 0 disables the plaintext
+		// listener). tls-replication yes makes sentinel connect to monitored
+		// masters and replicas over TLS, matching the data pods' tls-port setup.
+		lines = append(lines,
+			fmt.Sprintf("tls-port %d", redisv1.SentinelPort),
+			"port 0",
+			fmt.Sprintf("tls-cert-file %s", tlsCertPath),
+			fmt.Sprintf("tls-key-file %s", tlsKeyPath),
+			fmt.Sprintf("tls-ca-cert-file %s", tlsCAPath),
+			"tls-auth-clients optional",
+			"tls-replication yes",
+		)
+	} else {
+		lines = append(lines, fmt.Sprintf("port %d", redisv1.SentinelPort))
+	}
+	lines = append(lines,
 		fmt.Sprintf("sentinel monitor %s %s %d %d", cluster.Name, primaryIP, redisPort, redisv1.SentinelQuorum),
 		fmt.Sprintf("sentinel down-after-milliseconds %s 5000", cluster.Name),
 		fmt.Sprintf("sentinel failover-timeout %s 60000", cluster.Name),
 		fmt.Sprintf("sentinel parallel-syncs %s 1", cluster.Name),
-	}
+	)
 	if authPass != "" {
 		lines = append(lines, fmt.Sprintf("sentinel auth-pass %s %s", cluster.Name, authPass))
 	}
@@ -138,4 +172,74 @@ func resolveProjectedSecretsDir() string {
 		return value
 	}
 	return projectedSecretsDir
+}
+
+// watchSentinelTLSCerts reloads TLS material into the running redis-sentinel
+// process when the projected cert files change. Without it, a cert or CA
+// rotation would not take effect until the sentinel pod restarts — and a CA
+// rotation in particular would break the operator's TLS verification of the
+// sentinel until then. Data pods get the equivalent behavior from the instance
+// reconciler, which sentinel pods do not run.
+func watchSentinelTLSCerts(ctx context.Context, sentinelClient *redis.Client) {
+	logger := log.FromContext(ctx)
+
+	lastSum, err := tlsCertsChecksum()
+	if err != nil {
+		logger.Error(err, "Reading initial TLS cert checksum for sentinel reload")
+	}
+
+	ticker := time.NewTicker(sentinelTLSReloadInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sum, err := tlsCertsChecksum()
+			if err != nil {
+				logger.Error(err, "Reading TLS cert checksum for sentinel reload")
+				continue
+			}
+			if sum == lastSum {
+				continue
+			}
+			if err := reloadSentinelTLSCerts(ctx, sentinelClient); err != nil {
+				logger.Error(err, "Reloading TLS certs into sentinel")
+				continue
+			}
+			lastSum = sum
+			logger.Info("Reloaded TLS certificates into sentinel")
+		}
+	}
+}
+
+// tlsCertsChecksum returns a SHA-256 over the concatenated cert, key, and CA
+// files so a change to any of them is detected.
+func tlsCertsChecksum() (string, error) {
+	h := sha256.New()
+	for _, path := range []string{tlsCertPath, tlsKeyPath, tlsCAPath} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("reading TLS file %s: %w", path, err)
+		}
+		_, _ = h.Write(data)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// reloadSentinelTLSCerts points redis-sentinel at the (already-updated) cert
+// files via CONFIG SET, which reloads them without a restart.
+func reloadSentinelTLSCerts(ctx context.Context, sentinelClient *redis.Client) error {
+	updates := []struct{ key, value string }{
+		{"tls-cert-file", tlsCertPath},
+		{"tls-key-file", tlsKeyPath},
+		{"tls-ca-cert-file", tlsCAPath},
+	}
+	for _, u := range updates {
+		if err := sentinelClient.ConfigSet(ctx, u.key, u.value).Err(); err != nil {
+			return fmt.Errorf("CONFIG SET %s: %w", u.key, err)
+		}
+	}
+	return nil
 }

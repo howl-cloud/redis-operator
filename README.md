@@ -46,6 +46,9 @@ Why this matters: the operator can enforce strict pod update ordering, explicit 
   - If `spec.authSecret` is omitted, the operator creates `<cluster>-auth`, persists `spec.authSecret`, and enforces Redis authentication
   - Secrets are mounted via projected volumes and tracked with resource versions in status
   - Secret updates trigger reconciliation and in-pod config refresh logic
+- TLS:
+  - Encrypted Redis traffic in all modes (`standalone`, `sentinel`, `cluster`) via `spec.tlsSecret` + `spec.caSecret`
+  - Encrypts replication and, in sentinel mode, Sentinel monitoring and operator→Sentinel queries; see [docs/tls.md](docs/tls.md)
 
 ## Supported Modes
 

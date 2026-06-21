@@ -30,7 +30,6 @@ var _ webhook.CustomValidator = &RedisClusterValidator{}
 
 const (
 	sentinelInstancesMinMessage      = "sentinel mode requires at least 3 redis instances"
-	sentinelTLSUnsupported           = "TLS is not supported in sentinel mode yet"
 	clusterShardsMinMessage          = "cluster mode requires spec.shards >= 3"
 	clusterInstancesForbiddenMessage = "spec.instances is not allowed in cluster mode; use shards and replicasPerShard"
 	clusterMinSyncUnsupportedMessage = "minSyncReplicas is not supported in cluster mode"
@@ -54,7 +53,7 @@ const (
 	memoryNonPositiveMessage         = "spec.memory.maxMemory must be greater than 0"
 	modeTransitionUnsupportedMessage = "unsupported mode transition; only standalone->sentinel is supported as an in-place migration (set instances>=3 and do not enable TLS). See docs/runbooks/standalone-to-sentinel-migration.md"
 	modeMigrationNotReadyMessage     = "cannot migrate standalone->sentinel until status.currentPrimary is set; wait for the cluster to become Healthy before changing mode"
-	modeMigrationTLSMessage          = "cannot migrate standalone->sentinel in place for a TLS-enabled cluster (sentinel mode does not support TLS yet); clearing tlsSecret/caSecret in the same change would strand the migration. Use the backup/recreate path. See docs/runbooks/standalone-to-sentinel-migration.md"
+	modeMigrationTLSMessage          = "cannot migrate standalone->sentinel in place for a TLS-enabled cluster; the in-place migration does not support TLS (clearing tlsSecret/caSecret in the same change would strand the migration). Sentinel mode itself does support TLS for clusters created as sentinel. Use the backup/recreate path. See docs/runbooks/standalone-to-sentinel-migration.md"
 )
 
 // SetupValidatingWebhookWithManager registers the validating webhook with the manager.
@@ -111,15 +110,6 @@ func (v *RedisClusterValidator) validate(ctx context.Context, cluster *redisv1.R
 			specPath.Child("instances"),
 			cluster.Spec.Instances,
 			sentinelInstancesMinMessage,
-		))
-	}
-
-	if cluster.Spec.Mode == redisv1.ClusterModeSentinel &&
-		(cluster.Spec.TLSSecret != nil || cluster.Spec.CASecret != nil) {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("mode"),
-			cluster.Spec.Mode,
-			sentinelTLSUnsupported,
 		))
 	}
 
@@ -470,9 +460,10 @@ func (v *RedisClusterValidator) validateUpdate(ctx context.Context, oldCluster, 
 }
 
 // validateModeTransition allows only the supported standalone->sentinel in-place
-// migration. The target sentinel invariants (instances >= 3, no TLS) are enforced
-// by validate(); here we gate on a transition allowlist and require an established
-// primary so sentinel has a master to monitor on startup.
+// migration. Sentinel mode itself supports TLS (enforced by validate()), but the
+// in-place migration does not; here we gate on a transition allowlist, require an
+// established primary so sentinel has a master to monitor on startup, and forbid
+// TLS being involved in the flip.
 func validateModeTransition(oldCluster, newCluster *redisv1.RedisCluster, specPath *field.Path) field.ErrorList {
 	modePath := specPath.Child("mode")
 	if oldCluster.Spec.Mode == redisv1.ClusterModeStandalone &&
@@ -480,12 +471,18 @@ func validateModeTransition(oldCluster, newCluster *redisv1.RedisCluster, specPa
 		if newCluster.Status.CurrentPrimary == "" {
 			return field.ErrorList{field.Forbidden(modePath, modeMigrationNotReadyMessage)}
 		}
-		// A TLS-enabled source cannot migrate in place: sentinel mode has no TLS
-		// support, and clearing TLS in the same change would leave the running
-		// primary on TLS while new replicas/sentinels come up without it. Checking
-		// the old spec (not just the new one) closes the clear-TLS-in-same-patch
-		// bypass of the target-spec TLS validation.
-		if oldCluster.Spec.TLSSecret != nil || oldCluster.Spec.CASecret != nil {
+		// The in-place migration cannot involve TLS, regardless of which side
+		// carries it:
+		//   - old spec has TLS: the running primary stays on TLS while new
+		//     replicas/sentinels come up, and clearing TLS in the same patch would
+		//     strand the migration.
+		//   - new spec adds TLS: the existing primary is still serving plaintext
+		//     while the new replicas/sentinels try to use TLS, which equally
+		//     strands the migration.
+		// Checking both specs closes both bypasses of the (now TLS-permissive)
+		// target-spec validation.
+		if oldCluster.Spec.TLSSecret != nil || oldCluster.Spec.CASecret != nil ||
+			newCluster.Spec.TLSSecret != nil || newCluster.Spec.CASecret != nil {
 			return field.ErrorList{field.Forbidden(modePath, modeMigrationTLSMessage)}
 		}
 		return nil
