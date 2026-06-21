@@ -2,12 +2,15 @@ package cluster
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -27,6 +30,11 @@ func (r *ClusterReconciler) reconcileSentinelMaster(ctx context.Context, cluster
 		return fmt.Errorf("listing sentinel pods: %w", err)
 	}
 
+	tlsConfig, err := r.sentinelClientTLSConfig(ctx, cluster)
+	if err != nil {
+		return fmt.Errorf("building sentinel client TLS config: %w", err)
+	}
+
 	logger := log.FromContext(ctx)
 	var masterHost string
 	var queryErrors []string
@@ -39,7 +47,7 @@ func (r *ClusterReconciler) reconcileSentinelMaster(ctx context.Context, cluster
 		attempted++
 		sentinelAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, redisv1.SentinelPort)
 
-		host, _, queryErr := querySentinelMasterFn(ctx, sentinelAddr, cluster.Name)
+		host, _, queryErr := querySentinelMasterFn(ctx, sentinelAddr, cluster.Name, tlsConfig)
 		if queryErr != nil {
 			logger.Error(queryErr, "Failed to query sentinel master", "pod", pod.Name, "addr", sentinelAddr)
 			queryErrors = append(queryErrors, fmt.Sprintf("%s: %v", sentinelAddr, queryErr))
@@ -141,9 +149,67 @@ func (r *ClusterReconciler) updateDataPodRoleLabels(ctx context.Context, cluster
 	return nil
 }
 
-func querySentinelMaster(ctx context.Context, sentinelAddr, masterName string) (host string, port int, err error) {
+// sentinelClientTLSConfig builds the TLS config the operator uses to query
+// sentinel pods. It returns nil when the cluster is not TLS-enabled.
+//
+// The operator dials sentinel pod IPs, which are not present in the server
+// certificate SANs, so hostname verification is skipped in favor of explicit
+// chain verification against the cluster's CA — mirroring the loopback client
+// in the instance manager.
+func (r *ClusterReconciler) sentinelClientTLSConfig(ctx context.Context, cluster *redisv1.RedisCluster) (*tls.Config, error) {
+	if cluster.Spec.CASecret == nil || cluster.Spec.TLSSecret == nil {
+		return nil, nil
+	}
+
+	var caSecret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      cluster.Spec.CASecret.Name,
+		Namespace: cluster.Namespace,
+	}, &caSecret); err != nil {
+		return nil, fmt.Errorf("getting CA secret %s: %w", cluster.Spec.CASecret.Name, err)
+	}
+
+	caPEM, ok := caSecret.Data["ca.crt"]
+	if !ok || len(caPEM) == 0 {
+		return nil, fmt.Errorf("CA secret %s is missing key ca.crt", cluster.Spec.CASecret.Name)
+	}
+
+	rootCAs := x509.NewCertPool()
+	if !rootCAs.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("parsing ca.crt from secret %s", cluster.Spec.CASecret.Name)
+	}
+
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    rootCAs,
+		//nolint:gosec // hostname is intentionally skipped for pod-IP dialing; chain is verified below
+		InsecureSkipVerify: true,
+		VerifyConnection: func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return fmt.Errorf("sentinel did not present a certificate")
+			}
+
+			intermediates := x509.NewCertPool()
+			for _, cert := range state.PeerCertificates[1:] {
+				intermediates.AddCert(cert)
+			}
+
+			if _, err := state.PeerCertificates[0].Verify(x509.VerifyOptions{
+				Roots:         rootCAs,
+				Intermediates: intermediates,
+				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			}); err != nil {
+				return fmt.Errorf("verifying sentinel server certificate chain: %w", err)
+			}
+			return nil
+		},
+	}, nil
+}
+
+func querySentinelMaster(ctx context.Context, sentinelAddr, masterName string, tlsConfig *tls.Config) (host string, port int, err error) {
 	redisClient := redis.NewClient(&redis.Options{
-		Addr: sentinelAddr,
+		Addr:      sentinelAddr,
+		TLSConfig: tlsConfig,
 	})
 	defer func() { _ = redisClient.Close() }()
 

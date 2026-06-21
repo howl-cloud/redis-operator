@@ -372,45 +372,32 @@ func TestWriteRedisConf_WithTLSInSentinelMode(t *testing.T) {
 	require.NoError(t, err)
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 
-	assert.Contains(t, lines, "port 6379")
-	assert.NotContains(t, lines, "tls-port 6379")
-	assert.NotContains(t, lines, "port 0")
+	// Sentinel-mode data pods now serve TLS exactly like standalone/cluster pods.
+	assert.Contains(t, lines, "tls-port 6379")
+	assert.Contains(t, lines, "port 0")
+	assert.Contains(t, lines, "tls-replication yes")
+	assert.NotContains(t, lines, "port 6379")
 }
 
-func TestIsTLSEnabled_SentinelModeDisabled(t *testing.T) {
+func TestIsTLSEnabled_SentinelModeEnabled(t *testing.T) {
 	cluster := &redisv1.RedisCluster{
 		Spec: redisv1.RedisClusterSpec{
 			Mode:      redisv1.ClusterModeSentinel,
 			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
 			CASecret:  &redisv1.LocalObjectReference{Name: "ca-secret"},
+		},
+	}
+	assert.True(t, isTLSEnabled(cluster))
+}
+
+func TestIsTLSEnabled_RequiresBothSecrets(t *testing.T) {
+	cluster := &redisv1.RedisCluster{
+		Spec: redisv1.RedisClusterSpec{
+			Mode:      redisv1.ClusterModeSentinel,
+			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
 		},
 	}
 	assert.False(t, isTLSEnabled(cluster))
-}
-
-func TestValidateTLSMode_SentinelTLSRejected(t *testing.T) {
-	cluster := &redisv1.RedisCluster{
-		Spec: redisv1.RedisClusterSpec{
-			Mode:      redisv1.ClusterModeSentinel,
-			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
-			CASecret:  &redisv1.LocalObjectReference{Name: "ca-secret"},
-		},
-	}
-	err := validateTLSMode(cluster)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not supported in sentinel mode")
-}
-
-func TestValidateTLSMode_SentinelSingleTLSReferenceRejected(t *testing.T) {
-	cluster := &redisv1.RedisCluster{
-		Spec: redisv1.RedisClusterSpec{
-			Mode:      redisv1.ClusterModeSentinel,
-			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
-		},
-	}
-	err := validateTLSMode(cluster)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not supported in sentinel mode")
 }
 
 func TestRedisTLSConfig_Disabled(t *testing.T) {
@@ -574,6 +561,66 @@ func TestWriteSentinelConf_WithAuthPass(t *testing.T) {
 	content := string(data)
 
 	assert.Contains(t, content, "sentinel auth-pass secure-cluster s3cr3t")
+}
+
+func TestWriteSentinelConf_TLSEnabled(t *testing.T) {
+	tmpDir := overrideDataDir(t)
+
+	cluster := &redisv1.RedisCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "tls-cluster",
+		},
+		Spec: redisv1.RedisClusterSpec{
+			Mode:      redisv1.ClusterModeSentinel,
+			TLSSecret: &redisv1.LocalObjectReference{Name: "tls-secret"},
+			CASecret:  &redisv1.LocalObjectReference{Name: "ca-secret"},
+		},
+	}
+	err := writeSentinelConf(cluster, "10.0.0.1", "")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "sentinel.conf"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "tls-port 26379")
+	assert.Contains(t, content, "port 0")
+	assert.Contains(t, content, "tls-cert-file "+tlsCertPath)
+	assert.Contains(t, content, "tls-key-file "+tlsKeyPath)
+	assert.Contains(t, content, "tls-ca-cert-file "+tlsCAPath)
+	assert.Contains(t, content, "tls-auth-clients optional")
+	assert.Contains(t, content, "tls-replication yes")
+	// Monitoring directives are unaffected.
+	assert.Contains(t, content, "sentinel monitor tls-cluster 10.0.0.1 6379 2")
+}
+
+func TestTLSCertsChecksum_ChangesWhenFilesChange(t *testing.T) {
+	overrideTLSPaths(t)
+	require.NoError(t, os.WriteFile(tlsCertPath, []byte("cert-v1"), 0o600))
+	require.NoError(t, os.WriteFile(tlsKeyPath, []byte("key-v1"), 0o600))
+	writeTestCACert(t, tlsCAPath)
+
+	first, err := tlsCertsChecksum()
+	require.NoError(t, err)
+	assert.NotEmpty(t, first)
+
+	// Stable across reads when nothing changes.
+	again, err := tlsCertsChecksum()
+	require.NoError(t, err)
+	assert.Equal(t, first, again)
+
+	// Changes when any of the three files changes.
+	require.NoError(t, os.WriteFile(tlsCertPath, []byte("cert-v2"), 0o600))
+	after, err := tlsCertsChecksum()
+	require.NoError(t, err)
+	assert.NotEqual(t, first, after)
+}
+
+func TestTLSCertsChecksum_MissingFile(t *testing.T) {
+	overrideTLSPaths(t)
+	// No files written.
+	_, err := tlsCertsChecksum()
+	require.Error(t, err)
 }
 
 func TestResolveSentinelAuthPassword_NoneConfigured(t *testing.T) {

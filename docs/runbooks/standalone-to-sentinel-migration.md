@@ -27,9 +27,11 @@ The data plane is identical between the two modes, so the existing primary is
   and any transition to/from `cluster`, are rejected by the validating webhook.
 - The target spec must satisfy the sentinel invariants, enforced at admission:
   - `spec.instances >= 3`
-  - TLS is **not** supported in sentinel mode yet — `spec.tlsSecret` / `spec.caSecret`
-    must be unset. A TLS-enabled standalone cluster cannot migrate in place until
-    sentinel TLS lands; use the [recreate fallback](#fallback-recreate-when-in-place-is-blocked).
+  - The **in-place migration** does not support TLS — `spec.tlsSecret` /
+    `spec.caSecret` must be unset on the source. Sentinel mode itself supports TLS
+    for clusters created as sentinel (see [docs/tls.md](../tls.md)), but a
+    TLS-enabled standalone cluster cannot migrate in place; use the
+    [recreate fallback](#fallback-recreate-when-in-place-is-blocked).
 - The cluster must already have an established primary (`status.currentPrimary`
   set). Migrate only when the cluster is `Healthy`; the webhook rejects the flip
   if no primary is recorded.
@@ -101,14 +103,17 @@ These are preserved automatically — no action required:
 ## Fallback: recreate (when in-place is blocked)
 
 Use this only when in-place migration cannot be used — primarily a TLS-enabled
-standalone cluster, since sentinel mode does not yet support TLS.
+standalone cluster, since the in-place migration path does not support TLS.
+Unlike the in-place path, the recreated sentinel cluster **can** keep TLS
+enabled (sentinel mode supports TLS; see [docs/tls.md](../tls.md)).
 
 1. Take a backup (see the `RedisBackup` docs) and confirm it reaches
    `phase: Completed`.
 2. Delete the standalone `RedisCluster`.
-3. Recreate it with `mode: sentinel`, `instances: 3`, no `tlsSecret`/`caSecret`,
-   the **same** `spec.authSecret`, and `spec.bootstrap.backupName` pointing at the
-   backup so data is restored.
+3. Recreate it with `mode: sentinel`, `instances: 3`, the **same**
+   `spec.authSecret`, and `spec.bootstrap.backupName` pointing at the backup so
+   data is restored. You may retain `tlsSecret`/`caSecret` to keep TLS enabled on
+   the sentinel cluster.
 4. Re-point clients if Service names changed (they will not if the cluster name is
    reused).
 

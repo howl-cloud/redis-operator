@@ -438,35 +438,10 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 	}
 
 	if isTLSEnabled(cluster) {
-		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
-			Name: tlsVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				Projected: &corev1.ProjectedVolumeSource{
-					Sources: []corev1.VolumeProjection{
-						{
-							Secret: &corev1.SecretProjection{
-								LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Spec.TLSSecret.Name},
-								Items: []corev1.KeyToPath{
-									{Key: "tls.crt", Path: "tls.crt"},
-									{Key: "tls.key", Path: "tls.key"},
-								},
-							},
-						},
-						{
-							Secret: &corev1.SecretProjection{
-								LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Spec.CASecret.Name},
-								Items: []corev1.KeyToPath{
-									{Key: "ca.crt", Path: "ca.crt"},
-								},
-							},
-						},
-					},
-				},
-			},
-		})
+		pod.Spec.Volumes = append(pod.Spec.Volumes, tlsCertVolume(cluster))
 		pod.Spec.Containers[0].VolumeMounts = append(
 			pod.Spec.Containers[0].VolumeMounts,
-			corev1.VolumeMount{Name: tlsVolumeName, MountPath: tlsMountPath, ReadOnly: true},
+			tlsCertVolumeMount(),
 		)
 	}
 
@@ -677,6 +652,14 @@ func (r *ClusterReconciler) createSentinelPod(ctx context.Context, cluster *redi
 		pod.Spec.Containers[0].VolumeMounts = append(
 			pod.Spec.Containers[0].VolumeMounts,
 			corev1.VolumeMount{Name: projectedVolumeName, MountPath: projectedMountPath},
+		)
+	}
+
+	if isTLSEnabled(cluster) {
+		pod.Spec.Volumes = append(pod.Spec.Volumes, tlsCertVolume(cluster))
+		pod.Spec.Containers[0].VolumeMounts = append(
+			pod.Spec.Containers[0].VolumeMounts,
+			tlsCertVolumeMount(),
 		)
 	}
 
@@ -899,6 +882,42 @@ func serviceAccountName(clusterName string) string {
 
 func isTLSEnabled(cluster *redisv1.RedisCluster) bool {
 	return cluster.Spec.TLSSecret != nil && cluster.Spec.CASecret != nil
+}
+
+// tlsCertVolume builds the projected volume that mounts the server keypair and
+// CA bundle into a redis or sentinel pod. Callers must guard with isTLSEnabled.
+func tlsCertVolume(cluster *redisv1.RedisCluster) corev1.Volume {
+	return corev1.Volume{
+		Name: tlsVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{
+				Sources: []corev1.VolumeProjection{
+					{
+						Secret: &corev1.SecretProjection{
+							LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Spec.TLSSecret.Name},
+							Items: []corev1.KeyToPath{
+								{Key: "tls.crt", Path: "tls.crt"},
+								{Key: "tls.key", Path: "tls.key"},
+							},
+						},
+					},
+					{
+						Secret: &corev1.SecretProjection{
+							LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Spec.CASecret.Name},
+							Items: []corev1.KeyToPath{
+								{Key: "ca.crt", Path: "ca.crt"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// tlsCertVolumeMount is the read-only mount paired with tlsCertVolume.
+func tlsCertVolumeMount() corev1.VolumeMount {
+	return corev1.VolumeMount{Name: tlsVolumeName, MountPath: tlsMountPath, ReadOnly: true}
 }
 
 func intOrString(port int) intstr.IntOrString {

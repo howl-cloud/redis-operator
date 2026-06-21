@@ -208,7 +208,7 @@ func TestValidateCreate_SentinelModeWithThreeInstances(t *testing.T) {
 	assert.Nil(t, warnings)
 }
 
-func TestValidateCreate_SentinelModeRejectsTLS(t *testing.T) {
+func TestValidateCreate_SentinelModeWithTLS(t *testing.T) {
 	v := &RedisClusterValidator{}
 	cluster := validCluster()
 	cluster.Spec.Mode = redisv1.ClusterModeSentinel
@@ -216,9 +216,9 @@ func TestValidateCreate_SentinelModeRejectsTLS(t *testing.T) {
 	cluster.Spec.TLSSecret = &redisv1.LocalObjectReference{Name: "tls-secret"}
 	cluster.Spec.CASecret = &redisv1.LocalObjectReference{Name: "ca-secret"}
 
-	_, err := v.ValidateCreate(context.Background(), cluster)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), sentinelTLSUnsupported)
+	warnings, err := v.ValidateCreate(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
 }
 
 func TestValidateCreate_TLSSecretRequiresCASecret(t *testing.T) {
@@ -668,7 +668,7 @@ func TestValidateUpdate_StandaloneToSentinelRejectsTLS(t *testing.T) {
 
 	_, err := v.ValidateUpdate(context.Background(), old, new)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), sentinelTLSUnsupported)
+	assert.Contains(t, err.Error(), modeMigrationTLSMessage)
 }
 
 func TestValidateUpdate_StandaloneToSentinelRejectsClearingTLS(t *testing.T) {
@@ -683,6 +683,25 @@ func TestValidateUpdate_StandaloneToSentinelRejectsClearingTLS(t *testing.T) {
 	new.Spec.Mode = redisv1.ClusterModeSentinel
 	new.Spec.TLSSecret = nil
 	new.Spec.CASecret = nil
+	new.Status.CurrentPrimary = "test-cluster-0"
+
+	_, err := v.ValidateUpdate(context.Background(), old, new)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), modeMigrationTLSMessage)
+}
+
+func TestValidateUpdate_StandaloneToSentinelRejectsAddingTLS(t *testing.T) {
+	// A plaintext standalone cluster that enables TLS in the same patch as the
+	// mode flip must be rejected: the existing primary is still serving plaintext
+	// while new replicas/sentinels would try to use TLS, stranding the migration.
+	// Sentinel mode does support TLS for fresh creates — this guard is specific to
+	// the in-place migration.
+	v := &RedisClusterValidator{}
+	old := validCluster()
+	new := validCluster()
+	new.Spec.Mode = redisv1.ClusterModeSentinel
+	new.Spec.TLSSecret = &redisv1.LocalObjectReference{Name: "tls"}
+	new.Spec.CASecret = &redisv1.LocalObjectReference{Name: "ca"}
 	new.Status.CurrentPrimary = "test-cluster-0"
 
 	_, err := v.ValidateUpdate(context.Background(), old, new)
@@ -775,14 +794,13 @@ func TestValidateCreate_TableDriven(t *testing.T) {
 			errSubstr: sentinelInstancesMinMessage,
 		},
 		{
-			name: "sentinel mode with TLS is invalid",
+			name: "sentinel mode with TLS is valid",
 			modify: func(c *redisv1.RedisCluster) {
 				c.Spec.Mode = redisv1.ClusterModeSentinel
+				c.Spec.Instances = 3
 				c.Spec.TLSSecret = &redisv1.LocalObjectReference{Name: "tls-secret"}
 				c.Spec.CASecret = &redisv1.LocalObjectReference{Name: "ca-secret"}
 			},
-			wantErr:   true,
-			errSubstr: sentinelTLSUnsupported,
 		},
 		{
 			name:      "zero instances",
