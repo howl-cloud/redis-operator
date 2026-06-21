@@ -2,8 +2,8 @@ apiVersion: v2
 name: redis-operator
 description: A Kubernetes operator for managing Redis 7.2 clusters with automatic failover, rolling updates, and backup support.
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.2.1
+appVersion: "0.2.1"
 keywords:
   - redis
   - operator

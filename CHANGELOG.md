@@ -6,6 +6,18 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 
 ## [Unreleased]
 
+## [0.2.1]
+
+### Added
+- TLS support for `sentinel` mode: data pods, Sentinel-to-Redis, and Redis-to-Redis traffic are encrypted, and the operator queries Sentinel over TLS. Enable with `spec.tlsSecret` + `spec.caSecret` on a cluster created as `sentinel`. See `docs/tls.md`.
+
+### Changed
+- TLS certificate rotation now also applies to Sentinel pods without a restart (live `CONFIG SET` reload), matching data pod behavior.
+
+### Migration Notes
+- TLS in `sentinel` mode is supported only for clusters created as `sentinel`. The in-place `standalone` → `sentinel` migration still cannot involve TLS (on either the source or target spec); use the backup/recreate path. See `docs/runbooks/standalone-to-sentinel-migration.md`.
+- No CRD schema fields were removed in this release; existing `redis.io/v1` resources remain compatible.
+
 ## [0.2.0]
 
 ### Added

@@ -69,7 +69,7 @@ primary and its data are preserved, with no backup/restore needed. Only
 Set a release version once:
 
 ```bash
-VERSION="v0.2.0"
+VERSION="v0.2.1"
 ```
 
 ### 1) Install the operator
