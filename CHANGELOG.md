@@ -6,6 +6,14 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 
 ## [Unreleased]
 
+## [0.2.2]
+
+### Fixed
+- Seed `/data/users.acl` from `spec.aclConfigSecret` before starting Redis so clusters with an ACL file configured do not fail startup before the instance reconciler can run `ACL LOAD`.
+
+### Changed
+- Run independent setup steps in the kind smoke, chaos, and upgrade GitHub Actions workflows in parallel.
+
 ## [0.2.1]
 
 ### Added
