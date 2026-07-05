@@ -109,6 +109,10 @@ func Run(ctx context.Context, clusterName, podName, namespace string) error {
 		return fmt.Errorf("writing redis.conf: %w", err)
 	}
 
+	if err := seedACLFile(&cluster); err != nil {
+		return fmt.Errorf("seeding ACL file: %w", err)
+	}
+
 	redisCmd := exec.CommandContext(ctx, "redis-server", redisConfPath)
 	redisCmd.Stdout = os.Stdout
 	redisCmd.Stderr = os.Stderr
@@ -273,6 +277,27 @@ func writeRedisConf(cluster *redisv1.RedisCluster, replicaOfDirective, masterAut
 
 	content := strings.Join(lines, "\n") + "\n"
 	return os.WriteFile(redisConfPath, []byte(content), 0644)
+}
+
+// seedACLFile writes the initial /data/users.acl from the projected
+// aclConfigSecret before redis-server starts. redis-server aborts when the
+// aclfile directive points at a missing file, and the reconciler only
+// rewrites the file (with ACL LOAD) after the server is already running.
+func seedACLFile(cluster *redisv1.RedisCluster) error {
+	if cluster.Spec.ACLConfigSecret == nil {
+		return nil
+	}
+	target := filepath.Join(dataDir, "users.acl")
+	content, err := os.ReadFile(filepath.Join(resolveProjectedSecretsDir(), cluster.Spec.ACLConfigSecret.Name, "acl"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Key not projected yet: boot with an empty ACL file; the
+			// reconciler fills it in and issues ACL LOAD once redis is up.
+			return os.WriteFile(target, nil, 0o600)
+		}
+		return fmt.Errorf("reading projected ACL secret %s/acl: %w", cluster.Spec.ACLConfigSecret.Name, err)
+	}
+	return os.WriteFile(target, content, 0o600)
 }
 
 func isReplicaModeEnabled(cluster *redisv1.RedisCluster) bool {

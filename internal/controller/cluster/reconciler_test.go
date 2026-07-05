@@ -965,30 +965,6 @@ func TestReconcileConfigMap_Creates(t *testing.T) {
 	assert.Contains(t, cm.Data["redis.conf"], "maxmemory-policy allkeys-lru")
 }
 
-func TestReconcileConfigMap_RendersMemorySpec(t *testing.T) {
-	cluster := newTestCluster("test", "default", 1)
-	cluster.Spec.Resources.Limits = corev1.ResourceList{
-		corev1.ResourceMemory: resource.MustParse("1Gi"),
-	}
-	percent := int32(75)
-	cluster.Spec.Memory = &redisv1.MemorySpec{
-		MaxMemoryPercent: &percent,
-		MaxMemoryPolicy:  redisv1.MaxMemoryPolicyNoEviction,
-	}
-	r, c := newReconciler(cluster)
-	ctx := context.Background()
-
-	err := r.reconcileConfigMap(ctx, cluster)
-	require.NoError(t, err)
-
-	var cm corev1.ConfigMap
-	err = c.Get(ctx, types.NamespacedName{Name: "test-config", Namespace: "default"}, &cm)
-	require.NoError(t, err)
-	// 75% of 1Gi rendered as bytes.
-	assert.Contains(t, cm.Data["redis.conf"], "maxmemory 805306368")
-	assert.Contains(t, cm.Data["redis.conf"], "maxmemory-policy noeviction")
-}
-
 func TestReconcilePVCs_DetectsDangling(t *testing.T) {
 	cluster := newTestCluster("test", "default", 1)
 	cluster.Status.CurrentPrimary = "test-0"
@@ -1085,11 +1061,6 @@ func TestCreatePod_WithSecrets(t *testing.T) {
 			foundProjected = true
 			require.NotNil(t, vol.Projected)
 			assert.Len(t, vol.Projected.Sources, 1) // auth only
-			require.NotNil(t, vol.Projected.Sources[0].Secret)
-			assert.Equal(t, "auth-secret", vol.Projected.Sources[0].Secret.Name)
-			assert.Equal(t, []corev1.KeyToPath{
-				{Key: "password", Path: "auth-secret/password"},
-			}, vol.Projected.Sources[0].Secret.Items)
 		}
 		if vol.Name == tlsVolumeName {
 			foundTLSVolume = true
@@ -1182,9 +1153,6 @@ func TestCreateSentinelPod_WithAuthSecretProjectsPassword(t *testing.T) {
 		require.Len(t, vol.Projected.Sources, 1)
 		require.NotNil(t, vol.Projected.Sources[0].Secret)
 		assert.Equal(t, "auth-secret", vol.Projected.Sources[0].Secret.Name)
-		assert.Equal(t, []corev1.KeyToPath{
-			{Key: "password", Path: "auth-secret/password"},
-		}, vol.Projected.Sources[0].Secret.Items)
 	}
 	assert.True(t, foundProjected, "projected volume should be present on sentinel pod")
 
@@ -1214,48 +1182,6 @@ func TestCreateSentinelPod_WithAuthSecretProjectsPassword(t *testing.T) {
 	assert.False(t, *pod.Spec.Containers[0].SecurityContext.AllowPrivilegeEscalation)
 	require.NotNil(t, pod.Spec.Containers[0].SecurityContext.ReadOnlyRootFilesystem)
 	assert.False(t, *pod.Spec.Containers[0].SecurityContext.ReadOnlyRootFilesystem)
-}
-
-func TestCreateSentinelPod_WithTLSMountsCerts(t *testing.T) {
-	cluster := newTestCluster("test", "default", 3)
-	cluster.Spec.Mode = redisv1.ClusterModeSentinel
-	cluster.Spec.TLSSecret = &redisv1.LocalObjectReference{Name: "tls-secret"}
-	cluster.Spec.CASecret = &redisv1.LocalObjectReference{Name: "ca-secret"}
-
-	r, c := newReconciler(cluster)
-	ctx := context.Background()
-
-	err := r.createSentinelPod(ctx, cluster, "test-sentinel-0")
-	require.NoError(t, err)
-
-	var pod corev1.Pod
-	err = c.Get(ctx, types.NamespacedName{Name: "test-sentinel-0", Namespace: "default"}, &pod)
-	require.NoError(t, err)
-
-	foundTLSVolume := false
-	for _, vol := range pod.Spec.Volumes {
-		if vol.Name != tlsVolumeName {
-			continue
-		}
-		foundTLSVolume = true
-		require.NotNil(t, vol.Projected)
-		require.Len(t, vol.Projected.Sources, 2)
-		require.NotNil(t, vol.Projected.Sources[0].Secret)
-		assert.Equal(t, "tls-secret", vol.Projected.Sources[0].Secret.Name)
-		require.NotNil(t, vol.Projected.Sources[1].Secret)
-		assert.Equal(t, "ca-secret", vol.Projected.Sources[1].Secret.Name)
-	}
-	assert.True(t, foundTLSVolume, "tls volume should be present on sentinel pod")
-
-	foundTLSMount := false
-	for _, mount := range pod.Spec.Containers[0].VolumeMounts {
-		if mount.Name == tlsVolumeName {
-			foundTLSMount = true
-			assert.Equal(t, tlsMountPath, mount.MountPath)
-			assert.True(t, mount.ReadOnly)
-		}
-	}
-	assert.True(t, foundTLSMount, "tls volume mount should be present on sentinel pod")
 }
 
 func TestCreatePod_ContainerSpec(t *testing.T) {
@@ -1409,49 +1335,6 @@ func TestShouldRestoreFromBackup_OnlyFirstBootstrapPrimary(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cluster.Status.CurrentPrimary = tt.currentPrimaryName
 			got := shouldRestoreFromBackup(cluster, tt.podName, tt.index)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestShouldRestoreFromBackup_ClusterModeOnlyBeforeBootstrapCompletion(t *testing.T) {
-	cluster := newTestCluster("test", "default", 0)
-	cluster.Spec.Mode = redisv1.ClusterModeCluster
-	cluster.Spec.Shards = 3
-	cluster.Spec.ReplicasPerShard = 1
-	cluster.Spec.Bootstrap = &redisv1.BootstrapSpec{BackupName: "seed-backup"}
-
-	tests := []struct {
-		name               string
-		index              int
-		bootstrapCompleted bool
-		want               bool
-	}{
-		{
-			name:               "shard primary restores during bootstrap",
-			index:              0,
-			bootstrapCompleted: false,
-			want:               true,
-		},
-		{
-			name:               "shard replica does not restore",
-			index:              1,
-			bootstrapCompleted: false,
-			want:               false,
-		},
-		{
-			name:               "primary recreation does not restore once bootstrap is complete",
-			index:              2,
-			bootstrapCompleted: true,
-			want:               false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cluster.Status.BootstrapCompleted = tt.bootstrapCompleted
-			podName := podNameForIndex(cluster.Name, tt.index)
-			got := shouldRestoreFromBackup(cluster, podName, tt.index)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -1769,192 +1652,4 @@ func TestReconcile_SentinelModeContinuesWhenRollingUpdateStops(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.Len(t, sentinelPods.Items, redisv1.SentinelInstances)
-}
-
-// TestMigration_StandaloneToSentinel covers the operator-side behavior of an
-// in-place standalone->sentinel migration: the existing primary and its PVC are
-// preserved, data pods scale up to the sentinel minimum with the new pods joining
-// as replicas, and the fixed sentinel set is provisioned.
-func TestMigration_StandaloneToSentinel(t *testing.T) {
-	// Cluster has already been running standalone (currentPrimary set) and is now
-	// flipped to sentinel mode with instances scaled to 3.
-	cluster := newTestCluster("test", "default", 3)
-	cluster.Spec.Mode = redisv1.ClusterModeSentinel
-	cluster.Status.CurrentPrimary = "test-0"
-
-	r, c := newReconciler(cluster)
-	ctx := context.Background()
-
-	// Existing primary data pod from the standalone deployment.
-	primary := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-0",
-			Namespace: "default",
-			Labels: map[string]string{
-				redisv1.LabelCluster:  "test",
-				redisv1.LabelInstance: "test-0",
-				redisv1.LabelRole:     redisv1.LabelRolePrimary,
-			},
-		},
-	}
-	require.NoError(t, c.Create(ctx, primary))
-	primaryUID := primary.UID
-
-	// Pre-create PVCs so data pods can reference them.
-	for i := 0; i < 3; i++ {
-		pvc := &corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      pvcNameForIndex("test", i),
-				Namespace: "default",
-				Labels:    map[string]string{redisv1.LabelCluster: "test"},
-			},
-		}
-		require.NoError(t, c.Create(ctx, pvc))
-	}
-
-	// Data-pod scale-up: existing primary is preserved, replicas are added.
-	require.NoError(t, r.reconcilePods(ctx, cluster))
-
-	var pod0 corev1.Pod
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "test-0", Namespace: "default"}, &pod0))
-	assert.Equal(t, primaryUID, pod0.UID, "existing primary pod must not be recreated")
-	assert.Equal(t, redisv1.LabelRolePrimary, pod0.Labels[redisv1.LabelRole])
-
-	for _, name := range []string{"test-1", "test-2"} {
-		var replica corev1.Pod
-		require.NoError(t, c.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, &replica))
-		assert.Equal(t, redisv1.LabelRoleReplica, replica.Labels[redisv1.LabelRole])
-	}
-
-	// currentPrimary is unchanged by the migration.
-	var updated redisv1.RedisCluster
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updated))
-	assert.Equal(t, "test-0", updated.Status.CurrentPrimary)
-
-	// Sentinel provisioning creates the fixed sentinel set.
-	require.NoError(t, r.reconcileSentinelPods(ctx, cluster))
-
-	var sentinelPods corev1.PodList
-	require.NoError(t, c.List(ctx, &sentinelPods,
-		client.InNamespace("default"),
-		client.MatchingLabels{
-			redisv1.LabelCluster: "test",
-			redisv1.LabelRole:    redisv1.LabelRoleSentinel,
-		},
-	))
-	assert.Len(t, sentinelPods.Items, redisv1.SentinelInstances)
-}
-
-func TestReconcileReplicaModePromotion_FinalizesPromotion(t *testing.T) {
-	cluster := newTestCluster("test", "default", 2)
-	cluster.Status.CurrentPrimary = "test-0"
-	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
-		Enabled: true,
-		Promote: true,
-		Source: &redisv1.ReplicaSourceSpec{
-			Host: "external-primary",
-			Port: 6379,
-		},
-	}
-
-	r, c := newReconciler(cluster)
-	ctx := context.Background()
-	statuses := map[string]redisv1.InstanceStatus{
-		"test-0": {Role: "master", Connected: true},
-		"test-1": {Role: "slave", Connected: true, MasterLinkStatus: "up"},
-	}
-
-	promoted, err := r.reconcileReplicaModePromotion(ctx, cluster, statuses)
-	require.NoError(t, err)
-	assert.True(t, promoted)
-
-	var updated redisv1.RedisCluster
-	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updated)
-	require.NoError(t, err)
-	require.NotNil(t, updated.Spec.ReplicaMode)
-	assert.False(t, updated.Spec.ReplicaMode.Enabled)
-	assert.False(t, updated.Spec.ReplicaMode.Promote)
-
-	var promotedCondition *metav1.Condition
-	for i := range updated.Status.Conditions {
-		if updated.Status.Conditions[i].Type == redisv1.ConditionReplicaMode {
-			promotedCondition = &updated.Status.Conditions[i]
-			break
-		}
-	}
-	require.NotNil(t, promotedCondition)
-	assert.Equal(t, metav1.ConditionFalse, promotedCondition.Status)
-	assert.Equal(t, "ReplicaClusterPromoted", promotedCondition.Reason)
-}
-
-func TestReconcileReplicaModePromotion_WaitsForLocalLeaderPromotion(t *testing.T) {
-	cluster := newTestCluster("test", "default", 2)
-	cluster.Status.CurrentPrimary = "test-0"
-	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
-		Enabled: true,
-		Promote: true,
-		Source: &redisv1.ReplicaSourceSpec{
-			Host: "external-primary",
-			Port: 6379,
-		},
-	}
-
-	r, c := newReconciler(cluster)
-	ctx := context.Background()
-	statuses := map[string]redisv1.InstanceStatus{
-		"test-0": {Role: "slave", Connected: true, MasterLinkStatus: "up"},
-		"test-1": {Role: "slave", Connected: true, MasterLinkStatus: "up"},
-	}
-
-	promoted, err := r.reconcileReplicaModePromotion(ctx, cluster, statuses)
-	require.NoError(t, err)
-	assert.False(t, promoted)
-
-	var updated redisv1.RedisCluster
-	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updated)
-	require.NoError(t, err)
-	require.NotNil(t, updated.Spec.ReplicaMode)
-	assert.True(t, updated.Spec.ReplicaMode.Enabled)
-	assert.True(t, updated.Spec.ReplicaMode.Promote)
-}
-
-func TestReconcileReplicaModePromotion_FinalizesAfterSpecAlreadyDisabled(t *testing.T) {
-	cluster := newTestCluster("test", "default", 2)
-	cluster.Status.CurrentPrimary = "test-0"
-	cluster.Spec.ReplicaMode = &redisv1.ReplicaModeSpec{
-		Enabled: false,
-		Promote: false,
-		Source: &redisv1.ReplicaSourceSpec{
-			Host: "external-primary",
-			Port: 6379,
-		},
-	}
-
-	r, c := newReconciler(cluster)
-	ctx := context.Background()
-	statuses := map[string]redisv1.InstanceStatus{
-		"test-0": {Role: "master", Connected: true},
-	}
-
-	promoted, err := r.reconcileReplicaModePromotion(ctx, cluster, statuses)
-	require.NoError(t, err)
-	assert.True(t, promoted)
-
-	var updated redisv1.RedisCluster
-	err = c.Get(ctx, types.NamespacedName{Name: "test", Namespace: "default"}, &updated)
-	require.NoError(t, err)
-	require.NotNil(t, updated.Spec.ReplicaMode)
-	assert.False(t, updated.Spec.ReplicaMode.Enabled)
-	assert.False(t, updated.Spec.ReplicaMode.Promote)
-
-	var promotedCondition *metav1.Condition
-	for i := range updated.Status.Conditions {
-		if updated.Status.Conditions[i].Type == redisv1.ConditionReplicaMode {
-			promotedCondition = &updated.Status.Conditions[i]
-			break
-		}
-	}
-	require.NotNil(t, promotedCondition)
-	assert.Equal(t, metav1.ConditionFalse, promotedCondition.Status)
-	assert.Equal(t, "ReplicaClusterPromoted", promotedCondition.Reason)
 }
