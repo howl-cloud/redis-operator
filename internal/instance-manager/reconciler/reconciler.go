@@ -442,8 +442,13 @@ func requiresRestart(key string) bool {
 		"tls-port":   true,
 		"unixsocket": true,
 		"databases":  true,
+		"loadmodule": true,
 	}
-	return restartKeys[key]
+	directive := key
+	if i := strings.IndexAny(key, " \t"); i >= 0 {
+		directive = key[:i]
+	}
+	return restartKeys[directive]
 }
 
 func isTLSEnabled(cluster *redisv1.RedisCluster) bool {

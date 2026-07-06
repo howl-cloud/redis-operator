@@ -6,6 +6,11 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 
 ## [Unreleased]
 
+## [0.2.3]
+
+### Fixed
+- Treat Redis `loadmodule` directives as restart-only config so module paths in `spec.redis` are not sent through live `CONFIG SET` reconciliation.
+
 ## [0.2.2]
 
 ### Fixed

@@ -389,6 +389,9 @@ func TestRequiresRestart(t *testing.T) {
 		{"", false},
 		{"appendonly", false},
 		{"hz", false},
+		{"loadmodule", true},
+		{"loadmodule /usr/local/lib/redis/modules/redistimeseries.so", true},
+		{"loadmodule\t/usr/local/lib/redis/modules/rejson.so", true},
 	}
 
 	for _, tt := range tests {

@@ -32,6 +32,8 @@ make manifests  # regenerates config/crd/bases/
 
 **Run `make lint` before finishing.** CI will catch it anyway; fix it locally first.
 
+**Keep code comments sparse.** Avoid verbose comments that restate the implementation; add comments only when they clarify non-obvious intent, invariants, or external contracts.
+
 ---
 
 ## Commands
