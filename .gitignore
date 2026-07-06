@@ -45,3 +45,7 @@ temp/*
 tmp/*
 
 .cursor/hooks/state/
+
+site/
+.cache/
+.venv-docs/
