@@ -28,16 +28,18 @@ const (
 	redisDataMountPath        = "/data"
 	controllerVolumeName      = "controller"
 	controllerMountPath       = "/controller"
-	projectedVolumeName       = "projected-secrets"
-	projectedMountPath        = "/projected"
-	tlsVolumeName             = "tls-certs"
-	tlsMountPath              = "/tls"
-	restoreDataInitName       = "restore-data"
-	backupCredsVolumeName     = "backup-credentials"
-	backupCredsMountPath      = "/backup-credentials"
-	specHashAnnotation        = "redis.io/spec-hash"
-	defaultIsolationTimeout   = 5 * time.Second
-	livenessTimeoutBuffer     = 2 * time.Second
+	// Keep this filename in sync with copy-binary CA bundle staging.
+	stagedCACertPath        = controllerMountPath + "/ca-certificates.crt"
+	projectedVolumeName     = "projected-secrets"
+	projectedMountPath      = "/projected"
+	tlsVolumeName           = "tls-certs"
+	tlsMountPath            = "/tls"
+	restoreDataInitName     = "restore-data"
+	backupCredsVolumeName   = "backup-credentials"
+	backupCredsMountPath    = "/backup-credentials"
+	specHashAnnotation      = "redis.io/spec-hash"
+	defaultIsolationTimeout = 5 * time.Second
+	livenessTimeoutBuffer   = 2 * time.Second
 )
 
 // reconcilePods ensures pods match the desired state: scale up, scale down, rolling updates.
@@ -336,6 +338,7 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 		{Name: "POD_NAME", Value: podName},
 		{Name: "CLUSTER_NAME", Value: cluster.Name},
 		{Name: "POD_NAMESPACE", Value: cluster.Namespace},
+		{Name: "SSL_CERT_FILE", Value: stagedCACertPath},
 	}
 	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
 		envVars = append(envVars, corev1.EnvVar{
@@ -600,6 +603,7 @@ func (r *ClusterReconciler) createSentinelPod(ctx context.Context, cluster *redi
 						{Name: "POD_NAME", Value: podName},
 						{Name: "CLUSTER_NAME", Value: cluster.Name},
 						{Name: "POD_NAMESPACE", Value: cluster.Namespace},
+						{Name: "SSL_CERT_FILE", Value: stagedCACertPath},
 					},
 					LivenessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{

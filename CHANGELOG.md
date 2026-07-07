@@ -6,6 +6,11 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 
 ## [Unreleased]
 
+## [0.2.4]
+
+### Fixed
+- Stage the system CA bundle into Redis pods and set `SSL_CERT_FILE` so the in-pod backup uploader can verify TLS to cloud object storage (the Redis image ships no trust store); fail pod startup if the bundle cannot be staged.
+
 ## [0.2.3]
 
 ### Fixed

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -118,20 +119,36 @@ func instanceCmd() *cobra.Command {
 	return cmd
 }
 
+const systemCACertBundlePath = "/etc/ssl/certs/ca-certificates.crt"
+
 func copyBinaryCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "copy-binary <destination>",
 		Short: "Copy the manager binary to the given path",
-		Long:  "Copies the running binary to <destination>. Used by the copy-manager init container to install the instance manager into a shared emptyDir volume without requiring coreutils.",
+		Long:  "Copies the running binary to <destination>, and stages the system CA bundle alongside it. Used by the copy-manager init container to install the instance manager (and a trust store) into a shared emptyDir volume without requiring coreutils.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			src, err := os.Executable()
 			if err != nil {
 				return fmt.Errorf("resolving executable path: %w", err)
 			}
-			return copyBinary(src, args[0])
+			if err := copyBinary(src, args[0]); err != nil {
+				return err
+			}
+			caDst := filepath.Join(filepath.Dir(args[0]), "ca-certificates.crt")
+			if err := stageCACertBundle(systemCACertBundlePath, caDst); err != nil {
+				return fmt.Errorf("staging CA bundle: %w", err)
+			}
+			return nil
 		},
 	}
+}
+
+func stageCACertBundle(src, dst string) error {
+	if _, err := os.Stat(src); err != nil {
+		return fmt.Errorf("stat CA bundle %s: %w", src, err)
+	}
+	return copyFile(src, dst, 0o644)
 }
 
 func restoreCmd() *cobra.Command {
@@ -176,15 +193,20 @@ func restoreCmd() *cobra.Command {
 }
 
 // copyBinary copies the file at src to dst with executable permissions (0o755).
-// It checks the error on close so that a full-disk condition is not silently swallowed.
 func copyBinary(src, dst string) error {
+	return copyFile(src, dst, 0o755)
+}
+
+// copyFile copies the file at src to dst with the given permissions. It checks
+// the error on close so that a full-disk condition is not silently swallowed.
+func copyFile(src, dst string, perm os.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("opening source %s: %w", src, err)
 	}
 	defer in.Close() //nolint:errcheck // read-only; close error carries no information
 
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
 		return fmt.Errorf("opening destination %s: %w", dst, err)
 	}

@@ -46,6 +46,37 @@ func TestCopyBinary(t *testing.T) {
 	}
 }
 
+func TestStageCACertBundle(t *testing.T) {
+	bundle := []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n")
+	src := filepath.Join(t.TempDir(), "ca-certificates.crt")
+	if err := os.WriteFile(src, bundle, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "ca-certificates.crt")
+	if err := stageCACertBundle(src, dst); err != nil {
+		t.Fatalf("stageCACertBundle: %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(bundle) {
+		t.Errorf("content mismatch: got %q, want %q", got, bundle)
+	}
+}
+
+func TestStageCACertBundleMissingSourceFails(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "ca-certificates.crt")
+	if err := stageCACertBundle("/nonexistent/ca-certificates.crt", dst); err == nil {
+		t.Fatal("expected error for missing source, got nil")
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Errorf("expected no destination file to be written, stat err = %v", err)
+	}
+}
+
 func TestCopyBinarySourceNotFound(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "dst")
 	err := copyBinary("/nonexistent/path/to/binary", dst)
