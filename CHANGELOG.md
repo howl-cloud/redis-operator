@@ -6,6 +6,15 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 
 ## [Unreleased]
 
+## [0.2.5]
+
+### Fixed
+- Set a controller `ownerReference` on managed Redis data and sentinel pods, and adopt existing pods that have no controller reference. Without an owner the cluster-autoscaler and `kubectl drain` treat these pods as unmanaged and refuse to evict them, pinning otherwise-empty nodes. Adoption is a metadata-only patch, so running pods are adopted in place without a restart.
+- Publish the container image under its bare semantic version (`0.2.5`) in addition to the `v`-prefixed tag, so a chart install that defaults `image.tag` to the chart `appVersion` resolves to an image that exists.
+
+### Changed
+- Managed pods are now garbage-collected when their `RedisCluster` is deleted (previously they were orphaned). PersistentVolumeClaims carry no owner reference and are unaffected, so retained data survives cluster deletion.
+
 ## [0.2.4]
 
 ### Fixed
