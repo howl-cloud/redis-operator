@@ -177,9 +177,15 @@ jobs:
           # Tag format:
           #   • all publish events           → ghcr.io/…/redis-operator:<short-sha>
           #   • version tag pushes (refs/tags/v*) → ghcr.io/…/redis-operator:vX.Y.Z
+          #                                       → ghcr.io/…/redis-operator:X.Y.Z
+          # The bare semver tag matters because the Helm chart defaults image.tag
+          # to .Chart.AppVersion, and chart-release.yml derives appVersion from the
+          # git tag with the leading "v" stripped. Without it a plain `helm install`
+          # resolves an image tag that was never published.
           tags: |
             type=sha,format=short
             type=ref,event=tag
+            type=semver,pattern={{version}}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
