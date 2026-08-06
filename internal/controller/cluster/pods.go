@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
@@ -38,6 +39,7 @@ const (
 	backupCredsVolumeName   = "backup-credentials"
 	backupCredsMountPath    = "/backup-credentials"
 	specHashAnnotation      = "redis.io/spec-hash"
+	safeToEvictAnnotation   = "cluster-autoscaler.kubernetes.io/safe-to-evict"
 	defaultIsolationTimeout = 5 * time.Second
 	livenessTimeoutBuffer   = 2 * time.Second
 )
@@ -190,6 +192,22 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 				existing.Labels[key] = value
 				changed = true
 			}
+		}
+		// Pods are managed directly rather than through a StatefulSet, so without an
+		// owner reference the autoscaler and drain treat them as unmanaged and refuse
+		// to evict them. Adopt pods created before the operator started setting one.
+		if len(existing.OwnerReferences) == 0 {
+			if err := controllerutil.SetControllerReference(cluster, &existing, r.Scheme); err != nil {
+				return fmt.Errorf("setting pod %s owner reference: %w", podName, err)
+			}
+			changed = true
+		}
+		if existing.Annotations[safeToEvictAnnotation] != "true" {
+			if existing.Annotations == nil {
+				existing.Annotations = make(map[string]string)
+			}
+			existing.Annotations[safeToEvictAnnotation] = "true"
+			changed = true
 		}
 		if changed {
 			if err := r.Patch(ctx, &existing, patch); err != nil {
@@ -357,7 +375,8 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 			Namespace: cluster.Namespace,
 			Labels:    labels,
 			Annotations: map[string]string{
-				specHashAnnotation: desiredHash,
+				specHashAnnotation:    desiredHash,
+				safeToEvictAnnotation: "true",
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -469,6 +488,10 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 		)
 	}
 
+	if err := controllerutil.SetControllerReference(cluster, pod, r.Scheme); err != nil {
+		return fmt.Errorf("setting pod owner reference: %w", err)
+	}
+
 	if err := r.Create(ctx, pod); err != nil {
 		return fmt.Errorf("creating pod: %w", err)
 	}
@@ -532,6 +555,19 @@ func (r *ClusterReconciler) createSentinelPod(ctx context.Context, cluster *redi
 				changed = true
 			}
 		}
+		if len(existing.OwnerReferences) == 0 {
+			if err := controllerutil.SetControllerReference(cluster, &existing, r.Scheme); err != nil {
+				return fmt.Errorf("setting sentinel pod %s owner reference: %w", podName, err)
+			}
+			changed = true
+		}
+		if existing.Annotations[safeToEvictAnnotation] != "true" {
+			if existing.Annotations == nil {
+				existing.Annotations = make(map[string]string)
+			}
+			existing.Annotations[safeToEvictAnnotation] = "true"
+			changed = true
+		}
 		if changed {
 			if err := r.Patch(ctx, &existing, patch); err != nil {
 				return fmt.Errorf("patching sentinel pod %s labels: %w", podName, err)
@@ -559,6 +595,9 @@ func (r *ClusterReconciler) createSentinelPod(ctx context.Context, cluster *redi
 			Name:      podName,
 			Namespace: cluster.Namespace,
 			Labels:    labels,
+			Annotations: map[string]string{
+				safeToEvictAnnotation: "true",
+			},
 		},
 		Spec: corev1.PodSpec{
 			ServiceAccountName:        serviceAccountName(cluster.Name),
@@ -665,6 +704,10 @@ func (r *ClusterReconciler) createSentinelPod(ctx context.Context, cluster *redi
 			pod.Spec.Containers[0].VolumeMounts,
 			tlsCertVolumeMount(),
 		)
+	}
+
+	if err := controllerutil.SetControllerReference(cluster, pod, r.Scheme); err != nil {
+		return fmt.Errorf("setting sentinel pod owner reference: %w", err)
 	}
 
 	if err := r.Create(ctx, pod); err != nil {
