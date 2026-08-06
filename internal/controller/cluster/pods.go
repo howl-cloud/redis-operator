@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
@@ -191,9 +192,18 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 				changed = true
 			}
 		}
+		// Pods are managed directly rather than through a StatefulSet, so without an
+		// owner reference the autoscaler and drain treat them as unmanaged and refuse
+		// to evict them. Adopt pods created before the operator started setting one.
+		if metav1.GetControllerOf(&existing) == nil {
+			if err := controllerutil.SetControllerReference(cluster, &existing, r.Scheme); err != nil {
+				return fmt.Errorf("setting pod %s owner reference: %w", podName, err)
+			}
+			changed = true
+		}
 		if changed {
 			if err := r.Patch(ctx, &existing, patch); err != nil {
-				return fmt.Errorf("patching pod %s labels: %w", podName, err)
+				return fmt.Errorf("patching pod %s metadata: %w", podName, err)
 			}
 		}
 		return nil
@@ -469,6 +479,10 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 		)
 	}
 
+	if err := controllerutil.SetControllerReference(cluster, pod, r.Scheme); err != nil {
+		return fmt.Errorf("setting pod owner reference: %w", err)
+	}
+
 	if err := r.Create(ctx, pod); err != nil {
 		return fmt.Errorf("creating pod: %w", err)
 	}
@@ -532,9 +546,15 @@ func (r *ClusterReconciler) createSentinelPod(ctx context.Context, cluster *redi
 				changed = true
 			}
 		}
+		if metav1.GetControllerOf(&existing) == nil {
+			if err := controllerutil.SetControllerReference(cluster, &existing, r.Scheme); err != nil {
+				return fmt.Errorf("setting sentinel pod %s owner reference: %w", podName, err)
+			}
+			changed = true
+		}
 		if changed {
 			if err := r.Patch(ctx, &existing, patch); err != nil {
-				return fmt.Errorf("patching sentinel pod %s labels: %w", podName, err)
+				return fmt.Errorf("patching sentinel pod %s metadata: %w", podName, err)
 			}
 		}
 		return nil
@@ -665,6 +685,10 @@ func (r *ClusterReconciler) createSentinelPod(ctx context.Context, cluster *redi
 			pod.Spec.Containers[0].VolumeMounts,
 			tlsCertVolumeMount(),
 		)
+	}
+
+	if err := controllerutil.SetControllerReference(cluster, pod, r.Scheme); err != nil {
+		return fmt.Errorf("setting sentinel pod owner reference: %w", err)
 	}
 
 	if err := r.Create(ctx, pod); err != nil {
