@@ -264,23 +264,20 @@ func (r *ClusterReconciler) reconcileGlobalResources(ctx context.Context, cluste
 // SetupWithManager registers the reconciler with the controller-runtime manager.
 func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		// Every reconcile writes status (pollInstanceStatuses stamps a fresh
+		// LastSeenAt), and without a filter each write wakes this controller
+		// again through its own watch. Status updates leave the generation
+		// alone; annotations and labels stay watched so operator-driven flows
+		// such as redis.io/approve-primary-update react immediately.
 		For(&redisv1.RedisCluster{}, builder.WithPredicates(predicate.Or(
-			// Every reconcile writes status — pollInstanceStatuses stamps a fresh
-			// LastSeenAt per instance, so the object always differs. Without a
-			// filter each of those writes wakes this controller again through its
-			// own watch, so a steady-state cluster reconciles as fast as the API
-			// server answers rather than once per requeueInterval.
-			//
-			// Status updates leave the generation alone, so reconciling on
-			// generation covers real spec edits, while the annotation and label
-			// predicates keep operator-driven flows responsive — notably the
-			// redis.io/approve-primary-update annotation used by the supervised
-			// primary update strategy. Periodic work still arrives via the
-			// RequeueAfter returned from Reconcile.
 			predicate.GenerationChangedPredicate{},
 			predicate.AnnotationChangedPredicate{},
 			predicate.LabelChangedPredicate{},
 		))).
+		// Failover is decided inside Reconcile, so watch managed pods to notice
+		// a dead instance immediately rather than up to requeueInterval later.
+		// Relies on the controller ownerReference set on managed pods.
+		Owns(&corev1.Pod{}).
 		Named("cluster-reconciler").
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: r.MaxConcurrentReconciles,

@@ -155,12 +155,7 @@ func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.R
 	)
 	cluster.Status.Conditions = carryTransitionTimes(existingConditions, cluster.Status.Conditions)
 
-	// Skip the write entirely when nothing moved. Issuing the patch anyway still
-	// updates our field manager's entry in metadata.managedFields, which counts
-	// as a write: it bumps the resourceVersion, fires the RedisCluster watch and
-	// schedules the next reconcile immediately. That is a closed loop, so a
-	// steady-state cluster reconciles as fast as the API server can answer
-	// instead of once per requeueInterval.
+	// Avoid a pointless write when nothing moved.
 	if equality.Semantic.DeepEqual(before.Status, cluster.Status) {
 		return nil
 	}
@@ -271,17 +266,9 @@ func preserveConditions(existing, current []metav1.Condition, conditionTypes ...
 }
 
 // carryTransitionTimes keeps the previous LastTransitionTime for every condition
-// whose Status has not changed.
-//
-// determineConditions rebuilds the condition set from scratch on each pass and
-// stamps every condition with the current time. That makes the status patch
-// differ from the stored object on every reconcile even when nothing actually
-// changed, which bumps the resourceVersion, fires the RedisCluster watch, and
-// immediately schedules another reconcile — a self-sustaining loop that runs as
-// fast as the API server answers, independent of requeueInterval.
-//
-// LastTransitionTime is defined as the last time the condition transitioned from
-// one status to another, so it must only move when Status moves.
+// whose Status has not changed. determineConditions rebuilds the set with the
+// current time on each pass, but LastTransitionTime marks the last change of
+// Status, so it must only move when Status moves.
 func carryTransitionTimes(existing, current []metav1.Condition) []metav1.Condition {
 	for i := range current {
 		for j := range existing {
