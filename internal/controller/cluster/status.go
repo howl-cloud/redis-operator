@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -99,7 +100,8 @@ func pollPodStatus(ctx context.Context, httpClient *http.Client, url string) (*p
 
 // updateStatus writes collected instance statuses into the cluster status.
 func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.RedisCluster, instanceStatuses map[string]redisv1.InstanceStatus) error {
-	patch := client.MergeFrom(cluster.DeepCopy())
+	before := cluster.DeepCopy()
+	patch := client.MergeFrom(before)
 	existingConditions := append([]metav1.Condition(nil), cluster.Status.Conditions...)
 
 	cluster.Status.InstancesStatus = instanceStatuses
@@ -151,6 +153,17 @@ func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.R
 		redisv1.ConditionPVCResizeInProgress,
 		redisv1.ConditionReplicaMode,
 	)
+	cluster.Status.Conditions = carryTransitionTimes(existingConditions, cluster.Status.Conditions)
+
+	// Skip the write entirely when nothing moved. Issuing the patch anyway still
+	// updates our field manager's entry in metadata.managedFields, which counts
+	// as a write: it bumps the resourceVersion, fires the RedisCluster watch and
+	// schedules the next reconcile immediately. That is a closed loop, so a
+	// steady-state cluster reconciles as fast as the API server can answer
+	// instead of once per requeueInterval.
+	if equality.Semantic.DeepEqual(before.Status, cluster.Status) {
+		return nil
+	}
 
 	return r.Status().Patch(ctx, cluster, patch)
 }
@@ -254,6 +267,33 @@ func preserveConditions(existing, current []metav1.Condition, conditionTypes ...
 		}
 	}
 
+	return current
+}
+
+// carryTransitionTimes keeps the previous LastTransitionTime for every condition
+// whose Status has not changed.
+//
+// determineConditions rebuilds the condition set from scratch on each pass and
+// stamps every condition with the current time. That makes the status patch
+// differ from the stored object on every reconcile even when nothing actually
+// changed, which bumps the resourceVersion, fires the RedisCluster watch, and
+// immediately schedules another reconcile — a self-sustaining loop that runs as
+// fast as the API server answers, independent of requeueInterval.
+//
+// LastTransitionTime is defined as the last time the condition transitioned from
+// one status to another, so it must only move when Status moves.
+func carryTransitionTimes(existing, current []metav1.Condition) []metav1.Condition {
+	for i := range current {
+		for j := range existing {
+			if existing[j].Type != current[i].Type {
+				continue
+			}
+			if existing[j].Status == current[i].Status {
+				current[i].LastTransitionTime = existing[j].LastTransitionTime
+			}
+			break
+		}
+	}
 	return current
 }
 
