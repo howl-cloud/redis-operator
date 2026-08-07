@@ -11,9 +11,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
@@ -22,6 +24,7 @@ import (
 const (
 	// requeueInterval is the default requeue interval for periodic reconciliation.
 	requeueInterval = 30 * time.Second
+
 	// statusPollTimeout is the timeout for HTTP status polls to instance managers.
 	statusPollTimeout = 5 * time.Second
 	// defaultMaxConcurrentReconciles is the default number of parallel reconciles.
@@ -213,7 +216,7 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 					return reconcile.Result{}, fmt.Errorf("rolling restart for PVC resize: %w", err)
 				}
 				if stop {
-					return reconcile.Result{}, nil
+					return reconcile.Result{RequeueAfter: requeueInterval}, nil
 				}
 			}
 
@@ -235,7 +238,7 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 		}
 	}
 	if stop {
-		return reconcile.Result{}, nil
+		return reconcile.Result{RequeueAfter: requeueInterval}, nil
 	}
 
 	return reconcile.Result{RequeueAfter: requeueInterval}, nil
@@ -261,7 +264,23 @@ func (r *ClusterReconciler) reconcileGlobalResources(ctx context.Context, cluste
 // SetupWithManager registers the reconciler with the controller-runtime manager.
 func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&redisv1.RedisCluster{}).
+		For(&redisv1.RedisCluster{}, builder.WithPredicates(predicate.Or(
+			// Every reconcile writes status — pollInstanceStatuses stamps a fresh
+			// LastSeenAt per instance, so the object always differs. Without a
+			// filter each of those writes wakes this controller again through its
+			// own watch, so a steady-state cluster reconciles as fast as the API
+			// server answers rather than once per requeueInterval.
+			//
+			// Status updates leave the generation alone, so reconciling on
+			// generation covers real spec edits, while the annotation and label
+			// predicates keep operator-driven flows responsive — notably the
+			// redis.io/approve-primary-update annotation used by the supervised
+			// primary update strategy. Periodic work still arrives via the
+			// RequeueAfter returned from Reconcile.
+			predicate.GenerationChangedPredicate{},
+			predicate.AnnotationChangedPredicate{},
+			predicate.LabelChangedPredicate{},
+		))).
 		Named("cluster-reconciler").
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: r.MaxConcurrentReconciles,

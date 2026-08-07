@@ -6,6 +6,14 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 
 ## [Unreleased]
 
+## [0.2.6]
+
+### Fixed
+- Stop the cluster reconciler from re-triggering itself through its own status writes. Every reconcile stamps a fresh `lastSeenAt` per instance, so each pass wrote the RedisCluster, and that write woke the controller again through its own watch. A steady-state cluster reconciled as fast as the API server could answer — roughly 8 times per second per cluster, indefinitely — instead of once per 30s requeue. Status updates leave the generation alone, so the watch now filters on generation, annotation and label changes; the `redis.io/approve-primary-update` annotation still wakes the controller immediately.
+- Only move a condition's `LastTransitionTime` when its `Status` actually changes. Rebuilding the condition set with the current timestamp on every pass made each status patch differ from the stored object, which is what kept the write-wake cycle fed.
+- Skip the status patch entirely when nothing changed, so a quiet cluster performs no writes between requeues.
+- Requeue explicitly when a reconcile stops early for an in-flight rolling update or PVC-resize restart. Those paths returned an empty result and only resumed because a status write happened to wake the controller; without that accident they would stall until an unrelated event arrived.
+
 ## [0.2.5]
 
 ### Fixed
