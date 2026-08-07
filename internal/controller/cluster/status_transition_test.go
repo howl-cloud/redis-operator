@@ -13,10 +13,8 @@ import (
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 )
 
-// A steady-state reconcile must not rewrite LastTransitionTime. When it does,
-// every status patch differs from the stored object, which bumps the
-// resourceVersion, fires the RedisCluster watch and immediately schedules
-// another reconcile — a loop that spins as fast as the API server answers.
+// A steady-state reconcile must not rewrite LastTransitionTime, otherwise every
+// status patch differs from the stored object and writes for no reason.
 func TestUpdateStatus_StableConditionsKeepTransitionTime(t *testing.T) {
 	cluster := newTestCluster("test", "default", 3)
 	cluster.Status.CurrentPrimary = "test-0"

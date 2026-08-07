@@ -1633,10 +1633,8 @@ func TestReconcile_SentinelModeContinuesWhenRollingUpdateStops(t *testing.T) {
 
 	result, err := r.reconcile(ctx, cluster)
 	require.NoError(t, err)
-	// A stopped rolling update must schedule its own continuation. This used to
-	// return a zero Result and only resumed because each status write woke the
-	// controller through its own watch; that feedback loop is now filtered out,
-	// so the requeue has to be explicit.
+	// A stopped rolling update must schedule its own continuation rather than
+	// relying on an unrelated event to wake the controller.
 	assert.Equal(t, requeueInterval, result.RequeueAfter)
 
 	var updated redisv1.RedisCluster
