@@ -131,6 +131,9 @@ func (r *ClusterReconciler) reconcileClusterBootstrap(
 			continue
 		}
 		shardIndex := layout.shardOf[podName]
+		if layout.handingOver(shardIndex) {
+			continue
+		}
 		primaryNodeID := statuses[layout.primaryOf[shardIndex]].NodeID
 		if primaryNodeID == "" {
 			return false, nil

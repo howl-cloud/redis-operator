@@ -201,6 +201,9 @@ func TestPlanShardLayout(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			layout := planShardLayout(tt.cluster, tt.pods, tt.statuses)
+			for shard := range layout.ownerOf {
+				assert.False(t, layout.handingOver(shard), "no handover expected in this case")
+			}
 			assert.Equal(t, tt.wantShardOf, layout.shardOf)
 			assert.Equal(t, tt.wantPrimaryOf, layout.primaryOf)
 		})
@@ -219,4 +222,52 @@ func TestShardLayoutLabels(t *testing.T) {
 		redisv1.LabelShardRole: redisv1.LabelRoleReplica,
 	}, layout.labels("test-4"))
 	assert.Nil(t, layout.labels("test-9"))
+}
+
+func TestPlanShardLayout_ScaleDownHandsDoomedOwnersToSurvivors(t *testing.T) {
+	ranges := calculateClusterSlotRanges(3)
+
+	t.Run("surviving replica inherits", func(t *testing.T) {
+		// After a failover pod 3 owns s0 and pod 0 replicates from it; replicas
+		// per shard drops to 0, so pods 3..5 will be deleted.
+		cluster := newClusterModeCluster(3, 0)
+		pods := []corev1.Pod{
+			shardPod("test-0", "s0", "replica"), shardPod("test-1", "s1", "primary"),
+			shardPod("test-2", "s2", "primary"), shardPod("test-3", "s0", "primary"),
+			shardPod("test-4", "s1", "replica"), shardPod("test-5", "s2", "replica"),
+		}
+		statuses := map[string]redisv1.InstanceStatus{
+			"test-0": replicaStatus("n0", "n3"), "test-3": ownerStatus("n3", ranges[0]),
+			"test-1": ownerStatus("n1", ranges[1]), "test-4": replicaStatus("n4", "n1"),
+			"test-2": ownerStatus("n2", ranges[2]), "test-5": replicaStatus("n5", "n2"),
+		}
+		layout := planShardLayout(cluster, pods, statuses)
+		assert.Equal(t, "test-3", layout.ownerOf[0])
+		assert.Equal(t, "test-0", layout.primaryOf[0])
+		assert.True(t, layout.handingOver(0))
+		assert.False(t, layout.handingOver(1))
+		assert.Equal(t, map[int]string{0: "test-0", 1: "test-1", 2: "test-2"}, layout.primaryOf)
+	})
+
+	t.Run("legacy layout borrows a surviving replica when a whole shard is doomed", func(t *testing.T) {
+		// Old layout: primaries 0,2,4 with replicas 1,3,5. Dropping to 0 replicas
+		// deletes pods 3..5, which is all of shard s2.
+		cluster := newClusterModeCluster(3, 0)
+		pods := []corev1.Pod{
+			shardPod("test-0", "s0", "primary"), shardPod("test-1", "s0", "replica"),
+			shardPod("test-2", "s1", "primary"), shardPod("test-3", "s1", "replica"),
+			shardPod("test-4", "s2", "primary"), shardPod("test-5", "s2", "replica"),
+		}
+		statuses := map[string]redisv1.InstanceStatus{
+			"test-0": ownerStatus("n0", ranges[0]), "test-1": replicaStatus("n1", "n0"),
+			"test-2": ownerStatus("n2", ranges[1]), "test-3": replicaStatus("n3", "n2"),
+			"test-4": ownerStatus("n4", ranges[2]), "test-5": replicaStatus("n5", "n4"),
+		}
+		layout := planShardLayout(cluster, pods, statuses)
+		assert.Equal(t, "test-4", layout.ownerOf[2])
+		assert.Equal(t, "test-1", layout.primaryOf[2], "pod 1 is the only survivor that is not a primary")
+		assert.Equal(t, 2, layout.shardOf["test-1"])
+		assert.Equal(t, []string{"test-0"}, layout.members[0])
+		assert.True(t, layout.handingOver(2))
+	})
 }

@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -133,6 +134,10 @@ func (r *ClusterReconciler) reconcileClusterReshard(
 				return false, nil
 			}
 
+			if podIndex(cluster.Name, owner) >= desiredInstances && len(targetStatus.SlotsServed) == 0 {
+				return false, r.handOverShard(ctx, httpClient, cluster, owner, sourceStatus, targetPodName, targetPod, targetStatus)
+			}
+
 			if err := postClusterJSON(ctx, httpClient, sourcePod.Status.PodIP, "/v1/cluster/migrate-range", clusterMigrateRangePayload{
 				TargetIP:     targetPod.Status.PodIP,
 				TargetPort:   6379,
@@ -157,4 +162,40 @@ func (r *ClusterReconciler) reconcileClusterReshard(
 	}
 
 	return true, nil
+}
+
+// handOverShard moves a whole shard from a pod that is about to be deleted to
+// a surviving pod without copying keys: the heir first replicates from the
+// owner, then takes over with CLUSTER FAILOVER once its link is up.
+func (r *ClusterReconciler) handOverShard(
+	ctx context.Context,
+	httpClient *http.Client,
+	cluster *redisv1.RedisCluster,
+	owner string,
+	ownerStatus redisv1.InstanceStatus,
+	heir string,
+	heirPod corev1.Pod,
+	heirStatus redisv1.InstanceStatus,
+) error {
+	if heirStatus.Role != "slave" || heirStatus.PrimaryNodeID != ownerStatus.NodeID {
+		if err := postClusterJSON(ctx, httpClient, heirPod.Status.PodIP, "/v1/cluster/replicate", clusterReplicatePayload{
+			NodeID: ownerStatus.NodeID,
+		}); err != nil {
+			var httpErr *clusterHTTPError
+			if errors.As(err, &httpErr) && httpErr.status == http.StatusConflict {
+				return nil
+			}
+			return fmt.Errorf("attaching %s to doomed primary %s: %w", heir, owner, err)
+		}
+		r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "ShardHandover", "Replicating %s from %s before scale-down", heir, owner)
+		return nil
+	}
+	if heirStatus.MasterLinkStatus != "up" {
+		return nil
+	}
+	if err := postClusterJSON(ctx, httpClient, heirPod.Status.PodIP, "/v1/promote", struct{}{}); err != nil {
+		return fmt.Errorf("promoting %s over doomed primary %s: %w", heir, owner, err)
+	}
+	r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "ShardHandover", "Promoted %s to take over from %s before scale-down", heir, owner)
+	return nil
 }

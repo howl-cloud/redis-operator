@@ -199,7 +199,7 @@ func deriveClusterStatus(
 		shardStatus := shards[shardName]
 		shardStatus.Epoch = maxInt64(shardStatus.Epoch, status.CurrentEpoch)
 
-		if layout.isPrimary(podName) {
+		if layout.isPrimary(podName) && !layout.handingOver(shardIndex) || layout.ownerOf[shardIndex] == podName {
 			shardStatus.PrimaryPod = podName
 			shardStatus.PrimaryNodeID = status.NodeID
 			shardStatus.SlotRanges = append([]redisv1.SlotRange(nil), status.SlotsServed...)

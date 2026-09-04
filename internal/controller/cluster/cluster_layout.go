@@ -20,10 +20,23 @@ import (
 // primaries first, then to balance replicas. Pod ordinals never decide
 // membership by themselves, so changing spec.replicasPerShard cannot turn an
 // existing primary into a replica.
+//
+// A slot owner whose ordinal is beyond the desired pod count is about to be
+// deleted by a scale-down. It stays the shard's owner (ownerOf) but a surviving
+// pod is chosen as primaryOf, and reshard hands the shard over before the
+// owner goes away.
 type shardLayout struct {
 	shardOf   map[string]int
 	primaryOf map[int]string
+	ownerOf   map[int]string
 	members   map[int][]string
+}
+
+// handingOver reports whether the shard's slots still sit on a pod other than
+// its chosen primary.
+func (l shardLayout) handingOver(shard int) bool {
+	owner, ok := l.ownerOf[shard]
+	return ok && owner != l.primaryOf[shard]
 }
 
 func (l shardLayout) isPrimary(podName string) bool {
@@ -78,6 +91,7 @@ func planShardLayout(
 	layout := shardLayout{
 		shardOf:   make(map[string]int),
 		primaryOf: make(map[int]string),
+		ownerOf:   make(map[int]string),
 		members:   make(map[int][]string),
 	}
 	if cluster == nil {
@@ -85,10 +99,12 @@ func planShardLayout(
 	}
 
 	shardCount := desiredShardCount(cluster)
+	desired := int(cluster.Spec.DesiredDataInstances())
+	doomed := func(name string) bool { return podIndex(cluster.Name, name) >= desired }
 
 	seen := make(map[string]bool)
 	var names []string
-	for index := 0; index < int(cluster.Spec.DesiredDataInstances()); index++ {
+	for index := 0; index < desired; index++ {
 		name := podNameForIndex(cluster.Name, index)
 		seen[name] = true
 		names = append(names, name)
@@ -134,20 +150,24 @@ func planShardLayout(
 			owners = append(owners, name)
 		}
 	}
+	claim := func(name string, shard int) {
+		assign(name, shard)
+		layout.ownerOf[shard] = name
+		if !doomed(name) {
+			layout.primaryOf[shard] = name
+		}
+	}
 	for _, match := range rankOwnersByOverlap(owners, statuses, calculateClusterSlotRanges(shardCount)) {
 		if _, done := layout.shardOf[match.pod]; done || used[match.shard] {
 			continue
 		}
-		assign(match.pod, match.shard)
-		layout.primaryOf[match.shard] = match.pod
+		claim(match.pod, match.shard)
 	}
 	for _, name := range owners {
 		if _, done := layout.shardOf[name]; done {
 			continue
 		}
-		shard := lowestUnused()
-		assign(name, shard)
-		layout.primaryOf[shard] = name
+		claim(name, lowestUnused())
 	}
 
 	podByNodeID := make(map[string]string, len(statuses))
@@ -166,6 +186,10 @@ func planShardLayout(
 		if status.Role == "slave" && status.PrimaryNodeID != "" {
 			if shard, ok := layout.shardOf[podByNodeID[status.PrimaryNodeID]]; ok {
 				assign(name, shard)
+				// A surviving replica is the best heir of a doomed owner.
+				if layout.primaryOf[shard] == "" && !doomed(name) {
+					layout.primaryOf[shard] = name
+				}
 				continue
 			}
 		}
@@ -174,7 +198,7 @@ func planShardLayout(
 		observable := polled && status.Connected && (status.Role != "slave" || status.PrimaryNodeID != "")
 		if shard, ok := labelOf[name]; ok && !observable && shard < shardCount {
 			assign(name, shard)
-			if primaryLabel[name] && layout.primaryOf[shard] == "" {
+			if primaryLabel[name] && layout.primaryOf[shard] == "" && !doomed(name) {
 				layout.primaryOf[shard] = name
 			}
 			continue
@@ -182,14 +206,36 @@ func planShardLayout(
 		free = append(free, name)
 	}
 
-	for shard := 0; shard < shardCount && len(free) > 0; shard++ {
+	var survivors []string
+	for _, name := range free {
+		if !doomed(name) {
+			survivors = append(survivors, name)
+		}
+	}
+	for shard := 0; shard < shardCount && len(survivors) > 0; shard++ {
 		if layout.primaryOf[shard] != "" {
 			continue
 		}
-		assign(free[0], shard)
-		layout.primaryOf[shard] = free[0]
-		free = free[1:]
+		assign(survivors[0], shard)
+		layout.primaryOf[shard] = survivors[0]
+		survivors = survivors[1:]
 	}
+	free = append(survivors, filter(free, doomed)...)
+
+	// A doomed owner with no surviving replica and no free survivor borrows a
+	// surviving replica from the shard that can spare one most easily.
+	for shard := 0; shard < shardCount; shard++ {
+		if layout.primaryOf[shard] != "" || layout.ownerOf[shard] == "" {
+			continue
+		}
+		heir := layout.spareSurvivor(doomed)
+		if heir == "" {
+			break
+		}
+		layout.move(heir, shard)
+		layout.primaryOf[shard] = heir
+	}
+
 	for _, name := range free {
 		target := 0
 		for shard := 1; shard < shardCount; shard++ {
@@ -207,6 +253,47 @@ func planShardLayout(
 		})
 	}
 	return layout
+}
+
+// spareSurvivor returns the lowest-ordinal surviving non-primary from the shard
+// with the most members, or "" when none exists.
+func (l shardLayout) spareSurvivor(doomed func(string) bool) string {
+	best, bestSize := "", 1
+	for shard, members := range l.members {
+		if len(members) <= bestSize {
+			continue
+		}
+		for _, name := range members {
+			if name != l.primaryOf[shard] && !doomed(name) {
+				best, bestSize = name, len(members)
+				break
+			}
+		}
+	}
+	return best
+}
+
+func (l shardLayout) move(name string, shard int) {
+	from := l.shardOf[name]
+	members := l.members[from]
+	for i, member := range members {
+		if member == name {
+			l.members[from] = append(members[:i], members[i+1:]...)
+			break
+		}
+	}
+	l.shardOf[name] = shard
+	l.members[shard] = append(l.members[shard], name)
+}
+
+func filter(names []string, keep func(string) bool) []string {
+	var out []string
+	for _, name := range names {
+		if keep(name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 type ownerMatch struct {
