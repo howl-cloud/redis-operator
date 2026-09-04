@@ -6,6 +6,16 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 
 ## [Unreleased]
 
+### Fixed
+- Changing `spec.replicasPerShard` on a running cluster-mode `RedisCluster` no longer breaks the cluster (#36). Shard membership was derived from the pod ordinal alone, so raising replicas from 0 to 1 reinterpreted existing primaries as replicas, sent `CLUSTER REPLICATE` to nodes that own slots, and looped on HTTP 500. Membership now follows the live topology: a node that owns slots is the primary of the shard whose range it serves, replicas follow the primary they replicate from, and only empty pods are placed. New pods are attached as replicas of the existing primaries without moving any data. A Redis-level failover keeps the shard index with the new slot owner, so the reshard step no longer tries to move slots back to the old primary.
+- Pod labels `redis.io/shard`, `redis.io/shard-role` and `redis.io/role` are repaired on every reconcile from the observed topology, and `status.shards` is derived the same way, so they no longer disagree with what Redis reports.
+- The instance manager no longer wipes the operator's cluster fields (`nodeID`, `slotsServed`, `clusterState`, `currentEpoch`, `lastSeenAt`) from `status.instancesStatus` each time it reports replication state. It now updates only the fields it observes.
+- `CLUSTER REPLICATE` issued to a pod that has not yet learned about its primary through gossip returns 409 from the instance manager and is retried on the next pass instead of being logged as a reconcile error. Errors from instance-manager calls now include the response body, so the Redis error is visible in the operator log.
+
+### Changed
+- `status.instancesStatus[*].primaryNodeID` reports the cluster node ID a replica follows.
+- New cluster-mode clusters place replicas after all primaries (pods `0..shards-1` are primaries, later pods are replicas round-robin across shards). Existing clusters keep their current layout.
+
 ## [0.2.6]
 
 ### Fixed

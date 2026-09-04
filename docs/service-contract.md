@@ -93,8 +93,8 @@ them.
 
 | Label / annotation | Notes |
 |---|---|
-| `redis.io/shard` | Cluster-mode shard index (`s0`, `s1`, …). Informational; prefer the Redis Cluster protocol for slot ownership. |
-| `redis.io/shard-role` | Cluster-mode per-shard role (`primary`/`replica`). Informational. |
+| `redis.io/shard` | Cluster-mode shard index (`s0`, `s1`, …). Derived from the slots a node serves and the primary a replica follows, not from the pod ordinal, and rewritten on every reconcile. Informational; prefer the Redis Cluster protocol for slot ownership. |
+| `redis.io/shard-role` | Cluster-mode per-shard role (`primary`/`replica`). Follows the live topology, so it flips after a Redis-level failover. Informational. |
 | `redis.io/spec-hash` (annotation) | Rolling-update bookkeeping. Internal. |
 
 ---

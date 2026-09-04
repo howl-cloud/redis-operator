@@ -1675,6 +1675,10 @@ spec:
                     nodeID:
                       description: NodeID is the Redis cluster node ID.
                       type: string
+                    primaryNodeID:
+                      description: PrimaryNodeID is the cluster node ID this replica
+                        follows (cluster-mode replicas only).
+                      type: string
                     replicaLagBytes:
                       description: ReplicaLagBytes is the replication lag in bytes
                         (replicas only).

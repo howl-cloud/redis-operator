@@ -4,13 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 )
+
+// instanceManagerPort is the instance-manager HTTP port on every data pod.
+// Tests point it at a local listener.
+var instanceManagerPort = 8080
 
 type clusterMeetPayload struct {
 	IP   string `json:"ip"`
@@ -79,70 +86,68 @@ func (r *ClusterReconciler) reconcileClusterBootstrap(
 		}
 	}
 
-	groupSize := int(1 + cluster.Spec.ReplicasPerShard)
-	if groupSize <= 0 {
-		groupSize = 1
-	}
-	primaryPodNames := make([]string, 0, cluster.Spec.Shards)
-	primaryNodeIDsByShard := make(map[int]string)
-	for shardIndex := 0; shardIndex < int(cluster.Spec.Shards); shardIndex++ {
-		podIndex := shardIndex * groupSize
-		if podIndex >= desired {
-			break
+	layout := planShardLayout(cluster, pods, statuses)
+	shardCount := desiredShardCount(cluster)
+	ranges := calculateClusterSlotRanges(shardCount)
+	coverage := calculateSlotCoverage(statuses)
+	for shardIndex := 0; shardIndex < shardCount; shardIndex++ {
+		podName := layout.primaryOf[shardIndex]
+		if podName == "" {
+			return false, nil
 		}
-		podName := podNameForIndex(cluster.Name, podIndex)
-		primaryPodNames = append(primaryPodNames, podName)
-		primaryNodeIDsByShard[shardIndex] = statuses[podName].NodeID
-	}
-
-	if len(primaryPodNames) > 0 {
-		ranges := calculateClusterSlotRanges(len(primaryPodNames))
-		coverage := calculateSlotCoverage(statuses)
-		for i, podName := range primaryPodNames {
-			uncoveredRanges := calculateUncoveredSlotRanges(ranges[i], &coverage)
-			for _, uncoveredRange := range uncoveredRanges {
-				if err := postClusterJSON(
-					ctx,
-					httpClient,
-					podsByName[podName].Status.PodIP,
-					"/v1/cluster/addslots",
-					clusterAddSlotsPayload{
-						Start: uncoveredRange.Start,
-						End:   uncoveredRange.End,
-					},
-				); err != nil {
-					return false, fmt.Errorf(
-						"assigning slots %d-%d on %s: %w",
-						uncoveredRange.Start,
-						uncoveredRange.End,
-						podName,
-						err,
-					)
-				}
-				performedAction = true
-				for slot := uncoveredRange.Start; slot <= uncoveredRange.End; slot++ {
-					coverage[slot] = true
-				}
+		for _, uncoveredRange := range calculateUncoveredSlotRanges(ranges[shardIndex], &coverage) {
+			if err := postClusterJSON(
+				ctx,
+				httpClient,
+				podsByName[podName].Status.PodIP,
+				"/v1/cluster/addslots",
+				clusterAddSlotsPayload{
+					Start: uncoveredRange.Start,
+					End:   uncoveredRange.End,
+				},
+			); err != nil {
+				return false, fmt.Errorf(
+					"assigning slots %d-%d on %s: %w",
+					uncoveredRange.Start,
+					uncoveredRange.End,
+					podName,
+					err,
+				)
+			}
+			performedAction = true
+			for slot := uncoveredRange.Start; slot <= uncoveredRange.End; slot++ {
+				coverage[slot] = true
 			}
 		}
 	}
 
-	for index, podName := range expectedNames {
-		shardIndex, replicaIndex := shardReplicaFromIndex(cluster, index)
-		if replicaIndex == 0 {
+	for _, podName := range expectedNames {
+		if layout.isPrimary(podName) {
 			continue
 		}
 		podStatus := statuses[podName]
-		if podStatus.Role == "slave" {
+		// A slot owner is never demoted here; reshard drains it first.
+		if len(podStatus.SlotsServed) > 0 {
 			continue
 		}
-		primaryNodeID := primaryNodeIDsByShard[shardIndex]
+		shardIndex := layout.shardOf[podName]
+		primaryNodeID := statuses[layout.primaryOf[shardIndex]].NodeID
 		if primaryNodeID == "" {
 			return false, nil
 		}
-		if err := postClusterJSON(ctx, httpClient, podsByName[podName].Status.PodIP, "/v1/cluster/replicate", clusterReplicatePayload{
+		// Older instance managers do not report primaryNodeID; leave those replicas alone.
+		if podStatus.Role == "slave" && (podStatus.PrimaryNodeID == "" || podStatus.PrimaryNodeID == primaryNodeID) {
+			continue
+		}
+		err := postClusterJSON(ctx, httpClient, podsByName[podName].Status.PodIP, "/v1/cluster/replicate", clusterReplicatePayload{
 			NodeID: primaryNodeID,
-		}); err != nil {
+		})
+		var httpErr *clusterHTTPError
+		if errors.As(err, &httpErr) && httpErr.status == http.StatusConflict {
+			// The pod has not learned about its primary through gossip yet.
+			return false, nil
+		}
+		if err != nil {
 			return false, fmt.Errorf("replicating %s to shard %d: %w", podName, shardIndex, err)
 		}
 		performedAction = true
@@ -236,7 +241,7 @@ func postClusterJSON(ctx context.Context, httpClient *http.Client, podIP, endpoi
 	if err != nil {
 		return fmt.Errorf("marshaling request payload: %w", err)
 	}
-	url := fmt.Sprintf("http://%s:8080%s", podIP, endpoint)
+	url := fmt.Sprintf("http://%s:%d%s", podIP, instanceManagerPort, endpoint)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
@@ -250,7 +255,21 @@ func postClusterJSON(ctx context.Context, httpClient *http.Client, podIP, endpoi
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("POST %s returned status %d", url, resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return &clusterHTTPError{url: url, status: resp.StatusCode, body: strings.TrimSpace(string(body))}
 	}
 	return nil
+}
+
+type clusterHTTPError struct {
+	url    string
+	status int
+	body   string
+}
+
+func (e *clusterHTTPError) Error() string {
+	if e.body == "" {
+		return fmt.Sprintf("POST %s returned status %d", e.url, e.status)
+	}
+	return fmt.Sprintf("POST %s returned status %d: %s", e.url, e.status, e.body)
 }

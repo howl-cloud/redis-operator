@@ -40,23 +40,6 @@ func (r *ClusterReconciler) reconcileClusterReshard(
 		return true, nil
 	}
 
-	groupSize := int(1 + cluster.Spec.ReplicasPerShard)
-	if groupSize <= 0 {
-		groupSize = 1
-	}
-
-	desiredPrimaryPods := make([]string, 0, cluster.Spec.Shards)
-	for shardIndex := 0; shardIndex < int(cluster.Spec.Shards); shardIndex++ {
-		podIndex := shardIndex * groupSize
-		if podIndex >= desiredInstances {
-			break
-		}
-		desiredPrimaryPods = append(desiredPrimaryPods, podNameForIndex(cluster.Name, podIndex))
-	}
-	if len(desiredPrimaryPods) == 0 {
-		return true, nil
-	}
-
 	pods, err := r.listDataPods(ctx, cluster)
 	if err != nil {
 		return false, fmt.Errorf("listing data pods for reshard: %w", err)
@@ -64,6 +47,17 @@ func (r *ClusterReconciler) reconcileClusterReshard(
 	podsByName := make(map[string]corev1.Pod, len(pods))
 	for i := range pods {
 		podsByName[pods[i].Name] = pods[i]
+	}
+
+	layout := planShardLayout(cluster, pods, statuses)
+	shardCount := desiredShardCount(cluster)
+	desiredPrimaryPods := make([]string, 0, shardCount)
+	for shardIndex := 0; shardIndex < shardCount; shardIndex++ {
+		podName := layout.primaryOf[shardIndex]
+		if podName == "" {
+			return false, nil
+		}
+		desiredPrimaryPods = append(desiredPrimaryPods, podName)
 	}
 
 	for _, podName := range desiredPrimaryPods {

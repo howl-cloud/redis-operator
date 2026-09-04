@@ -52,6 +52,7 @@ type StatusResponse struct {
 	MasterLinkStatus  string              `json:"masterLinkStatus,omitempty"`
 	Connected         bool                `json:"connected"`
 	NodeID            string              `json:"nodeID,omitempty"`
+	PrimaryNodeID     string              `json:"primaryNodeID,omitempty"`
 	ClusterState      string              `json:"clusterState,omitempty"`
 	SlotsServed       []redisv1.SlotRange `json:"slotsServed,omitempty"`
 	Epoch             int64               `json:"epoch,omitempty"`
@@ -565,7 +566,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		resp.ClusterKnownNodes = clusterInfo.KnownNodes
 		resp.SlotsAssigned = clusterInfo.SlotsAssigned
 		resp.Epoch = clusterInfo.CurrentEpoch
-		resp.NodeID, resp.SlotsServed = findSelfClusterNode(nodes)
+		resp.NodeID, resp.PrimaryNodeID, resp.SlotsServed = findSelfClusterNode(nodes)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -731,6 +732,17 @@ func (s *Server) handleClusterReplicate(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "nodeID is required", http.StatusBadRequest)
 		return
 	}
+	// Right after CLUSTER MEET this node may not have heard of the primary yet.
+	// Answer 409 so the operator retries instead of treating it as a failure.
+	known, err := s.knowsClusterNode(r.Context(), req.NodeID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("cluster nodes lookup failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if !known {
+		http.Error(w, fmt.Sprintf("node %s is not known to this instance yet", req.NodeID), http.StatusConflict)
+		return
+	}
 	if err := replication.ClusterReplicate(r.Context(), s.redisClient, req.NodeID); err != nil {
 		http.Error(w, fmt.Sprintf("cluster replicate failed: %v", err), http.StatusInternalServerError)
 		return
@@ -843,7 +855,9 @@ func (s *Server) clusterModeEnabled() bool {
 	return s.clusterMode
 }
 
-func findSelfClusterNode(nodes []replication.ClusterNode) (string, []redisv1.SlotRange) {
+// findSelfClusterNode returns this node's ID, the ID of the primary it replicates
+// (empty for primaries), and the slot ranges it serves.
+func findSelfClusterNode(nodes []replication.ClusterNode) (string, string, []redisv1.SlotRange) {
 	for _, node := range nodes {
 		if !hasNodeFlag(node.Flags, "myself") {
 			continue
@@ -855,9 +869,26 @@ func findSelfClusterNode(nodes []replication.ClusterNode) (string, []redisv1.Slo
 				End:   slot.End,
 			})
 		}
-		return node.ID, slots
+		primaryID := node.MasterID
+		if primaryID == "-" {
+			primaryID = ""
+		}
+		return node.ID, primaryID, slots
 	}
-	return "", nil
+	return "", "", nil
+}
+
+func (s *Server) knowsClusterNode(ctx context.Context, nodeID string) (bool, error) {
+	nodes, err := replication.GetClusterNodes(ctx, s.redisClient)
+	if err != nil {
+		return false, err
+	}
+	for _, node := range nodes {
+		if node.ID == nodeID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func hasNodeFlag(flags []string, expected string) bool {

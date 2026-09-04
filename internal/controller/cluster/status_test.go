@@ -582,3 +582,29 @@ func TestPollInstanceStatuses_NoPodIP(t *testing.T) {
 	// Pod with empty IP should not appear in statuses.
 	assert.Empty(t, statuses)
 }
+
+func TestDeriveClusterStatus_GroupsByObservedTopologyNotOrdinal(t *testing.T) {
+	cluster := newClusterModeCluster(3, 1)
+	pods := []corev1.Pod{
+		shardPod("test-0", "s0", "primary"), shardPod("test-1", "s1", "primary"),
+		shardPod("test-2", "s2", "primary"),
+	}
+	ranges := calculateClusterSlotRanges(3)
+	statuses := map[string]redisv1.InstanceStatus{
+		"test-0": ownerStatus("n0", ranges[0]),
+		"test-1": ownerStatus("n1", ranges[1]),
+		"test-2": ownerStatus("n2", ranges[2]),
+		"test-3": replicaStatus("n3", "n0"),
+		"test-4": replicaStatus("n4", "n1"),
+		"test-5": emptyPrimaryStatus("n5"),
+	}
+
+	state, assigned, shards := deriveClusterStatus(cluster, pods, statuses)
+
+	assert.Equal(t, "ok", state)
+	assert.Equal(t, int32(16384), assigned)
+	assert.Equal(t, "test-1", shards["s1"].PrimaryPod)
+	assert.Equal(t, []string{"test-4"}, shards["s1"].ReplicaPods)
+	assert.Equal(t, "test-2", shards["s2"].PrimaryPod)
+	assert.Equal(t, []string{"test-5"}, shards["s2"].ReplicaPods, "an empty master is a pending replica, not a primary")
+}

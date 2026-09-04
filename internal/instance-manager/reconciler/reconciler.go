@@ -381,27 +381,27 @@ func (r *InstanceReconciler) reconcileTLSCerts(ctx context.Context, cluster *red
 	return nil
 }
 
-// reportStatus patches the instancesStatus map for this pod.
+// reportStatus patches the replication fields of this pod's instancesStatus
+// entry. The operator owns the cluster-topology fields (nodeID, slotsServed,
+// ...) in the same entry, so only the fields this process observes are set.
 func (r *InstanceReconciler) reportStatus(ctx context.Context, cluster *redisv1.RedisCluster) error {
 	info, err := replication.GetInfo(ctx, r.redisClient)
 	if err != nil {
 		return fmt.Errorf("getting replication info for status: %w", err)
 	}
 
-	status := redisv1.InstanceStatus{
-		Role:              info.Role,
-		Connected:         true,
-		ReplicationOffset: info.MasterReplOffset,
-		ConnectedReplicas: int32(info.ConnectedReplicas),
-		MasterLinkStatus:  info.MasterLinkStatus,
-	}
-	if info.Role == "slave" {
-		status.ReplicationOffset = info.SlaveReplOffset
-	}
-
 	patch := client.MergeFrom(cluster.DeepCopy())
 	if cluster.Status.InstancesStatus == nil {
 		cluster.Status.InstancesStatus = make(map[string]redisv1.InstanceStatus)
+	}
+	status := cluster.Status.InstancesStatus[r.podName]
+	status.Role = info.Role
+	status.Connected = true
+	status.ReplicationOffset = info.MasterReplOffset
+	status.ConnectedReplicas = int32(info.ConnectedReplicas)
+	status.MasterLinkStatus = info.MasterLinkStatus
+	if info.Role == "slave" {
+		status.ReplicationOffset = info.SlaveReplOffset
 	}
 	cluster.Status.InstancesStatus[r.podName] = status
 
