@@ -19,6 +19,14 @@ func (r *ClusterReconciler) setFence(ctx context.Context, cluster *redisv1.Redis
 	logger := log.FromContext(ctx)
 	logger.Info("Setting fence", "pod", podName)
 
+	owner, _ := redisv1.ClusterHandoverPods(cluster)
+	if owner == podName {
+		patch := client.MergeFrom(cluster.DeepCopy())
+		delete(cluster.Annotations, redisv1.ClusterHandoverAnnotation)
+		if err := r.Patch(ctx, cluster, patch); err != nil {
+			return fmt.Errorf("escalating planned fence: %w", err)
+		}
+	}
 	fenced := r.getFencedPods(cluster)
 	for _, p := range fenced {
 		if p == podName {

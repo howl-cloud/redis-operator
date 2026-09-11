@@ -613,7 +613,7 @@ func TestReconcilePods_ScaleUp(t *testing.T) {
 		require.NoError(t, c.Create(ctx, pvc))
 	}
 
-	err := r.reconcilePods(ctx, cluster)
+	err := r.reconcilePods(ctx, cluster, nil)
 	require.NoError(t, err)
 
 	// Verify pods were created.
@@ -646,7 +646,7 @@ func TestReconcilePods_SetInitialPrimary(t *testing.T) {
 	}
 	require.NoError(t, c.Create(ctx, pvc))
 
-	err := r.reconcilePods(ctx, cluster)
+	err := r.reconcilePods(ctx, cluster, nil)
 	require.NoError(t, err)
 
 	// Re-fetch the cluster to see the status update.
@@ -687,7 +687,7 @@ func TestReconcilePods_ScaleDown(t *testing.T) {
 	r, c := newReconciler(cluster, pod0, pod1)
 	ctx := context.Background()
 
-	err := r.reconcilePods(ctx, cluster)
+	err := r.reconcilePods(ctx, cluster, nil)
 	require.NoError(t, err)
 
 	// Verify pod-1 was deleted (scale down from 2 to 1).
@@ -731,7 +731,7 @@ func TestReconcilePods_RecreatesMissingOrdinal(t *testing.T) {
 	r, c := newReconciler(cluster, pod0, pod2)
 	ctx := context.Background()
 
-	err := r.reconcilePods(ctx, cluster)
+	err := r.reconcilePods(ctx, cluster, nil)
 	require.NoError(t, err)
 
 	var recreated corev1.Pod
@@ -770,7 +770,7 @@ func TestReconcilePods_RecreatesMissingCurrentPrimaryAsPrimary(t *testing.T) {
 	r, c := newReconciler(cluster, pod0, pod2)
 	ctx := context.Background()
 
-	err := r.reconcilePods(ctx, cluster)
+	err := r.reconcilePods(ctx, cluster, nil)
 	require.NoError(t, err)
 
 	var recreatedPrimary corev1.Pod
@@ -1334,7 +1334,7 @@ func TestShouldRestoreFromBackup_OnlyFirstBootstrapPrimary(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cluster.Status.CurrentPrimary = tt.currentPrimaryName
-			got := shouldRestoreFromBackup(cluster, tt.podName, tt.index)
+			got := shouldRestoreFromBackup(cluster, tt.podName, tt.index, redisv1.LabelRolePrimary)
 			assert.Equal(t, tt.want, got)
 		})
 	}

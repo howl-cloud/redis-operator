@@ -16,9 +16,13 @@ import (
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
+	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // newTestServer creates a Server with mock functions and no real Redis client.
@@ -488,4 +492,32 @@ func TestHandleHealthz_ProcessExited(t *testing.T) {
 	// ProcessState is non-nil after Wait(), so the process has exited.
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	assert.Contains(t, w.Body.String(), "redis-server not running")
+}
+
+func TestHandleReadyz_Fencing(t *testing.T) {
+	for _, tt := range []struct {
+		name, fence, handover string
+		want                  int
+	}{
+		{"unfenced", "", "", http.StatusOK},
+		{"emergency", `["test-0"]`, "", http.StatusServiceUnavailable},
+		{"planned", `["test-0"]`, "test-0/test-1", http.StatusServiceUnavailable},
+		{"another pod", `["test-1"]`, "test-1/test-2", http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			redisServer := miniredis.RunT(t)
+			redisClient := goredis.NewClient(&goredis.Options{Addr: redisServer.Addr()})
+			t.Cleanup(func() { require.NoError(t, redisClient.Close()) })
+			scheme := runtime.NewScheme()
+			require.NoError(t, redisv1.AddToScheme(scheme))
+			cluster := &redisv1.RedisCluster{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", Annotations: map[string]string{redisv1.FencingAnnotationKey: tt.fence, redisv1.ClusterHandoverAnnotation: tt.handover}}}
+			k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build()
+			server := NewServer(redisClient, ":0", nil, nil)
+			server.SetPrimaryIsolationConfig(k8s, PrimaryIsolationConfig{ClusterName: "test", Namespace: "default", PodName: "test-0"})
+			response := httptest.NewRecorder()
+			server.handleReadyz(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+			assert.Equal(t, tt.want, response.Code)
+			require.NoError(t, redisClient.Ping(context.Background()).Err(), "readiness fencing must not stop Redis")
+		})
+	}
 }

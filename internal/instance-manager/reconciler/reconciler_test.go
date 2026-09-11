@@ -1195,3 +1195,59 @@ func TestReadSecretKey_FileExists(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "", val)
 }
+
+func TestReportStatus_KeepsOperatorOwnedClusterFields(t *testing.T) {
+	srv, redisClient := newFakeRedisServer(t)
+	srv.mu.Lock()
+	srv.role = "master"
+	srv.mu.Unlock()
+
+	cluster := newTestCluster("test", "default")
+	cluster.Status.InstancesStatus = map[string]redisv1.InstanceStatus{
+		"test-0": {
+			Role:        "slave",
+			NodeID:      "node-0",
+			SlotsServed: []redisv1.SlotRange{{Start: 0, End: 100}},
+		},
+	}
+
+	scheme := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cluster).
+		WithStatusSubresource(&redisv1.RedisCluster{}).
+		Build()
+
+	rec := NewInstanceReconciler(fakeClient, redisClient, record.NewFakeRecorder(100), "test", "test-0", "default")
+	require.NoError(t, rec.reportStatus(context.Background(), cluster))
+
+	var updated redisv1.RedisCluster
+	require.NoError(t, fakeClient.Get(context.Background(), types.NamespacedName{Name: "test", Namespace: "default"}, &updated))
+
+	status := updated.Status.InstancesStatus["test-0"]
+	assert.Equal(t, "master", status.Role, "replication fields come from this process")
+	assert.Equal(t, "node-0", status.NodeID, "topology fields written by the operator must survive")
+	assert.Equal(t, []redisv1.SlotRange{{Start: 0, End: 100}}, status.SlotsServed)
+}
+
+func TestRequiresHardFence_PlannedHandover(t *testing.T) {
+	for _, tt := range []struct {
+		name, marker string
+		mode         redisv1.ClusterMode
+		want         bool
+	}{
+		{"emergency", "", redisv1.ClusterModeCluster, true},
+		{"planned owner", "test-0/test-1", redisv1.ClusterModeCluster, false},
+		{"different owner", "test-2/test-1", redisv1.ClusterModeCluster, true},
+		{"malformed", "test-0/", redisv1.ClusterModeCluster, true},
+		{"standalone", "test-0/test-1", redisv1.ClusterModeStandalone, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cluster := newTestCluster("test", "default")
+			cluster.Spec.Mode = tt.mode
+			cluster.Annotations = map[string]string{redisv1.FencingAnnotationKey: `["test-0"]`, redisv1.ClusterHandoverAnnotation: tt.marker}
+			r := &InstanceReconciler{podName: "test-0"}
+			assert.Equal(t, tt.want, r.requiresHardFence(cluster))
+		})
+	}
+}

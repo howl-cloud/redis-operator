@@ -95,6 +95,7 @@ them.
 |---|---|
 | `redis.io/shard` | Cluster-mode shard index (`s0`, `s1`, …). Informational; prefer the Redis Cluster protocol for slot ownership. |
 | `redis.io/shard-role` | Cluster-mode per-shard role (`primary`/`replica`). Informational. |
+| `redis.io/cluster-handover` | Planned scale-down handover (`owner/replica`). Owner is unready, Redis stays up. Delete to emergency-fence. |
 | `redis.io/spec-hash` (annotation) | Rolling-update bookkeeping. Internal. |
 
 ---

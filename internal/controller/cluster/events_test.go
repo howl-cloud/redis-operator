@@ -135,7 +135,7 @@ func TestReconcilePods_ScaleUp_EmitsEvent(t *testing.T) {
 	r, _, recorder := newReconcilerWithRecorder(cluster, pvc0, pvc1)
 	ctx := context.Background()
 
-	err := r.reconcilePods(ctx, cluster)
+	err := r.reconcilePods(ctx, cluster, nil)
 	require.NoError(t, err)
 
 	events := drainEvents(recorder)
@@ -173,7 +173,7 @@ func TestReconcilePods_ScaleDown_EmitsEvents(t *testing.T) {
 	r, _, recorder := newReconcilerWithRecorder(cluster, pod0, pod1)
 	ctx := context.Background()
 
-	err := r.reconcilePods(ctx, cluster)
+	err := r.reconcilePods(ctx, cluster, nil)
 	require.NoError(t, err)
 
 	events := drainEvents(recorder)

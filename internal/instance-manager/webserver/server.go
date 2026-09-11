@@ -52,6 +52,7 @@ type StatusResponse struct {
 	MasterLinkStatus  string              `json:"masterLinkStatus,omitempty"`
 	Connected         bool                `json:"connected"`
 	NodeID            string              `json:"nodeID,omitempty"`
+	PrimaryNodeID     string              `json:"primaryNodeID,omitempty"`
 	ClusterState      string              `json:"clusterState,omitempty"`
 	SlotsServed       []redisv1.SlotRange `json:"slotsServed,omitempty"`
 	Epoch             int64               `json:"epoch,omitempty"`
@@ -518,6 +519,15 @@ func podIsFenced(cluster *redisv1.RedisCluster, podName string) bool {
 
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	fenced, err := s.isCurrentPodFenced(ctx)
+	if err != nil {
+		http.Error(w, "cannot verify fencing state", http.StatusServiceUnavailable)
+		return
+	}
+	if fenced {
+		http.Error(w, "pod is fenced", http.StatusServiceUnavailable)
+		return
+	}
 	if err := s.redisClient.Ping(ctx).Err(); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = fmt.Fprintf(w, "redis not ready: %v", err)
@@ -565,7 +575,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		resp.ClusterKnownNodes = clusterInfo.KnownNodes
 		resp.SlotsAssigned = clusterInfo.SlotsAssigned
 		resp.Epoch = clusterInfo.CurrentEpoch
-		resp.NodeID, resp.SlotsServed = findSelfClusterNode(nodes)
+		resp.NodeID, resp.PrimaryNodeID, resp.SlotsServed = findSelfClusterNode(nodes)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -731,6 +741,15 @@ func (s *Server) handleClusterReplicate(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "nodeID is required", http.StatusBadRequest)
 		return
 	}
+	known, err := s.knowsClusterNode(r.Context(), req.NodeID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("cluster nodes lookup failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if !known {
+		http.Error(w, fmt.Sprintf("node %s is not known to this instance yet", req.NodeID), http.StatusConflict)
+		return
+	}
 	if err := replication.ClusterReplicate(r.Context(), s.redisClient, req.NodeID); err != nil {
 		http.Error(w, fmt.Sprintf("cluster replicate failed: %v", err), http.StatusInternalServerError)
 		return
@@ -843,7 +862,7 @@ func (s *Server) clusterModeEnabled() bool {
 	return s.clusterMode
 }
 
-func findSelfClusterNode(nodes []replication.ClusterNode) (string, []redisv1.SlotRange) {
+func findSelfClusterNode(nodes []replication.ClusterNode) (string, string, []redisv1.SlotRange) {
 	for _, node := range nodes {
 		if !hasNodeFlag(node.Flags, "myself") {
 			continue
@@ -855,9 +874,26 @@ func findSelfClusterNode(nodes []replication.ClusterNode) (string, []redisv1.Slo
 				End:   slot.End,
 			})
 		}
-		return node.ID, slots
+		primaryID := node.MasterID
+		if primaryID == "-" {
+			primaryID = ""
+		}
+		return node.ID, primaryID, slots
 	}
-	return "", nil
+	return "", "", nil
+}
+
+func (s *Server) knowsClusterNode(ctx context.Context, nodeID string) (bool, error) {
+	nodes, err := replication.GetClusterNodes(ctx, s.redisClient)
+	if err != nil {
+		return false, err
+	}
+	for _, node := range nodes {
+		if node.ID == nodeID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func hasNodeFlag(flags []string, expected string) bool {

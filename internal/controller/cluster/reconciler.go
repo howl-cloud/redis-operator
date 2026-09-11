@@ -205,7 +205,7 @@ func (r *ClusterReconciler) reconcile(ctx context.Context, cluster *redisv1.Redi
 	// Step 8: Pod reconciliation (scale up/down, rolling updates).
 	// During maintenance, only run pod replacement when reusePVC=false.
 	if !maintenance || maintenanceReplace {
-		if err := r.reconcilePods(ctx, cluster); err != nil {
+		if err := r.reconcilePods(ctx, cluster, instanceStatuses); err != nil {
 			return reconcile.Result{}, fmt.Errorf("reconciling pods: %w", err)
 		}
 

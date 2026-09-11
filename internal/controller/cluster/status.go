@@ -24,6 +24,7 @@ type podStatusResponse struct {
 	MasterLinkStatus  string              `json:"masterLinkStatus,omitempty"`
 	Connected         bool                `json:"connected"`
 	NodeID            string              `json:"nodeID,omitempty"`
+	PrimaryNodeID     string              `json:"primaryNodeID,omitempty"`
 	ClusterState      string              `json:"clusterState,omitempty"`
 	SlotsServed       []redisv1.SlotRange `json:"slotsServed,omitempty"`
 	Epoch             int64               `json:"epoch,omitempty"`
@@ -63,6 +64,7 @@ func (r *ClusterReconciler) pollInstanceStatuses(ctx context.Context, cluster *r
 			ConnectedReplicas: int32(status.ConnectedReplicas),
 			MasterLinkStatus:  status.MasterLinkStatus,
 			NodeID:            status.NodeID,
+			PrimaryNodeID:     status.PrimaryNodeID,
 			SlotsServed:       status.SlotsServed,
 			ClusterState:      status.ClusterState,
 			CurrentEpoch:      status.Epoch,
@@ -116,7 +118,11 @@ func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.R
 	cluster.Status.Instances = int32(len(instanceStatuses))
 
 	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
-		cluster.Status.ClusterState, cluster.Status.SlotsAssigned, cluster.Status.Shards = deriveClusterStatus(cluster, instanceStatuses)
+		pods, err := r.listDataPods(ctx, cluster)
+		if err != nil {
+			return fmt.Errorf("listing data pods for shard status: %w", err)
+		}
+		cluster.Status.ClusterState, cluster.Status.SlotsAssigned, cluster.Status.Shards = deriveClusterStatus(cluster, pods, instanceStatuses)
 		cluster.Status.CurrentPrimary = ""
 		if !cluster.Status.BootstrapCompleted &&
 			cluster.Status.ClusterState == "ok" &&
@@ -165,12 +171,14 @@ func (r *ClusterReconciler) updateStatus(ctx context.Context, cluster *redisv1.R
 
 func deriveClusterStatus(
 	cluster *redisv1.RedisCluster,
+	pods []corev1.Pod,
 	statuses map[string]redisv1.InstanceStatus,
 ) (string, int32, map[string]redisv1.ShardStatus) {
 	shards := make(map[string]redisv1.ShardStatus)
 	if cluster == nil {
 		return "", 0, shards
 	}
+	layout := planShardLayout(cluster, pods, statuses)
 
 	clusterState := ""
 	if len(statuses) > 0 {
@@ -183,14 +191,15 @@ func deriveClusterStatus(
 			clusterState = status.ClusterState
 		}
 
-		index := podIndex(cluster.Name, podName)
-		shardIndex, replicaIndex := shardReplicaFromIndex(cluster, index)
-		shardName := fmt.Sprintf("s%d", shardIndex)
+		shardIndex, ok := layout.shardOf[podName]
+		if !ok {
+			continue
+		}
+		shardName := shardName(shardIndex)
 		shardStatus := shards[shardName]
 		shardStatus.Epoch = maxInt64(shardStatus.Epoch, status.CurrentEpoch)
 
-		isPrimary := len(status.SlotsServed) > 0 || status.Role == "master"
-		if isPrimary || (replicaIndex == 0 && shardStatus.PrimaryPod == "") {
+		if layout.isPrimary(podName) && !layout.handingOver(shardIndex) || layout.ownerOf[shardIndex] == podName {
 			shardStatus.PrimaryPod = podName
 			shardStatus.PrimaryNodeID = status.NodeID
 			shardStatus.SlotRanges = append([]redisv1.SlotRange(nil), status.SlotsServed...)

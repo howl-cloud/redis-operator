@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -32,28 +33,9 @@ func (r *ClusterReconciler) reconcileClusterReshard(
 
 	desiredInstances := int(cluster.Spec.DesiredDataInstances())
 	if len(statuses) < desiredInstances {
-		// Scale-up happens later in reconcilePods. Wait for next cycle.
 		return true, nil
 	}
 	if cluster.Status.ClusterState != "ok" || cluster.Status.SlotsAssigned < 16384 {
-		// Wait for bootstrap/convergence first.
-		return true, nil
-	}
-
-	groupSize := int(1 + cluster.Spec.ReplicasPerShard)
-	if groupSize <= 0 {
-		groupSize = 1
-	}
-
-	desiredPrimaryPods := make([]string, 0, cluster.Spec.Shards)
-	for shardIndex := 0; shardIndex < int(cluster.Spec.Shards); shardIndex++ {
-		podIndex := shardIndex * groupSize
-		if podIndex >= desiredInstances {
-			break
-		}
-		desiredPrimaryPods = append(desiredPrimaryPods, podNameForIndex(cluster.Name, podIndex))
-	}
-	if len(desiredPrimaryPods) == 0 {
 		return true, nil
 	}
 
@@ -66,11 +48,22 @@ func (r *ClusterReconciler) reconcileClusterReshard(
 		podsByName[pods[i].Name] = pods[i]
 	}
 
+	layout := planShardLayout(cluster, pods, statuses)
+	shardCount := desiredShardCount(cluster)
+	desiredPrimaryPods := make([]string, 0, shardCount)
+	for shardIndex := 0; shardIndex < shardCount; shardIndex++ {
+		podName := layout.primaryOf[shardIndex]
+		if podName == "" {
+			return false, nil
+		}
+		desiredPrimaryPods = append(desiredPrimaryPods, podName)
+	}
+
 	for _, podName := range desiredPrimaryPods {
 		status, ok := statuses[podName]
 		if !ok || !status.Connected || status.NodeID == "" {
 			if len(statuses) > desiredInstances {
-				// During downscale, block pod deletion until target primaries are ready.
+				// Block scale-down until the surviving primaries are reachable.
 				return false, nil
 			}
 			return true, nil
@@ -139,6 +132,10 @@ func (r *ClusterReconciler) reconcileClusterReshard(
 				return false, nil
 			}
 
+			if podIndex(cluster.Name, owner) >= desiredInstances && len(targetStatus.SlotsServed) == 0 {
+				return false, r.handOverShard(ctx, httpClient, cluster, owner, sourceStatus, targetPodName, targetPod, targetStatus)
+			}
+
 			if err := postClusterJSON(ctx, httpClient, sourcePod.Status.PodIP, "/v1/cluster/migrate-range", clusterMigrateRangePayload{
 				TargetIP:     targetPod.Status.PodIP,
 				TargetPort:   6379,
@@ -163,4 +160,33 @@ func (r *ClusterReconciler) reconcileClusterReshard(
 	}
 
 	return true, nil
+}
+
+func (r *ClusterReconciler) handOverShard(
+	ctx context.Context,
+	httpClient *http.Client,
+	cluster *redisv1.RedisCluster,
+	owner string,
+	ownerStatus redisv1.InstanceStatus,
+	heir string,
+	heirPod corev1.Pod,
+	heirStatus redisv1.InstanceStatus,
+) error {
+	if heirStatus.Role != "slave" || heirStatus.PrimaryNodeID != ownerStatus.NodeID {
+		if err := postClusterJSON(ctx, httpClient, heirPod.Status.PodIP, "/v1/cluster/replicate", clusterReplicatePayload{
+			NodeID: ownerStatus.NodeID,
+		}); err != nil {
+			var httpErr *clusterHTTPError
+			if errors.As(err, &httpErr) && httpErr.status == http.StatusConflict {
+				return nil
+			}
+			return fmt.Errorf("attaching %s to doomed primary %s: %w", heir, owner, err)
+		}
+		r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "ShardHandover", "Replicating %s from %s before scale-down", heir, owner)
+		return nil
+	}
+	if heirStatus.MasterLinkStatus != "up" {
+		return nil
+	}
+	return r.beginClusterHandover(ctx, cluster, owner, heir)
 }

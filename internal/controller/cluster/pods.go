@@ -44,7 +44,7 @@ const (
 )
 
 // reconcilePods ensures pods match the desired state: scale up, scale down, rolling updates.
-func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.RedisCluster) error {
+func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.RedisCluster, statuses map[string]redisv1.InstanceStatus) error {
 	logger := log.FromContext(ctx)
 
 	existingPods, err := r.listDataPods(ctx, cluster)
@@ -59,18 +59,25 @@ func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.
 		logger.Info("Scaling up", "current", current, "desired", desired)
 		r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "ScaleUp", "Scaling up from %d to %d instances", current, desired)
 	}
+	var layout shardLayout
+	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
+		layout = planShardLayout(cluster, existingPods, statuses)
+	}
 	for i := 0; i < desired; i++ {
 		podName := podNameForIndex(cluster.Name, i)
 		role := redisv1.LabelRoleReplica
 		if cluster.Spec.Mode == redisv1.ClusterModeCluster {
-			_, replicaIndex := shardReplicaFromIndex(cluster, i)
-			if replicaIndex == 0 {
+			if layout.isPrimary(podName) {
 				role = redisv1.LabelRolePrimary
 			}
 		} else if podName == cluster.Status.CurrentPrimary || (cluster.Status.CurrentPrimary == "" && i == 0) {
 			role = redisv1.LabelRolePrimary
 		}
-		if err := r.createPod(ctx, cluster, podName, i, role); err != nil {
+		labels := podLabels(cluster.Name, podName, role)
+		for key, value := range layout.labels(podName) {
+			labels[key] = value
+		}
+		if err := r.createPodWithLabels(ctx, cluster, podName, i, role, labels); err != nil {
 			return fmt.Errorf("creating pod %s: %w", podName, err)
 		}
 	}
@@ -79,7 +86,7 @@ func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.
 		logger.Info("Scaling down", "current", current, "desired", desired)
 		r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "ScaleDown", "Scaling down from %d to %d instances", current, desired)
 		sort.Slice(existingPods, func(i, j int) bool {
-			return existingPods[i].Name > existingPods[j].Name
+			return podIndex(cluster.Name, existingPods[i].Name) > podIndex(cluster.Name, existingPods[j].Name)
 		})
 		for i := 0; i < current-desired; i++ {
 			pod := existingPods[i]
@@ -153,17 +160,18 @@ func (r *ClusterReconciler) reconcileSentinelPods(ctx context.Context, cluster *
 
 // createPod creates a single Redis pod.
 func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.RedisCluster, podName string, index int, role string) error {
+	return r.createPodWithLabels(ctx, cluster, podName, index, role, podLabels(cluster.Name, podName, role))
+}
+
+func (r *ClusterReconciler) createPodWithLabels(
+	ctx context.Context,
+	cluster *redisv1.RedisCluster,
+	podName string,
+	index int,
+	role string,
+	labels map[string]string,
+) error {
 	desiredHash := r.computeSpecHash(cluster)
-	labels := podLabels(cluster.Name, podName, role)
-	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
-		shardIndex, replicaIndex := shardReplicaFromIndex(cluster, index)
-		labels[redisv1.LabelShard] = fmt.Sprintf("s%d", shardIndex)
-		if replicaIndex == 0 {
-			labels[redisv1.LabelShardRole] = redisv1.LabelRolePrimary
-		} else {
-			labels[redisv1.LabelShardRole] = redisv1.LabelRoleReplica
-		}
-	}
 	logger := log.FromContext(ctx)
 
 	var existing corev1.Pod
@@ -281,7 +289,7 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 		backupCredsSecretName = cluster.Spec.BackupCredentialsSecret.Name
 	}
 
-	if shouldRestoreFromBackup(cluster, podName, index) {
+	if shouldRestoreFromBackup(cluster, podName, index, role) {
 		backup, err := r.getBootstrapBackup(ctx, cluster)
 		if err != nil {
 			return fmt.Errorf("getting bootstrap backup %q: %w", cluster.Spec.Bootstrap.BackupName, err)
@@ -491,13 +499,12 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 	return nil
 }
 
-func shouldRestoreFromBackup(cluster *redisv1.RedisCluster, podName string, index int) bool {
+func shouldRestoreFromBackup(cluster *redisv1.RedisCluster, podName string, index int, role string) bool {
 	if cluster.Spec.Bootstrap == nil || cluster.Spec.Bootstrap.BackupName == "" {
 		return false
 	}
 	if cluster.Spec.Mode == redisv1.ClusterModeCluster {
-		_, replicaIndex := shardReplicaFromIndex(cluster, index)
-		return !cluster.Status.BootstrapCompleted && replicaIndex == 0
+		return !cluster.Status.BootstrapCompleted && role == redisv1.LabelRolePrimary
 	}
 	// Restore is a one-time bootstrap action for the very first primary only.
 	return cluster.Status.CurrentPrimary == "" && index == 0 && podName == podNameForIndex(cluster.Name, 0)
@@ -1043,15 +1050,4 @@ func podIndex(clusterName, podName string) int {
 	suffix := podName[len(clusterName)+1:]
 	idx, _ := strconv.Atoi(suffix)
 	return idx
-}
-
-func shardReplicaFromIndex(cluster *redisv1.RedisCluster, index int) (int, int) {
-	if cluster == nil {
-		return 0, 0
-	}
-	groupSize := int(1 + cluster.Spec.ReplicasPerShard)
-	if groupSize <= 0 {
-		groupSize = 1
-	}
-	return index / groupSize, index % groupSize
 }
