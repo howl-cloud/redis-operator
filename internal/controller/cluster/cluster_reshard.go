@@ -193,9 +193,5 @@ func (r *ClusterReconciler) handOverShard(
 	if heirStatus.MasterLinkStatus != "up" {
 		return nil
 	}
-	if err := postClusterJSON(ctx, httpClient, heirPod.Status.PodIP, "/v1/promote", struct{}{}); err != nil {
-		return fmt.Errorf("promoting %s over doomed primary %s: %w", heir, owner, err)
-	}
-	r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "ShardHandover", "Promoted %s to take over from %s before scale-down", heir, owner)
-	return nil
+	return r.beginClusterHandover(ctx, cluster, owner, heir)
 }

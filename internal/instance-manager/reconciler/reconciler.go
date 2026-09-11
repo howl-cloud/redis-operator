@@ -96,7 +96,7 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, _ reconcile.Request)
 		return reconcile.Result{}, fmt.Errorf("fetching RedisCluster: %w", err)
 	}
 
-	if r.isFenced(&cluster) {
+	if r.requiresHardFence(&cluster) {
 		logger.Info("Pod is fenced, stopping redis-server")
 		r.recorder.Eventf(&cluster, corev1.EventTypeWarning, "InstanceFenced", "Pod %s is fenced, stopping redis-server", r.podName)
 		r.stopRedis()
@@ -549,4 +549,9 @@ func replicaModeSourceEndpoint(cluster *redisv1.RedisCluster) (string, int, erro
 		port = defaultReplicaModePort
 	}
 	return host, port, nil
+}
+
+func (r *InstanceReconciler) requiresHardFence(cluster *redisv1.RedisCluster) bool {
+	owner, _ := redisv1.ClusterHandoverPods(cluster)
+	return r.isFenced(cluster) && owner != r.podName
 }

@@ -26,10 +26,11 @@ import (
 // pod is chosen as primaryOf, and reshard hands the shard over before the
 // owner goes away.
 type shardLayout struct {
-	shardOf   map[string]int
-	primaryOf map[int]string
-	ownerOf   map[int]string
-	members   map[int][]string
+	shardOf      map[string]int
+	primaryOf    map[int]string
+	ownerOf      map[int]string
+	members      map[int][]string
+	replicaMoves map[string]int
 }
 
 // handingOver reports whether the shard's slots still sit on a pod other than
@@ -252,6 +253,7 @@ func planShardLayout(
 			return podIndex(cluster.Name, members[i]) < podIndex(cluster.Name, members[j])
 		})
 	}
+	layout.planReplicaMoves(cluster, statuses, doomed)
 	return layout
 }
 
@@ -328,4 +330,42 @@ func rankOwnersByOverlap(owners []string, statuses map[string]redisv1.InstanceSt
 		return matches[a].shard < matches[b].shard
 	})
 	return matches
+}
+
+// planReplicaMoves balances surviving replicas without changing observed membership.
+func (l *shardLayout) planReplicaMoves(cluster *redisv1.RedisCluster, statuses map[string]redisv1.InstanceStatus, doomed func(string) bool) {
+	shardCount := desiredShardCount(cluster)
+	counts := make([]int, shardCount)
+	for shard := 0; shard < shardCount; shard++ {
+		if l.primaryOf[shard] == "" || l.handingOver(shard) {
+			return
+		}
+		for _, name := range l.members[shard] {
+			if !doomed(name) && !l.isPrimary(name) {
+				counts[shard]++
+			}
+		}
+	}
+	desired := int(cluster.Spec.ReplicasPerShard)
+	for target := 0; target < shardCount; target++ {
+		for source := 0; source < shardCount && counts[target] < desired; source++ {
+			members := l.members[source]
+			for i := len(members) - 1; i >= 0 && counts[source] > desired && counts[target] < desired; i-- {
+				name := members[i]
+				status := statuses[name]
+				if _, moving := l.replicaMoves[name]; moving {
+					continue
+				}
+				if doomed(name) || l.isPrimary(name) || !status.Connected || status.Role != "slave" || status.PrimaryNodeID == "" || len(status.SlotsServed) != 0 {
+					continue
+				}
+				if l.replicaMoves == nil {
+					l.replicaMoves = make(map[string]int)
+				}
+				l.replicaMoves[name] = target
+				counts[source]--
+				counts[target]++
+			}
+		}
+	}
 }

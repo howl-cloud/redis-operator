@@ -519,6 +519,15 @@ func podIsFenced(cluster *redisv1.RedisCluster, podName string) bool {
 
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	fenced, err := s.isCurrentPodFenced(ctx)
+	if err != nil {
+		http.Error(w, "cannot verify fencing state", http.StatusServiceUnavailable)
+		return
+	}
+	if fenced {
+		http.Error(w, "pod is fenced", http.StatusServiceUnavailable)
+		return
+	}
 	if err := s.redisClient.Ping(ctx).Err(); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = fmt.Fprintf(w, "redis not ready: %v", err)

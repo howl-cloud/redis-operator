@@ -166,3 +166,26 @@ kubectl get rediscluster my-redis -n default -o jsonpath='{.status.currentPrimar
 | Any data pod | `<name>-any` | `<name>-any` |
 | Sentinel discovery | `<name>-sentinel` | — |
 | Cluster discovery | — | `<name>-cluster` (headless) |
+
+## Planned cluster handover fencing
+
+During a planned cluster-mode scale-down handover, the operator adds the old
+primary to `redis.io/fencedInstances` and records `ownerPod/replicaPod` in
+`redis.io/cluster-handover` in the same patch. The old primary reports unready,
+but its Redis process stays alive so `CLUSTER FAILOVER` can pause writes and
+synchronize the replica. The operator waits for readiness withdrawal before
+requesting promotion and uses neither `FORCE` nor `TAKEOVER`.
+
+`/readyz` returns 503 while a pod is fenced or when its fencing state cannot be
+read from the Kubernetes API.
+
+The marker survives controller restarts. On success, both the new primary's slot ownership
+and the old primary's replica role must be observed before the operator removes
+the marker and its fence. If a participant disappears or the target receives an
+emergency fence, the handover is cancelled and only the old primary's planned
+fence is cleared. Other fenced pods stay fenced. An emergency fence on
+the old primary removes the planned-handover marker, restoring process-stopping
+fencing. To apply an emergency fence manually during a planned handover, remove
+`redis.io/cluster-handover` while retaining the primary in
+`redis.io/fencedInstances`. This exception requires the updated instance manager
+on both pods.

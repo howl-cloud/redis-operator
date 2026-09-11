@@ -58,7 +58,9 @@ func TestReconcileClusterReshard_PromotesSurvivingReplicaOfDoomedOwner(t *testin
 	ready, err := r.reconcileClusterReshard(context.Background(), cluster, statuses)
 	require.NoError(t, err)
 	assert.False(t, ready, "pod deletion must wait for the handover")
-	assert.Equal(t, []string{"/v1/promote"}, endpoints(*posts))
+	assert.Empty(t, *posts, "promotion waits for the persisted fence to withdraw readiness")
+	assert.Equal(t, "test-3/test-0", cluster.Annotations[redisv1.ClusterHandoverAnnotation])
+	assert.Contains(t, r.getFencedPods(cluster), "test-3")
 }
 
 func TestReconcileClusterReshard_WaitsForHeirLinkBeforePromoting(t *testing.T) {

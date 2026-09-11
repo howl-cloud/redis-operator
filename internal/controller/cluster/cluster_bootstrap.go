@@ -47,6 +47,9 @@ func (r *ClusterReconciler) reconcileClusterBootstrap(
 	if err != nil {
 		return false, fmt.Errorf("listing data pods: %w", err)
 	}
+	if cluster.Annotations[redisv1.ClusterHandoverAnnotation] != "" {
+		return r.resumeClusterHandover(ctx, cluster, pods, statuses)
+	}
 	if len(pods) < desired {
 		return true, nil
 	}
@@ -131,6 +134,9 @@ func (r *ClusterReconciler) reconcileClusterBootstrap(
 			continue
 		}
 		shardIndex := layout.shardOf[podName]
+		if target, moving := layout.replicaMoves[podName]; moving {
+			shardIndex = target
+		}
 		if layout.handingOver(shardIndex) {
 			continue
 		}

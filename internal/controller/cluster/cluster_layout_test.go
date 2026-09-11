@@ -271,3 +271,35 @@ func TestPlanShardLayout_ScaleDownHandsDoomedOwnersToSurvivors(t *testing.T) {
 		assert.True(t, layout.handingOver(2))
 	})
 }
+
+func TestPlanShardLayout_ReplicaRebalancing(t *testing.T) {
+	ranges := calculateClusterSlotRanges(3)
+	tests := []struct {
+		name      string
+		replicas  int32
+		primary   []int
+		follows   map[int]int
+		wantMoves map[string]int
+	}{
+		{"legacy downscale", 1, []int{0, 3, 1}, map[int]int{2: 0, 4: 3, 5: 3}, map[string]int{"test-5": 2}},
+		{"multiple deficient shards", 2, []int{0, 1, 2}, map[int]int{3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0}, map[string]int{"test-8": 1, "test-7": 1, "test-6": 2, "test-5": 2}},
+		{"all shards already replicated", 2, []int{0, 4, 8}, map[int]int{1: 0, 2: 0, 3: 8, 5: 4, 6: 4, 7: 4}, map[string]int{"test-7": 2}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cluster := newClusterModeCluster(3, tt.replicas)
+			statuses := map[string]redisv1.InstanceStatus{}
+			for shard, index := range tt.primary {
+				statuses[podNameForIndex("test", index)] = ownerStatus(podNameForIndex("node", index), ranges[shard])
+			}
+			for index, primary := range tt.follows {
+				statuses[podNameForIndex("test", index)] = replicaStatus(podNameForIndex("node", index), podNameForIndex("node", primary))
+			}
+			layout := planShardLayout(cluster, nil, statuses)
+			assert.Equal(t, tt.wantMoves, layout.replicaMoves)
+			for name, target := range tt.wantMoves {
+				assert.NotEqual(t, target, layout.shardOf[name], "status must still describe observed membership")
+			}
+		})
+	}
+}

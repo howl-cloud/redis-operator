@@ -87,7 +87,7 @@ func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.
 		logger.Info("Scaling down", "current", current, "desired", desired)
 		r.Recorder.Eventf(cluster, corev1.EventTypeNormal, "ScaleDown", "Scaling down from %d to %d instances", current, desired)
 		sort.Slice(existingPods, func(i, j int) bool {
-			return existingPods[i].Name > existingPods[j].Name
+			return podIndex(cluster.Name, existingPods[i].Name) > podIndex(cluster.Name, existingPods[j].Name)
 		})
 		for i := 0; i < current-desired; i++ {
 			pod := existingPods[i]
