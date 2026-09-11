@@ -50,7 +50,6 @@ var _ = Describe("Planned cluster handover", func() {
 			{ObjectMeta: metav1.ObjectMeta{Name: "test-3"}, Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}}},
 			{ObjectMeta: metav1.ObjectMeta{Name: "test-0"}, Status: corev1.PodStatus{PodIP: "127.0.0.1"}},
 		}
-		// A rejected promotion must leave the durable fence available for retry.
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			observed := &redisv1.RedisCluster{}
 			if err := k8s.Get(req.Context(), client.ObjectKeyFromObject(cluster), observed); err != nil || observed.Annotations[redisv1.ClusterHandoverAnnotation] != "test-3/test-0" || !strings.Contains(observed.Annotations[redisv1.FencingAnnotationKey], "test-3") {
@@ -75,7 +74,6 @@ var _ = Describe("Planned cluster handover", func() {
 		Expect(k8s.Get(ctx, client.ObjectKeyFromObject(cluster), cluster)).To(Succeed())
 		Expect(r.getFencedPods(cluster)).To(ConsistOf("test-3", "test-9"))
 
-		// Recreate the reconciler as after a manager restart and observe both roles.
 		r = NewClusterReconciler(k8s, scheme, record.NewFakeRecorder(100), 0)
 		statuses["test-0"] = ownerStatus("n0", source.SlotsServed[0])
 		_, err = r.resumeClusterHandover(ctx, cluster, pods, statuses)
@@ -105,6 +103,5 @@ var _ = Describe("Planned cluster handover", func() {
 		Expect(cluster.Annotations[redisv1.ClusterHandoverAnnotation]).To(BeEmpty())
 		Expect(r.getFencedPods(cluster)).To(ConsistOf("test-0", "test-9"))
 		Expect(r.beginClusterHandover(ctx, cluster, "test-3", "test-0")).NotTo(Succeed())
-
 	})
 })

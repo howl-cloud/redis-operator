@@ -162,9 +162,6 @@ func (r *ClusterReconciler) reconcileClusterReshard(
 	return true, nil
 }
 
-// handOverShard moves a whole shard from a doomed pod to a surviving one
-// without copying keys. The heir replicates from the owner, then takes over
-// with CLUSTER FAILOVER once its link is up.
 func (r *ClusterReconciler) handOverShard(
 	ctx context.Context,
 	httpClient *http.Client,

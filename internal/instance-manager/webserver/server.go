@@ -741,8 +741,6 @@ func (s *Server) handleClusterReplicate(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "nodeID is required", http.StatusBadRequest)
 		return
 	}
-	// Right after CLUSTER MEET this node may not have heard of the primary yet.
-	// Return 409 so the operator retries instead of treating it as a failure.
 	known, err := s.knowsClusterNode(r.Context(), req.NodeID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("cluster nodes lookup failed: %v", err), http.StatusInternalServerError)
@@ -864,8 +862,6 @@ func (s *Server) clusterModeEnabled() bool {
 	return s.clusterMode
 }
 
-// findSelfClusterNode returns this node's ID, the ID of the primary it replicates
-// (empty for primaries), and the slot ranges it serves.
 func findSelfClusterNode(nodes []replication.ClusterNode) (string, string, []redisv1.SlotRange) {
 	for _, node := range nodes {
 		if !hasNodeFlag(node.Flags, "myself") {

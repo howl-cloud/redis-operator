@@ -175,8 +175,6 @@ func TestPlanShardLayout(t *testing.T) {
 				"test-3": emptyPrimaryStatus("n3"),
 				"test-4": emptyPrimaryStatus("n4"),
 			},
-			// Owners keep the shard whose new range they overlap most; the new
-			// pods take the gaps, so the reshard moves the least data.
 			wantShardOf:   map[string]int{"test-0": 0, "test-1": 2, "test-2": 4, "test-3": 1, "test-4": 3},
 			wantPrimaryOf: map[int]string{0: "test-0", 1: "test-3", 2: "test-1", 3: "test-4", 4: "test-2"},
 		},
@@ -228,8 +226,6 @@ func TestPlanShardLayout_ScaleDownHandsDoomedOwnersToSurvivors(t *testing.T) {
 	ranges := calculateClusterSlotRanges(3)
 
 	t.Run("surviving replica inherits", func(t *testing.T) {
-		// After a failover pod 3 owns s0 and pod 0 replicates from it; replicas
-		// per shard drops to 0, so pods 3..5 will be deleted.
 		cluster := newClusterModeCluster(3, 0)
 		pods := []corev1.Pod{
 			shardPod("test-0", "s0", "replica"), shardPod("test-1", "s1", "primary"),
@@ -250,8 +246,6 @@ func TestPlanShardLayout_ScaleDownHandsDoomedOwnersToSurvivors(t *testing.T) {
 	})
 
 	t.Run("legacy layout borrows a surviving replica when a whole shard is doomed", func(t *testing.T) {
-		// Old layout: primaries 0,2,4 with replicas 1,3,5. Dropping to 0 replicas
-		// deletes pods 3..5, which is all of shard s2.
 		cluster := newClusterModeCluster(3, 0)
 		pods := []corev1.Pod{
 			shardPod("test-0", "s0", "primary"), shardPod("test-1", "s0", "replica"),

@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Validate cluster replica scaling against an explicitly selected local cluster.
-
-Install the operator first, then run with --kubeconfig PATH. The test creates
-and removes its own namespace; it never switches the default kubectl context.
-"""
+"""Cluster replica scaling. Requires --kubeconfig to a kind cluster; creates its own namespace."""
 
 import argparse
 import json

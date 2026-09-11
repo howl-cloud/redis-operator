@@ -394,7 +394,7 @@ type InstanceStatus struct {
 	// NodeID is the Redis cluster node ID.
 	NodeID string `json:"nodeID,omitempty"`
 
-	// PrimaryNodeID is the cluster node ID this replica follows (cluster-mode replicas only).
+	// PrimaryNodeID is the cluster node ID this replica follows.
 	PrimaryNodeID string `json:"primaryNodeID,omitempty"`
 
 	// SlotsServed lists slot ranges served by this node in cluster mode.

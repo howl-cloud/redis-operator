@@ -98,9 +98,6 @@ type recordedPost struct {
 	body     map[string]any
 }
 
-// fakeInstanceManagers serves /v1/cluster/* for several pods on one loopback
-// listener and records every POST, tagged with the pod that owns the request's
-// Host IP.
 func fakeInstanceManagers(t *testing.T, ipToPod map[string]string) *[]recordedPost {
 	t.Helper()
 	var (
@@ -133,7 +130,6 @@ func TestReconcileClusterBootstrap_RaisingReplicasPerShardKeepsExistingPrimaries
 	cluster.Status.ClusterState = "ok"
 	cluster.Status.SlotsAssigned = 16384
 
-	// All six pods resolve to loopback; the fake server tells them apart by Host.
 	ipToPod := map[string]string{"127.0.0.1": "any"}
 	var objs []client.Object
 	pods := []corev1.Pod{
@@ -175,8 +171,6 @@ func TestReconcileClusterBootstrap_RaisingReplicasPerShardKeepsExistingPrimaries
 			t.Fatalf("unexpected call %s: slot owners must not be touched", post.endpoint)
 		}
 	}
-	// Pods 3, 4 and 5 are empty, so they become the replicas of n0, n1 and n2.
-	// Pods 1 and 2 own slots and never receive CLUSTER REPLICATE.
 	assert.Equal(t, []string{"n0", "n1", "n2"}, replicateTargets)
 }
 

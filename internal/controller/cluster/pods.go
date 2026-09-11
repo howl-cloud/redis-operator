@@ -44,7 +44,6 @@ const (
 )
 
 // reconcilePods ensures pods match the desired state: scale up, scale down, rolling updates.
-// statuses is the result of this pass's status poll; cluster mode uses it to place pods in shards.
 func (r *ClusterReconciler) reconcilePods(ctx context.Context, cluster *redisv1.RedisCluster, statuses map[string]redisv1.InstanceStatus) error {
 	logger := log.FromContext(ctx)
 
@@ -164,8 +163,6 @@ func (r *ClusterReconciler) createPod(ctx context.Context, cluster *redisv1.Redi
 	return r.createPodWithLabels(ctx, cluster, podName, index, role, podLabels(cluster.Name, podName, role))
 }
 
-// createPodWithLabels creates a pod, or brings an existing pod's labels and
-// owner reference in line with the desired state.
 func (r *ClusterReconciler) createPodWithLabels(
 	ctx context.Context,
 	cluster *redisv1.RedisCluster,

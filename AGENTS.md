@@ -18,7 +18,7 @@ A Kubernetes operator for Redis 7.2 clusters (wire-compatible with Valkey 7.x/8.
 - Errors are returned, not panicked. Use `errors.Is`/`errors.As` — never string-match error messages.
 - Operator-to-pod communication always uses the **pod IP directly**, never a Service. Services are load-balanced; we need to target a specific pod for `/v1/promote`, `/v1/backup`, etc.
 - The split-brain guard in `internal/instance-manager/run/run.go` must fire before `redis-server` starts — if `POD_NAME != status.currentPrimary`, always issue `REPLICAOF` first, regardless of local data.
-- Fencing annotation goes on **before** promoting a replica. Never promote without fencing first. For a planned Redis Cluster handover, the additional `redis.io/cluster-handover` marker keeps the old primary alive but unready for coordinated `CLUSTER FAILOVER`. Emergency fencing removes that marker and still stops Redis.
+- Fencing annotation goes on **before** promoting a replica. Never promote without fencing first. `redis.io/cluster-handover` keeps Redis running on a planned cluster handover; without it, fencing still stops Redis.
 - Status is updated via `status` subresource only (separate from spec). Per-pod state lives in a map keyed by pod name, never a slice (avoids strategic-merge-patch ordering bugs).
 - Rolling updates: replicas always before the primary (highest ordinal first). The primary is last, promoted out via switchover, not killed directly.
 - Secrets are injected as projected volumes, never env vars.

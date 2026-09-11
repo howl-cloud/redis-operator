@@ -7,17 +7,13 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 ## [Unreleased]
 
 ### Fixed
-- Changing `spec.replicasPerShard` on a running cluster-mode `RedisCluster` no longer reinterprets existing primaries as replicas (#36). Shard membership follows the live topology. A slot owner is the primary of the shard whose range it serves, replicas follow the primary they replicate from, and only empty pods are placed. A Redis-level failover keeps the shard index with the new slot owner, so reshard no longer moves slots back to the old primary.
-- Lowering `spec.replicasPerShard` no longer deletes a pod that owns slots. Scale-down still removes the highest ordinals, which can be primaries after a failover or on the old contiguous layout. The operator hands the shard to a surviving pod first. The heir replicates from the doomed primary, takes over with `CLUSTER FAILOVER`, and pod deletion waits until that finishes. `ShardHandover` events record both steps.
-- Planned cluster handovers fence the old primary before promotion and clear the fence only after both nodes confirm the transfer. The instance manager keeps Redis alive for coordinated failover. Emergency fences still stop Redis.
-- Replica scale-down rebalances surviving replicas to `spec.replicasPerShard`, including legacy layouts with Redis replica migration disabled. Pod deletion uses numeric ordinals, so pods 10 and above come off in the same order the handover planner assumes.
-- Pod labels `redis.io/shard`, `redis.io/shard-role`, and `redis.io/role` are rewritten each reconcile from the observed topology. `status.shards` is derived the same way, so they match what Redis reports.
-- The instance manager no longer overwrites the operator's cluster fields (`nodeID`, `slotsServed`, `clusterState`, `currentEpoch`, `lastSeenAt`) in `status.instancesStatus` when it reports replication state. It updates only the fields it observes.
-- `CLUSTER REPLICATE` against a pod that has not learned its primary through gossip yet returns 409 from the instance manager and is retried next pass, instead of being logged as a reconcile error. Instance-manager HTTP errors now include the response body.
+- Changing `spec.replicasPerShard` no longer remaps existing primaries as replicas (#36). Membership follows live topology. Scale-down hands a doomed slot owner to a surviving pod before deletion. Planned handovers fence readiness and leave Redis running; emergency fences still stop it.
+- Replica scale-down rebalances survivors to `spec.replicasPerShard`. Pod deletion uses numeric ordinals so pods 10+ come off in planner order.
+- Pod labels and `status.shards` are rewritten from observed topology each reconcile.
+- The instance manager no longer overwrites operator-owned cluster fields in `instancesStatus`. `CLUSTER REPLICATE` against an unknown primary returns 409 and retries. HTTP errors include the response body.
 
 ### Changed
-- `status.instancesStatus[*].primaryNodeID` is the cluster node ID a replica follows.
-- New cluster-mode clusters place replicas after all primaries (pods `0..shards-1` are primaries, later pods are replicas round-robin across shards). Existing clusters keep their current layout.
+- `status.instancesStatus[*].primaryNodeID` is the cluster node ID a replica follows. New clusters place primaries on pods `0..shards-1`.
 
 ## [0.2.6]
 

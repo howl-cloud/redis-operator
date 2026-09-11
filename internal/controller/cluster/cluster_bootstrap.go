@@ -15,9 +15,7 @@ import (
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 )
 
-// instanceManagerPort is the instance-manager HTTP port on every data pod.
-// Tests point it at a local listener.
-var instanceManagerPort = 8080
+var instanceManagerPort = 8080 // tests override this
 
 type clusterMeetPayload struct {
 	IP   string `json:"ip"`
@@ -129,9 +127,8 @@ func (r *ClusterReconciler) reconcileClusterBootstrap(
 			continue
 		}
 		podStatus := statuses[podName]
-		// A slot owner is never demoted here; reshard drains it first.
 		if len(podStatus.SlotsServed) > 0 {
-			continue
+			continue // reshard drains owners; never demote them here
 		}
 		shardIndex := layout.shardOf[podName]
 		if target, moving := layout.replicaMoves[podName]; moving {
@@ -144,9 +141,8 @@ func (r *ClusterReconciler) reconcileClusterBootstrap(
 		if primaryNodeID == "" {
 			return false, nil
 		}
-		// Older instance managers do not report primaryNodeID. Leave those replicas alone.
 		if podStatus.Role == "slave" && (podStatus.PrimaryNodeID == "" || podStatus.PrimaryNodeID == primaryNodeID) {
-			continue
+			continue // empty primaryNodeID is an older instance manager, not a misplacement
 		}
 		err := postClusterJSON(ctx, httpClient, podsByName[podName].Status.PodIP, "/v1/cluster/replicate", clusterReplicatePayload{
 			NodeID: primaryNodeID,

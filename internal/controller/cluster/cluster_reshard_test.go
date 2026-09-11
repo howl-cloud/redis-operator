@@ -12,8 +12,6 @@ import (
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 )
 
-// scaleDownFixture is a 6-pod cluster scaling to 3 where pod 3 owns shard s0
-// after a failover and pod 0 replicates from it.
 func scaleDownFixture(t *testing.T, heir redisv1.InstanceStatus) (*ClusterReconciler, *redisv1.RedisCluster, map[string]redisv1.InstanceStatus, *[]recordedPost) {
 	t.Helper()
 	cluster := newClusterModeCluster(3, 0)
@@ -75,7 +73,6 @@ func TestReconcileClusterReshard_WaitsForHeirLinkBeforePromoting(t *testing.T) {
 }
 
 func TestReconcileClusterReshard_AttachesHeirBeforePromoting(t *testing.T) {
-	// Pod 0 is an empty master, not yet following the doomed owner.
 	r, cluster, statuses, posts := scaleDownFixture(t, emptyPrimaryStatus("n0"))
 
 	ready, err := r.reconcileClusterReshard(context.Background(), cluster, statuses)

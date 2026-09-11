@@ -11,20 +11,8 @@ import (
 	redisv1 "github.com/howl-cloud/redis-operator/api/v1"
 )
 
-// shardLayout maps every data pod of a cluster-mode RedisCluster to a shard.
-//
-// Membership is decided in this order. A pod that owns slots is the primary of
-// the shard whose slot range it serves most of. A replica belongs to the shard
-// of the primary it follows. A pod whose topology is not observable keeps its
-// redis.io/shard label. Every other pod is empty and is placed to fill missing
-// primaries first, then to balance replicas. Pod ordinals never decide
-// membership by themselves, so changing spec.replicasPerShard cannot turn an
-// existing primary into a replica.
-//
-// A slot owner whose ordinal is beyond the desired pod count is about to be
-// deleted by a scale-down. It stays the shard's owner (ownerOf) but a surviving
-// pod is chosen as primaryOf, and reshard hands the shard over before the
-// owner goes away.
+// shardLayout maps data pods to shards from live topology, not pod ordinal.
+// ownerOf currently holds the slots; primaryOf should after any scale-down handover.
 type shardLayout struct {
 	shardOf      map[string]int
 	primaryOf    map[int]string
@@ -33,8 +21,6 @@ type shardLayout struct {
 	replicaMoves map[string]int
 }
 
-// handingOver reports whether the shard's slots still sit on a pod other than
-// its chosen primary.
 func (l shardLayout) handingOver(shard int) bool {
 	owner, ok := l.ownerOf[shard]
 	return ok && owner != l.primaryOf[shard]
@@ -60,7 +46,6 @@ func (l shardLayout) labels(podName string) map[string]string {
 	}
 }
 
-// desiredShardCount mirrors the clamp in RedisClusterSpec.DesiredDataInstances.
 func desiredShardCount(cluster *redisv1.RedisCluster) int {
 	if cluster.Spec.Shards < 3 {
 		return 3
@@ -141,10 +126,7 @@ func planShardLayout(
 		}
 	}
 
-	// Slot owners define shards. Each owner takes the shard whose canonical
-	// slot range it already serves most of, so a reshard moves as little data
-	// as possible. Labels never trigger a reshard. Extra owners, more than the
-	// shard count or with no overlap, take the lowest free index and get drained.
+	// Claim the range each owner already serves most of. Leftovers get drained.
 	var owners []string
 	for _, name := range names {
 		if len(statuses[name].SlotsServed) > 0 {
@@ -187,7 +169,6 @@ func planShardLayout(
 		if status.Role == "slave" && status.PrimaryNodeID != "" {
 			if shard, ok := layout.shardOf[podByNodeID[status.PrimaryNodeID]]; ok {
 				assign(name, shard)
-				// A surviving replica is the best heir of a doomed owner.
 				if layout.primaryOf[shard] == "" && !doomed(name) {
 					layout.primaryOf[shard] = name
 				}
@@ -195,7 +176,6 @@ func planShardLayout(
 			}
 		}
 
-		// Nothing observable: trust the label until the pod reports in.
 		observable := polled && status.Connected && (status.Role != "slave" || status.PrimaryNodeID != "")
 		if shard, ok := labelOf[name]; ok && !observable && shard < shardCount {
 			assign(name, shard)
@@ -223,8 +203,6 @@ func planShardLayout(
 	}
 	free = append(survivors, filter(free, doomed)...)
 
-	// A doomed owner with no surviving replica and no free survivor borrows a
-	// surviving replica from the shard that can spare one most easily.
 	for shard := 0; shard < shardCount; shard++ {
 		if layout.primaryOf[shard] != "" || layout.ownerOf[shard] == "" {
 			continue
@@ -257,8 +235,6 @@ func planShardLayout(
 	return layout
 }
 
-// spareSurvivor returns the lowest-ordinal surviving non-primary from the shard
-// with the most members, or "" when none exists.
 func (l shardLayout) spareSurvivor(doomed func(string) bool) string {
 	best, bestSize := "", 1
 	for shard, members := range l.members {
@@ -304,8 +280,6 @@ type ownerMatch struct {
 	overlap int32
 }
 
-// rankOwnersByOverlap lists every (owner, shard) pair with a non-zero slot
-// overlap, best match first. Ties go to the lower shard, then the lower pod.
 func rankOwnersByOverlap(owners []string, statuses map[string]redisv1.InstanceStatus, ranges []redisv1.SlotRange) []ownerMatch {
 	var matches []ownerMatch
 	for _, name := range owners {
