@@ -6,6 +6,8 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 
 ## [Unreleased]
 
+## [0.2.7]
+
 ### Fixed
 - Changing `spec.replicasPerShard` no longer remaps existing primaries as replicas (#36). Membership follows live topology. Scale-down hands a doomed slot owner to a surviving pod before deletion. Planned handovers fence readiness and leave Redis running; emergency fences still stop it.
 - Replica scale-down rebalances survivors to `spec.replicasPerShard`. Pod deletion uses numeric ordinals so pods 10+ come off in planner order.
