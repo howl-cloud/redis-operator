@@ -72,7 +72,7 @@ func (r *ClusterReconciler) resumeClusterHandover(ctx context.Context, cluster *
 			heirPod = &pods[i]
 		}
 	}
-	// Cancel stale handovers without clearing an emergency fence on the target.
+	// Cancel a stale handover. Do not clear an emergency fence on the target.
 	fenced := r.getFencedPods(cluster)
 	if ownerPod == nil || heirPod == nil || !slices.Contains(fenced, owner) || slices.Contains(fenced, heir) {
 		return false, r.finishClusterHandover(ctx, cluster, owner)
@@ -87,7 +87,7 @@ func (r *ClusterReconciler) resumeClusterHandover(ctx context.Context, cluster *
 	if source.Role != "master" || target.Role != "slave" || target.PrimaryNodeID != source.NodeID || target.MasterLinkStatus != "up" || heirPod.Status.PodIP == "" {
 		return false, nil
 	}
-	// Wait for the readiness probe to observe the persisted fence before promotion.
+	// Wait for the readiness probe to see the persisted fence before promotion.
 	if isPodRunningAndReady(ownerPod) {
 		return false, nil
 	}

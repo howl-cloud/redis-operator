@@ -33,11 +33,9 @@ func (r *ClusterReconciler) reconcileClusterReshard(
 
 	desiredInstances := int(cluster.Spec.DesiredDataInstances())
 	if len(statuses) < desiredInstances {
-		// Scale-up happens later in reconcilePods. Wait for next cycle.
 		return true, nil
 	}
 	if cluster.Status.ClusterState != "ok" || cluster.Status.SlotsAssigned < 16384 {
-		// Wait for bootstrap/convergence first.
 		return true, nil
 	}
 
@@ -65,7 +63,7 @@ func (r *ClusterReconciler) reconcileClusterReshard(
 		status, ok := statuses[podName]
 		if !ok || !status.Connected || status.NodeID == "" {
 			if len(statuses) > desiredInstances {
-				// During downscale, block pod deletion until target primaries are ready.
+				// Block scale-down until the surviving primaries are reachable.
 				return false, nil
 			}
 			return true, nil
@@ -164,9 +162,9 @@ func (r *ClusterReconciler) reconcileClusterReshard(
 	return true, nil
 }
 
-// handOverShard moves a whole shard from a pod that is about to be deleted to
-// a surviving pod without copying keys: the heir first replicates from the
-// owner, then takes over with CLUSTER FAILOVER once its link is up.
+// handOverShard moves a whole shard from a doomed pod to a surviving one
+// without copying keys. The heir replicates from the owner, then takes over
+// with CLUSTER FAILOVER once its link is up.
 func (r *ClusterReconciler) handOverShard(
 	ctx context.Context,
 	httpClient *http.Client,

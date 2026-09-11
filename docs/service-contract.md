@@ -93,8 +93,8 @@ them.
 
 | Label / annotation | Notes |
 |---|---|
-| `redis.io/shard` | Cluster-mode shard index (`s0`, `s1`, …). Derived from the slots a node serves and the primary a replica follows, not from the pod ordinal, and rewritten on every reconcile. Informational; prefer the Redis Cluster protocol for slot ownership. |
-| `redis.io/shard-role` | Cluster-mode per-shard role (`primary`/`replica`). Follows the live topology, so it flips after a Redis-level failover. Informational. |
+| `redis.io/shard` | Cluster-mode shard index (`s0`, `s1`, …). Taken from the slots a node serves and the primary a replica follows, then rewritten each reconcile. Informational; prefer the Redis Cluster protocol for slot ownership. |
+| `redis.io/shard-role` | Cluster-mode per-shard role (`primary`/`replica`). Follows live topology, including after a Redis-level failover. Informational. |
 | `redis.io/spec-hash` (annotation) | Rolling-update bookkeeping. Internal. |
 
 ---
@@ -169,23 +169,24 @@ kubectl get rediscluster my-redis -n default -o jsonpath='{.status.currentPrimar
 
 ## Planned cluster handover fencing
 
-During a planned cluster-mode scale-down handover, the operator adds the old
-primary to `redis.io/fencedInstances` and records `ownerPod/replicaPod` in
-`redis.io/cluster-handover` in the same patch. The old primary reports unready,
-but its Redis process stays alive so `CLUSTER FAILOVER` can pause writes and
-synchronize the replica. The operator waits for readiness withdrawal before
-requesting promotion and uses neither `FORCE` nor `TAKEOVER`.
+On a planned cluster-mode scale-down handover, the operator patches the old
+primary into `redis.io/fencedInstances` and writes `ownerPod/replicaPod` on
+`redis.io/cluster-handover` in the same request. The old primary goes unready,
+but Redis stays running so `CLUSTER FAILOVER` can pause writes and sync the
+replica. Promotion waits until readiness is withdrawn. The promote call is a
+plain `CLUSTER FAILOVER`, not `FORCE` or `TAKEOVER`.
 
-`/readyz` returns 503 while a pod is fenced or when its fencing state cannot be
-read from the Kubernetes API.
+`/readyz` returns 503 while a pod is fenced, and also when the fencing state
+cannot be read from the Kubernetes API.
 
-The marker survives controller restarts. On success, both the new primary's slot ownership
-and the old primary's replica role must be observed before the operator removes
-the marker and its fence. If a participant disappears or the target receives an
+The marker survives controller restarts. The operator removes it and the
+planned fence only after it has seen the new primary own the slots and the old
+primary become a replica. If a participant disappears, or the target gets an
 emergency fence, the handover is cancelled and only the old primary's planned
-fence is cleared. Other fenced pods stay fenced. An emergency fence on
-the old primary removes the planned-handover marker, restoring process-stopping
-fencing. To apply an emergency fence manually during a planned handover, remove
-`redis.io/cluster-handover` while retaining the primary in
-`redis.io/fencedInstances`. This exception requires the updated instance manager
-on both pods.
+fence is cleared. Other fenced pods stay fenced.
+
+An emergency fence on the old primary drops the planned-handover marker, so
+fencing goes back to stopping Redis. To force that by hand during a planned
+handover, delete `redis.io/cluster-handover` and leave the primary in
+`redis.io/fencedInstances`. Both pods need the instance manager from this
+change.

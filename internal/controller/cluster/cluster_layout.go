@@ -13,10 +13,10 @@ import (
 
 // shardLayout maps every data pod of a cluster-mode RedisCluster to a shard.
 //
-// Membership is decided in this order: a pod that owns slots is the primary of
-// the shard whose slot range it serves most of; a replica belongs to the shard
-// of the primary it follows; a pod whose topology is not observable keeps its
-// redis.io/shard label; every other pod is empty and is placed to fill missing
+// Membership is decided in this order. A pod that owns slots is the primary of
+// the shard whose slot range it serves most of. A replica belongs to the shard
+// of the primary it follows. A pod whose topology is not observable keeps its
+// redis.io/shard label. Every other pod is empty and is placed to fill missing
 // primaries first, then to balance replicas. Pod ordinals never decide
 // membership by themselves, so changing spec.replicasPerShard cannot turn an
 // existing primary into a replica.
@@ -143,8 +143,8 @@ func planShardLayout(
 
 	// Slot owners define shards. Each owner takes the shard whose canonical
 	// slot range it already serves most of, so a reshard moves as little data
-	// as possible and labels can never cause one. Owners left over (more owners
-	// than shards, or no overlap) take the lowest free index and get drained.
+	// as possible. Labels never trigger a reshard. Extra owners, more than the
+	// shard count or with no overlap, take the lowest free index and get drained.
 	var owners []string
 	for _, name := range names {
 		if len(statuses[name].SlotsServed) > 0 {

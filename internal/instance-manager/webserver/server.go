@@ -742,7 +742,7 @@ func (s *Server) handleClusterReplicate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// Right after CLUSTER MEET this node may not have heard of the primary yet.
-	// Answer 409 so the operator retries instead of treating it as a failure.
+	// Return 409 so the operator retries instead of treating it as a failure.
 	known, err := s.knowsClusterNode(r.Context(), req.NodeID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("cluster nodes lookup failed: %v", err), http.StatusInternalServerError)

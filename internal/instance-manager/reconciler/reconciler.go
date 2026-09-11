@@ -382,8 +382,9 @@ func (r *InstanceReconciler) reconcileTLSCerts(ctx context.Context, cluster *red
 }
 
 // reportStatus patches the replication fields of this pod's instancesStatus
-// entry. The operator owns the cluster-topology fields (nodeID, slotsServed,
-// ...) in the same entry, so only the fields this process observes are set.
+// entry. The operator owns the cluster-topology fields in the same entry
+// (nodeID, slotsServed, and the rest), so only the fields this process
+// observes are set.
 func (r *InstanceReconciler) reportStatus(ctx context.Context, cluster *redisv1.RedisCluster) error {
 	info, err := replication.GetInfo(ctx, r.redisClient)
 	if err != nil {

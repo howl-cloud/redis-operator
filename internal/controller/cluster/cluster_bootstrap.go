@@ -144,7 +144,7 @@ func (r *ClusterReconciler) reconcileClusterBootstrap(
 		if primaryNodeID == "" {
 			return false, nil
 		}
-		// Older instance managers do not report primaryNodeID; leave those replicas alone.
+		// Older instance managers do not report primaryNodeID. Leave those replicas alone.
 		if podStatus.Role == "slave" && (podStatus.PrimaryNodeID == "" || podStatus.PrimaryNodeID == primaryNodeID) {
 			continue
 		}
@@ -153,7 +153,6 @@ func (r *ClusterReconciler) reconcileClusterBootstrap(
 		})
 		var httpErr *clusterHTTPError
 		if errors.As(err, &httpErr) && httpErr.status == http.StatusConflict {
-			// The pod has not learned about its primary through gossip yet.
 			return false, nil
 		}
 		if err != nil {
